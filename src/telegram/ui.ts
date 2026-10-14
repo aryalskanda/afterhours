@@ -74,6 +74,7 @@ export const MODES = {
   auto: { label: 'auto', hint: 'no plan; auto mode decides what needs your permission', plan: false, review: false, execMode: 'auto' },
   edits: { label: 'accept edits', hint: 'no plan; file edits are allowed, anything else asks you', plan: false, review: false, execMode: 'acceptEdits' },
   yolo: { label: 'yolo', hint: 'no plan and no permission checks at all', plan: false, review: false, execMode: 'bypassPermissions' },
+  ask: { label: 'ask', hint: 'a question: Claude reads and answers, changes nothing, no plan', plan: false, review: false, execMode: 'plan' },
 } as const satisfies Record<string, { label: string; hint: string; plan: boolean; review: boolean; execMode: ExecMode }>
 
 export type ModeKey = keyof typeof MODES
@@ -341,7 +342,8 @@ export function modeView(d: Draft): View {
     keyboard: [
       [btn(`${current === 'plan' ? '✓ ' : ''}plan → auto`, `d:${d.id}:o:plan`), btn(`${current === 'review' ? '✓ ' : ''}review → auto`, `d:${d.id}:o:review`)],
       [btn(`${current === 'auto' ? '✓ ' : ''}auto`, `d:${d.id}:o:auto`), btn(`${current === 'edits' ? '✓ ' : ''}accept edits`, `d:${d.id}:o:edits`)],
-      [btn(`${current === 'yolo' ? '✓ ' : ''}⚠️ yolo`, `d:${d.id}:o:yolo`), btn('↩️ Back', `d:${d.id}:k`)],
+      [btn(`${current === 'ask' ? '✓ ' : ''}💭 ask`, `d:${d.id}:o:ask`), btn(`${current === 'yolo' ? '✓ ' : ''}⚠️ yolo`, `d:${d.id}:o:yolo`)],
+      [btn('↩️ Back', `d:${d.id}:k`)],
     ],
   }
 }

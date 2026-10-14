@@ -101,6 +101,9 @@ const NUDGE =
   "You're running unattended from a prompt queue and the user can't reply right now. " +
   'Make reasonable assumptions, finish your plan, and call ExitPlanMode to present it.'
 
+/** What an ask task tells Claude when it presents a plan anyway. */
+const ASK_FEEDBACK = "This task is a question: answer it directly in your reply. Don't present a plan or change anything."
+
 const CODE_LETTERS = 'abcdefghijkmnopqrstuvwxyz' // no "l": it reads like 1 and I on a phone
 
 /** A key typed right after Esc arrives as one Alt+key sequence; wait this long in between. */
@@ -536,6 +539,9 @@ export class Runner {
       if (text) job = this.d.store.updateJob(job.id, { planText: text })
     }
 
+    // An ask task wants an answer, not a plan: send it back to answering.
+    if (job.execMode === 'plan' && !job.plan) return this.sendPlanFeedback(job, rt, dialog.options, ASK_FEEDBACK)
+
     if (job.review) {
       if (!p.reviewCode) {
         p.reviewCode = this.newCode()
@@ -714,7 +720,8 @@ export class Runner {
       }
       case 'UserPromptSubmit': {
         rt.sessionStarted = true
-        const patch: Partial<Job> = { phase: payload.permission_mode === 'plan' ? 'planning' : 'working' }
+        // An ask task runs in plan mode too, but it's answering, not planning.
+        const patch: Partial<Job> = { phase: payload.permission_mode === 'plan' && job.plan ? 'planning' : 'working' }
         if (payload.transcript_path) patch.transcriptPath = payload.transcript_path
         if (job.status === 'held' && job.holdReason !== 'conflict') Object.assign(patch, { status: 'running', holdReason: null })
         if (!rt.finishing) this.d.store.updateJob(job.id, patch)

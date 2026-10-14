@@ -5,6 +5,7 @@ export const EXEC_LABEL: Record<ExecMode, string> = {
   auto: 'auto',
   acceptEdits: 'edits',
   bypassPermissions: 'yolo',
+  plan: 'ask',
 }
 
 export function modeLabel(job: Pick<Job, 'plan' | 'review' | 'execMode'>): string {

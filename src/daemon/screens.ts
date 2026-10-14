@@ -45,7 +45,9 @@ export interface PlanChoice {
 
 export function choosePlanOption(options: MenuOption[], execMode: ExecMode): PlanChoice | null {
   const find = (re: RegExp) => options.find(o => re.test(o.label))
-  const wanted: Record<ExecMode, RegExp> = {
+  // An ask task never approves a plan (the runner answers the dialog with feedback instead).
+  if (execMode === 'plan') return null
+  const wanted: Record<Exclude<ExecMode, 'plan'>, RegExp> = {
     auto: /auto mode/i,
     acceptEdits: /auto-accept|accept edits/i,
     bypassPermissions: /bypass/i,

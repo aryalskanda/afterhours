@@ -39,6 +39,7 @@ const EXEC: Record<string, ExecMode> = {
   acceptedits: 'acceptEdits',
   yolo: 'bypassPermissions',
   bypass: 'bypassPermissions',
+  ask: 'plan',
 }
 
 export interface QueueOptions {
@@ -187,7 +188,7 @@ export function buildSpec(text: string, ctx: CommandContext): JobSpec | string {
 export const HELP = `${BRAND.name}: queue Claude Code prompts.
 q <prompt> · queue with your defaults
 q myapp plan opus max: <prompt> · options before the colon
-  modes: plan review auto edits yolo plan+edits plan+yolo
+  modes: plan review auto edits yolo plan+edits plan+yolo · ask = answer only, read-only
   models: opus sonnet haiku fable · effort: low med high xhigh max
   new = fresh conversation · now = run next · @<id> = that conversation
   take = close that conversation where it's open (VS Code, a terminal) and continue it here

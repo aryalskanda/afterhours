@@ -829,3 +829,35 @@ describe('keeping in sync', () => {
     expect(j.window.input).toEqual(['text:also add tests', 'Enter'])
   })
 })
+
+describe('ask mode', () => {
+  test('a question runs read-only and ends when Claude has answered: no plan, no nudges', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false, execMode: 'plan', prompt: 'What does the watcher do?' }))
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(job.id)!.argv
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('plan')
+    const sid = h.store.getJob(job.id)!.sessionId!
+    await h.runner.onHook('SessionStart', job.id, { session_id: sid, transcript_path: '/tmp/t.jsonl' })
+    await h.runner.onHook('UserPromptSubmit', job.id, { permission_mode: 'plan' })
+    expect(h.store.getJob(job.id)!.phase).toBe('working')
+    expect(await h.runner.onHook('Stop', job.id, { permission_mode: 'plan', last_assistant_message: 'It watches your other chats.' })).toEqual({})
+    expect(h.store.getJob(job.id)).toMatchObject({ phase: 'finishing', nudges: 0 })
+  })
+
+  test('if Claude presents a plan anyway, it is told to just answer', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false, execMode: 'plan', prompt: 'How would you add X?' }))
+    await h.runner.tick()
+    const sid = h.store.getJob(job.id)!.sessionId!
+    await h.runner.onHook('SessionStart', job.id, { session_id: sid })
+    await h.runner.onHook('PermissionRequest', job.id, { tool_name: 'ExitPlanMode', tool_input: { plan: 'Step 1…' } })
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = PLAN_SCREEN
+    await h.runner.tick()
+    expect(w.input).toEqual(['3']) // "Tell Claude what to change"
+    await h.runner.tick()
+    expect(w.input.at(-2)).toBe("text:This task is a question: answer it directly in your reply. Don't present a plan or change anything.")
+    expect(h.notices.some(n => n.type === 'plan_approved')).toBe(false)
+  })
+})

@@ -70,6 +70,10 @@ describe('applyOption', () => {
     expect(apply('@9a7a2477').o).toEqual({ policy: 'session', sessionId: '9a7a2477' })
   })
 
+  test('ask: a read-only question, no plan', () => {
+    expect(apply('ask').o).toEqual({ plan: false, review: false, execMode: 'plan' })
+  })
+
   test('take: close the conversation where it is open and continue it here', () => {
     expect(apply('take').o).toEqual({ takeover: true })
     const { options, prompt } = parseQueueText('@9a7a2477 take: continue', config)

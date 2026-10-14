@@ -1,4 +1,5 @@
-export type ExecMode = 'auto' | 'acceptEdits' | 'bypassPermissions'
+/** How Claude works once it may act. `plan` = ask: it stays read-only and just answers (no plan to approve). */
+export type ExecMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'plan'
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type JobStatus = 'queued' | 'running' | 'held' | 'done' | 'failed' | 'cancelled'
 export type Phase = 'launching' | 'planning' | 'working' | 'limited' | 'finishing'
