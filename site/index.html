@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Afterhours: your Mac keeps coding while you're away</title>
+  <meta name="description" content="Line up Claude Code tasks from your phone. They run one after another on your Mac, wait out usage limits, and ask you only when they need you.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0e1320" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf8f4" media="(prefers-color-scheme: light)">
+  <meta property="og:title" content="Afterhours: your Mac keeps coding while you're away">
+  <meta property="og:description" content="Queue Claude Code tasks from your phone. They run on your Mac, wait out usage limits, and ask you only when they need you.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="config.js" defer></script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <div class="wrap top-row">
+      <a class="brand" href="#" aria-label="Afterhours home">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M20.5 4.5a12 12 0 1 0 7 21.3A13 13 0 0 1 20.5 4.5Z" fill="currentColor"/></svg>
+        <span>Afterhours</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#how">How it works</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+        <a class="btn btn-small" href="#join">Join the beta</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">For Claude Code on your Mac</p>
+          <h1>Your Mac keeps coding while you're away.</h1>
+          <p class="lead">Line up tasks from your phone. They run one after another on your Mac, wait out usage limits, and ask you only when they need you.</p>
+          <form class="join" id="join" data-waitlist novalidate>
+            <label class="sr-only" for="email">Email address</label>
+            <input id="email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+            <button class="btn" type="submit">Join the beta</button>
+            <p class="form-note" data-form-note>Invites go out in order. Works with your own Claude plan.</p>
+          </form>
+        </div>
+
+        <figure class="phone" aria-label="Example: a task queued from a phone, paused by a usage limit, then finished">
+          <div class="phone-screen">
+            <div class="msg you" style="--d:0">Add a dark mode toggle to the settings page</div>
+            <div class="msg bot" style="--d:1"><strong>📝 Queued #14</strong> · shop/web · plan → auto · sonnet<br><span class="muted">Starting now.</span></div>
+            <div class="msg bot" style="--d:2"><strong>📝 Plan approved</strong> · 4 steps, auto mode</div>
+            <div class="msg bot" style="--d:3"><strong>⏸ Usage limit</strong> · resets 3:30 PM<br><span class="muted">It continues on its own.</span></div>
+            <div class="msg bot" style="--d:4"><strong>▶️ Continued</strong> after the reset</div>
+            <div class="msg bot done" style="--d:5"><strong>✅ #14 done in 48m</strong><br>6 files changed, 212 insertions<br><span class="muted">On branch afterhours/14-dark-mode</span></div>
+          </div>
+          <figcaption class="sr-only">A phone conversation with Afterhours.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band" aria-labelledby="what">
+      <div class="wrap">
+        <h2 id="what">Everything Claude Code needs to work while you're out</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>A queue across projects</h3>
+            <p>Each task has its own folder, model, effort and mode. They run in order, so nothing fights over your usage.</p>
+          </article>
+          <article class="card">
+            <h3>Usage limits don't stop the night</h3>
+            <p>When the 5-hour or weekly limit hits, the task waits and carries on at the reset. Even a chat you left open in VS Code.</p>
+          </article>
+          <article class="card">
+            <h3>Plans approved, or sent to you</h3>
+            <p>Let Claude plan first, then approve the plan for you. Or have the plan land on your phone for a yes or a change.</p>
+          </article>
+          <article class="card">
+            <h3>Permissions on your phone</h3>
+            <p>Allow or deny with a tap. If you're asleep, the request is declined and Claude finds another way, so the queue never stalls.</p>
+          </article>
+          <article class="card">
+            <h3>Every chat, from your phone</h3>
+            <p>Open any Claude Code conversation on your Mac and keep typing in it. The same chat, picked up where it was.</p>
+          </article>
+          <article class="card">
+            <h3>Your checkout stays clean</h3>
+            <p>New work can run on its own git branch, committed for you to review and merge when you're back.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="how" class="how">
+      <div class="wrap">
+        <h2 id="how">How it works</h2>
+        <ol class="steps">
+          <li><strong>Install it on your Mac.</strong> Afterhours runs the real Claude Code, signed in with your own Claude plan, in the background.</li>
+          <li><strong>Pair your phone.</strong> Scan a code once. Your phone and your Mac talk end to end encrypted.</li>
+          <li><strong>Send tasks.</strong> Type what you need, pick the folder, and go. You get a message when it needs you and when it's done.</li>
+        </ol>
+        <ul class="assurances">
+          <li>Your code stays on your Mac. Claude Code talks to Anthropic as it always does.</li>
+          <li>Afterhours never sees your Claude sign-in.</li>
+          <li>Nothing in between can read your prompts: only your phone and your Mac hold the keys.</li>
+        </ul>
+        <p class="muted">The phone app and the encrypted connection are part of Pro, now in beta. The free version talks to your phone through your own Telegram bot.</p>
+      </div>
+    </section>
+
+    <section class="band" aria-labelledby="alongside">
+      <div class="wrap narrow">
+        <h2 id="alongside">Works alongside Claude's own tools</h2>
+        <p>Remote Control is great for steering one live chat from the Claude app. Afterhours is for the work you line up and walk away from: a queue that runs through the night, waits out limits, and keeps going without you.</p>
+      </div>
+    </section>
+
+    <section aria-labelledby="pricing" class="pricing">
+      <div class="wrap">
+        <h2 id="pricing">Pricing</h2>
+        <div class="plans">
+          <article class="plan">
+            <h3>Free</h3>
+            <p class="price">$0 <span>open source</span></p>
+            <ul>
+              <li>The queue, plans and limit handling</li>
+              <li>Permissions and questions on your phone</li>
+              <li>Through your own Telegram bot</li>
+              <li>Command line and Homebrew install</li>
+            </ul>
+          </article>
+          <article class="plan featured">
+            <h3>Pro <span class="tag">in beta</span></h3>
+            <p class="price">$9 <span>a month, or $79 a year</span></p>
+            <ul>
+              <li>The Afterhours app for your phone</li>
+              <li>End-to-end encrypted connection, no bot setup</li>
+              <li>Push notifications</li>
+              <li>Several Macs, schedules, a morning summary</li>
+              <li>A Mac app with guided setup</li>
+            </ul>
+            <p class="founder">Founding members: <strong>$99 once</strong>, for the first 100.</p>
+            <a class="btn" href="#join">Join the beta</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" aria-labelledby="faq">
+      <div class="wrap narrow">
+        <h2 id="faq">Questions</h2>
+        <details>
+          <summary>Is this allowed by Anthropic's terms?</summary>
+          <p>Afterhours runs the unmodified Claude Code, signed in with your own Claude subscription or API key, on your own Mac. It never handles your credentials and never resells usage. Your usage counts against your own plan, as if you ran the tasks yourself.</p>
+        </details>
+        <details>
+          <summary>Can Afterhours see my code or prompts?</summary>
+          <p>Everything runs on your Mac. With Pro, messages between your phone and your Mac are end-to-end encrypted, so the relay in between only passes along what it can't read. The free version uses your own Telegram bot, whose messages pass through Telegram.</p>
+        </details>
+        <details>
+          <summary>What happens when I hit my usage limit?</summary>
+          <p>The running task waits for the reset and continues by itself. No new task starts until then. A chat you left open in VS Code is continued too.</p>
+        </details>
+        <details>
+          <summary>Do I need a Mac?</summary>
+          <p>Yes, for now: Afterhours runs on macOS 13 or newer, next to Claude Code. The phone app works on iPhone and Android.</p>
+        </details>
+        <details>
+          <summary>Is Afterhours made by Anthropic?</summary>
+          <p>No. It's an independent tool that works with Claude Code, and it isn't affiliated with or endorsed by Anthropic.</p>
+        </details>
+      </div>
+    </section>
+
+    <section class="closing" aria-labelledby="closing">
+      <div class="wrap narrow center">
+        <h2 id="closing">Let your Mac work the night shift</h2>
+        <form class="join" data-waitlist novalidate>
+          <label class="sr-only" for="email2">Email address</label>
+          <input id="email2" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+          <button class="btn" type="submit">Join the beta</button>
+          <p class="form-note" data-form-note>One email when your invite is ready. No spam.</p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap">
+      <p>Afterhours runs Claude Code with your own sign-in and plan. It is not made by, affiliated with, or endorsed by Anthropic.</p>
+      <p class="muted" data-contact></p>
+    </div>
+  </footer>
+</body>
+</html>
