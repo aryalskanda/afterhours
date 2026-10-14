@@ -35,7 +35,7 @@ bot  ✅ #14 done in 48m · 6 files changed, 212 insertions(+)
 | **Limit-aware** | No new task starts while a 5-hour or weekly limit is active. The running task continues after the reset, even if the Mac slept through it. |
 | **Never stalls on you** | You get permission requests and questions on your phone. If you don't answer, the request is denied, or Claude uses its best judgment and lists its assumptions. |
 | **Your checkout stays clean** | Each new conversation runs on its own branch in a git worktree, and its work is committed there for you to review and merge. |
-| **Your VS Code chats too** | Send a follow-up into any chat in a folder, including one open in VS Code. When one stops on a usage limit, you get a message, and one tap has Afterhours continue it after the reset. |
+| **Every chat, from your phone** | **💬 Chats** lists your recent chats from every project, VS Code ones included. Open one and type: your messages go into that same conversation. A chat in VS Code that hits a usage limit continues by itself at the reset, inside VS Code. |
 | **Your phone, your bot** | Afterhours talks to a Telegram bot you create, straight from your Mac. No servers, accounts or open ports. |
 
 ## Requirements
@@ -80,7 +80,7 @@ Check everything at any time with `cq doctor`.
 | Button | What it does |
 | --- | --- |
 | **📁 Folder** | Browse your code folders. Tap a folder marked `›` to open it; tap one without `›` (or **✅ Use …**) to pick it. **⭐ Recent**, **🔍 Search** (type part of a name, e.g. `api` or `shop web`), **⬆️ Up**, **🔄 Rescan**. 📦 marks git repos. |
-| **🗺 Mode** | `plan → auto` (Afterhours approves the plan), `review → auto` (you approve it), `auto`, `accept edits`, `yolo` (no permission checks) |
+| **🗺 Mode** | `plan → auto` (Afterhours approves the plan), `review → auto` (you approve it), `auto`, `accept edits`, `yolo` (no permission checks), `ask` (a question: Claude reads and answers, changes nothing) |
 | **🧠 Model** | `opus` · `sonnet` · `haiku` |
 | **⚡ Effort** | `low` · `medium` · `high` · `xhigh` · `max` |
 | **💬 Chat…** | Which conversation to continue: **🆕 New chat**, **🔁 Last Afterhours chat** in that folder, or one of the folder's recent chats from anywhere, VS Code and the terminal included. 🟢 open elsewhere · 🟡 working there · ⏸ stopped at a usage limit |
@@ -92,7 +92,8 @@ The buttons under the text box:
 - **➕ New task**: pick the folder first, then send the prompt.
 - **📋 Queue**: every waiting task, with **⬆️ Run next** and **🗑 Remove**.
 - **📊 Status**: the current task, what it last did, your 5-hour and weekly usage, and **⏸ Pause** / **▶️ Resume**.
-- **👀 Peek**: the running task's screen.
+- **👀 Peek**: the running task's screen, with **⌨️ Type** (type into it) and **🔘 Keys** (press 1, 2, 3, Enter, Esc, arrows) for a screen Afterhours can't answer.
+- **💬 Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **✍️ Write here**: everything you type goes into that chat until you tap **⬅️ Leave chat**.
 
 **Messages from the bot come with buttons:**
 
@@ -101,22 +102,31 @@ The buttons under the text box:
 | 🔐 Claude wants permission | **✅ Allow**, **❌ Deny**. Denied automatically after 15 minutes. |
 | ❓ Claude asks a question | One button per option, or **✍️ Type an answer**. After 15 minutes Claude decides itself. |
 | 📝 A plan for review | **✅ Approve**, **✏️ Ask for changes** |
-| ⚠️ / ❌ A task paused or failed | **▶️ Go**, **⏭ Skip**, **👀 Peek** |
+| ⏸ A task hit a usage limit | **▶️ Continue now** (try before the reset, e.g. after buying extra usage), **👀 Peek** |
+| ⚠️ / ❌ A task paused or failed | **▶️ Go**, **⏭ Skip**, **👀 Peek**, **⌨️ Type**, **🔘 Keys** |
 | ⚠️ A task's chat is open in VS Code | **🤝 Take over**, **🍴 Continue in a copy**, **⏭ Skip** |
-| ⏸ Your chat in VS Code hit a usage limit | **▶️ Continue after the reset**, **✏️ Follow up…**, **✖️ Ignore** |
-| ✅ A task is done | **➕ Follow up**: the next prompt for the same folder and conversation |
+| ⏸ Your chat in VS Code hit a usage limit | **✖️ Don't continue**, **🤝 Continue here instead**, **✏️ Follow up…** |
+| ✅ A task is done | **➕ Follow up**: the next prompt for the same folder and conversation. A long final answer follows in full (a few messages, or a file). |
 
-Commands in the menu: `/new /queue /status /peek /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), and whether it watches your other chats for usage limits.
+If Telegram can't be reached, messages wait on the Mac and arrive in order once it can.
+
+Commands in the menu: `/new /chats /leave /queue /status /peek /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
 
 ## Continue a VS Code chat from your phone
 
-Two Claude processes can't share one conversation, so there are two ways to carry on a chat you started in VS Code (or in a terminal):
+Your phone sees every chat: **💬 Chats** lists them all, and the same conversation carries on wherever it lives.
 
-- **Hand it to Afterhours.** Afterhours closes the chat in VS Code and continues the *same* conversation on your Mac. It relays permissions and questions to Telegram, waits out usage limits and tells you when it's done. When you're back, reopen the chat from VS Code's Session history: everything it did is there.
-  - **Send a follow-up:** start a card in that folder, tap **💬 Chat…** and pick the chat. Chats open elsewhere get **🤝 Take over**: when the task starts, Afterhours closes the chat there and continues it. If the chat is in the middle of a turn, Afterhours waits for the turn to end. Tap **⏳ Wait instead** to start only once you close it yourself.
-  - **A usage limit hit in VS Code:** within about 30 seconds the bot sends **⏸ Your chat in VS Code hit the 5-hour limit · resets 4:55 AM**. Tap **▶️ Continue after the reset** and Afterhours takes the chat over and sends Claude Code's own "Continue from where you left off." It runs as soon as the limit resets, even if the Mac slept through it (keep it plugged in with the lid open). A chat that was still planning comes back as `review`, so you approve the plan on your phone.
-  - Afterhours only closes a chat after you ask, only while it's idle, and only in a window that was already open when you asked. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
-- **Steer the live chat with Remote Control**, Anthropic's own feature. In VS Code, run `/remote-control` in a chat, or turn on *Enable Remote Control for all sessions* in the command menu's Settings. Then open the chat in the Claude app (**Code** tab) and type into the same VS Code chat from your phone. In Remote Control chats, Claude Code doesn't wait out usage limits by itself, so for those, hand the chat to Afterhours instead.
+- **Write into any chat.** Open it in **💬 Chats** and tap **✍️ Write here**. Then everything you type goes into that conversation, in the order you sent it:
+  - The queue is running it → typed straight in, and Claude reads it when its current step ends.
+  - It's not open anywhere → the queue resumes it with your message.
+  - It's open in VS Code or a terminal → the queue takes it over: closes it there and continues it, so your message counts as yours and permission requests come to your phone. When it's done, the chat opens in VS Code again (if VS Code is running).
+- **A usage limit hit in VS Code continues by itself.** Within about 30 seconds you get **⏸ Your chat in VS Code hit the 5-hour limit · resets 4:55 AM**. At the reset:
+  - If it already runs again (Claude Code continued it, or you did), nothing happens.
+  - If it's still open and waiting, Afterhours tells it to continue through Claude Code's messaging between sessions. VS Code stays live, and you see it carry on there. Claude sees the message as coming from another session working on your behalf.
+  - If it hasn't started 2 minutes later, or the chat was closed, the queue continues it instead.
+  - **✖️ Don't continue** and **🤝 Continue here instead** are on the message. **▶️ Auto-continue** in `/settings` turns it off.
+- **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
+- **Remote Control**, Anthropic's own feature, lets you type into a live VS Code chat from the Claude app. In VS Code, run `/remote-control`, or turn on *Enable Remote Control for all sessions*. Afterhours works alongside it.
 
 ## What happens to a task
 
@@ -174,6 +184,7 @@ The words before the first colon count as options only if every one of them is a
 | `opus` `sonnet` `haiku` `fable` `claude-…` | Model |
 | `low` `med` `high` `xhigh` `max` | Effort |
 | `new` / `now` | Fresh conversation / put the task at the front of the queue |
+| `ask` | A question: Claude reads and answers, changes nothing, no plan |
 | `@<id>` / `take` | Continue that conversation / close it first where it's open |
 | `branch` / `here` | On its own branch / in your checkout |
 | `<alias>` or a path | Project folder |
@@ -209,6 +220,8 @@ The words before the first colon count as options only if every one of them is a
 | `keepAwake` | `true` | Keep the Mac from idle-sleeping while tasks are pending (closing the lid still sleeps it) |
 | `remoteControl` | `false` | Start sessions with `--remote-control` so they also appear in the Claude app |
 | `watchSessions` | `true` | Message you when one of your other chats (VS Code, a terminal) stops on a usage limit |
+| `autoContinueChats` | `true` | And continue it by itself at the reset: inside the open chat, else through the queue |
+| `reopenInVsCode` | `true` | When a task that took a chat from VS Code ends, open the chat there again |
 | `telegram` | set by `cq telegram` | The bot token and your paired account |
 | `aliases`, `trustedDirs` | | Project names for text commands, and folders whose trust prompt Afterhours may accept |
 | `imessage.enabled` | `false` | Text commands over iMessage instead of Telegram (see below) |
@@ -223,7 +236,7 @@ Next to it: `state.db` (queue and history), `folders.json` (the folder map), `lo
 - **The real Claude Code.** Each task runs the unmodified `claude` command in a private tmux session (`tmux -L afterhours`). It starts with `--model`, `--effort` and `--permission-mode`, and follow-ups use `--resume`. Claude Code signs in as it always does on your Mac; Afterhours never sees your credentials.
 - **Hooks for everything else.** Afterhours passes per-session settings with `--settings`, so your own `~/.claude/settings.json` is never touched. These settings add hooks that report to Afterhours on `127.0.0.1`: the end of a turn, usage-limit stops, permission requests and Claude's questions. They also add a status line that carries your limit windows.
 - **Two dialogs answered with keystrokes.** Claude Code doesn't let hooks approve a plan or trust a folder, so Afterhours reads those dialogs and presses the option for the task. It accepts the folder-trust dialog only for folders you've approved: the first time a task runs in a new folder, your phone asks you. A nightly [compatibility check](scripts/compat.ts) runs all of this against the newest Claude Code release.
-- **Your other chats.** To list a folder's chats and spot a usage-limit stop, Afterhours reads Claude Code's own records: running sessions in `~/.claude/sessions` and transcripts in `~/.claude/projects`. Taking a chat over sends that window's Claude process a normal quit signal (SIGTERM), then resumes the conversation with `--resume`.
+- **Your other chats.** To list chats and spot usage-limit stops, Afterhours reads Claude Code's own records: running sessions in `~/.claude/sessions` and transcripts in `~/.claude/projects`. To continue an open chat after a limit, it posts one message into that session's inbox, Claude Code's own messaging between sessions on this Mac. Taking a chat over sends that window's Claude process a normal quit signal (SIGTERM), then resumes the conversation with `--resume`.
 - **Your phone.** Afterhours polls the Telegram Bot API from your Mac. Only the Telegram account you paired can use the bot.
 
 ## Privacy and security
@@ -231,6 +244,7 @@ Next to it: `state.db` (queue and history), `folders.json` (the folder map), `lo
 - Afterhours runs entirely on your Mac and collects nothing.
 - Your prompts go to Anthropic through Claude Code, as they always would. They also go to Telegram, because bot chats aren't end-to-end encrypted: prompts, plans and Claude's summaries pass through Telegram's servers. The same goes for the titles and last prompts of your other chats when **💬 Chat…** lists them or one hits a usage limit; turn the latter off in `/settings`.
 - The background service listens only on `127.0.0.1` and requires a token.
+- Afterhours writes into your other chats only to continue them after a usage limit (when Auto-continue is on), and closes a chat only when you take it over.
 - See [SECURITY.md](SECURITY.md) for the details and how to report a vulnerability.
 
 ## Troubleshooting
