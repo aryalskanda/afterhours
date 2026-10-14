@@ -395,8 +395,83 @@ describe('usage limits', () => {
 
     await h.runner.onHook('UserPromptSubmit', j.id, { permission_mode: 'auto' })
     expect(h.store.getJob(j.id)!.phase).toBe('working')
-    expect(lastNotice(h, 'resumed').how).toBe('fallback')
+    expect(lastNotice(h, 'resumed').how).toBe('afterhours')
     expect(h.runner.limits().blockedUntil).toBeNull()
+    expect(h.logs.some(l => l.includes(`#${j.id}: running again after the usage limit (restarted by Afterhours)`))).toBe(true)
+  })
+
+  test('task #3: reset only in the message, Kathmandu time; nothing until due, then continue, restart, hold', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    // 18:48 in Kathmandu (UTC+5:45) = 13:03 UTC; resets 7:35 PM = 13:50 UTC; continue due at 13:53.
+    const stop = Date.UTC(2026, 9, 14, 13, 3)
+    h.advance(stop - h.now())
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', last_assistant_message: "You've hit your session limit · resets 7:35pm (Asia/Katmandu)" })
+    const reset = Date.UTC(2026, 9, 14, 13, 50)
+    expect(lastNotice(h, 'limit').at).toBe(reset)
+    expect(h.logs.some(l => l.includes('types continue at 2026-10-14T13:53:00.000Z'))).toBe(true)
+    for (let t = 0; t < 49; t++) {
+      h.advance(60_000)
+      await h.runner.tick()
+    }
+    expect(j.window.input).toEqual([]) // 13:52: still waiting
+    h.advance(60_000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual(['Escape', 'text:continue', 'Enter']) // 13:53
+    h.advance(61_000)
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)!.launches).toBe(2) // typing didn't take: restarted with continue
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid })
+    h.advance(121_000)
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'held', holdReason: "couldn't continue after the limit reset" })
+  })
+
+  test('you typing into it ends the wait: the notice says so', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', error_details: 'resets in 1h' })
+    h.advance(61 * 60_000)
+    expect(await h.runner.say('continue')).toBe(`Typed into #${j.id}.`)
+    await h.runner.onHook('UserPromptSubmit', j.id, { permission_mode: 'auto' })
+    expect(lastNotice(h, 'resumed').how).toBe('you')
+  })
+
+  test('continue now: tries right away instead of waiting for the reset', async () => {
+    const h = setup()
+    expect(await h.runner.continueNow()).toBe('Nothing is waiting for a usage limit.')
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', error_details: 'resets in 3h' })
+    await h.runner.tick()
+    expect(j.window.input).toEqual([])
+    expect(await h.runner.go()).toBe(`Trying #${j.id} again now.`)
+    await h.runner.tick()
+    expect(j.window.input).toEqual(['Escape', 'text:continue', 'Enter'])
+  })
+
+  test('continue now with no task waiting lets the next task start before the reset', async () => {
+    const h = setup()
+    h.store.kvSet('limits', { blockedUntil: h.now() + 3_600_000 })
+    h.runner.enqueue(h.spec())
+    await h.runner.tick()
+    expect(h.tmux.windows.size).toBe(0)
+    expect(await h.runner.continueNow()).toBe("The queue won't wait for the reset any more; the next task starts now.")
+    await h.runner.tick()
+    expect(h.tmux.windows.size).toBe(1)
+  })
+
+  test('a supervision pass that hangs is reported in the log', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    let release = () => {}
+    h.tmux.pane = () => new Promise(resolve => (release = () => resolve({ dead: false, deadStatus: null, pid: 1 })))
+    const first = h.runner.tick()
+    h.advance(61_000)
+    await h.runner.tick()
+    expect(h.logs.some(l => l.startsWith('supervision has been stuck for'))).toBe(true)
+    release()
+    await first
+    expect(j.id).toBeGreaterThan(0)
   })
 
   test("Claude Code's own auto-continue clears the limit without typing", async () => {
@@ -405,7 +480,7 @@ describe('usage limits', () => {
     await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', error_details: 'resets in 1h' })
     h.advance(61 * 60_000)
     await h.runner.onHook('Notification', j.id, { notification_type: 'quota_auto_resume_fired' })
-    expect(lastNotice(h, 'resumed').how).toBe('auto')
+    expect(lastNotice(h, 'resumed').how).toBe('claude')
     await h.runner.tick()
     expect(j.window.input).toEqual([])
   })

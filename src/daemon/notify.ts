@@ -24,7 +24,8 @@ export type Notice =
   | { type: 'question'; job: Job; code: string; questions: Question[]; minutes: number }
   | { type: 'trust'; job: Job; code: string }
   | { type: 'limit'; job: Job; at: number | null; window?: string }
-  | { type: 'resumed'; job: Job; how: 'auto' | 'fallback' }
+  /** Running again after a usage limit; `how` = who restarted it. */
+  | { type: 'resumed'; job: Job; how: 'claude' | 'afterhours' | 'you' }
   | { type: 'done'; job: Job; diff: string | null; next: Job | null }
   | { type: 'held'; job: Job; reason: string; screen?: string }
   | { type: 'failed'; job: Job; reason: string; screen?: string }
@@ -87,6 +88,11 @@ export class Notifier {
   }
 }
 
+/** Who restarted a task after a usage limit, in words. */
+export function resumedBy(how: 'claude' | 'afterhours' | 'you'): string {
+  return how === 'claude' ? 'Claude Code continued it' : how === 'afterhours' ? `${BRAND.name} typed continue` : 'you typed into it'
+}
+
 export function permissionDetail(tool: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>
   if (tool === 'Bash' && typeof i.command === 'string') {
@@ -134,10 +140,10 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       )
     case 'limit': {
       const when = n.at ? `resets ${formatClock(n.at, now)}` : 'reset time unknown, retrying every 15m'
-      return `⏸ #${n.job.id} hit the ${windowLabel(n.window)} · ${when} · it will continue on its own`
+      return `⏸ #${n.job.id} hit the ${windowLabel(n.window)} · ${when} · it will continue on its own (reply go to try now)`
     }
     case 'resumed':
-      return `▶️ #${n.job.id} continued after the limit reset${n.how === 'fallback' ? ` (${BRAND.name} typed continue)` : ''}`
+      return `▶️ #${n.job.id} continued after the limit reset (${resumedBy(n.how)})`
     case 'done': {
       const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? now) - n.job.startedAt)}` : ''
       const diff = n.diff ? `\n${n.diff}` : ''

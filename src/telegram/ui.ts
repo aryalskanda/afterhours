@@ -5,7 +5,7 @@ import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration, modeLabel } from '../daemon/format'
 import { formatClock, windowLabel } from '../daemon/limits'
-import type { Notice, Question } from '../daemon/notify'
+import { resumedBy, type Notice, type Question } from '../daemon/notify'
 import type { InlineButton, InlineKeyboard, ReplyKeyboard } from './api'
 import type { Draft } from './state'
 
@@ -358,10 +358,13 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       }
     case 'limit': {
       const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : "reset time unknown; retrying every 15 minutes"
-      return { html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own` }
+      return {
+        html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own`,
+        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), btn('👀 Peek', `j:${n.job.id}:peek`)]],
+      }
     }
     case 'resumed':
-      return { html: `▶️ <b>#${n.job.id}</b> continued after the limit reset${n.how === 'fallback' ? ` (${BRAND.name} typed continue)` : ''}` }
+      return { html: `▶️ <b>#${n.job.id}</b> continued after the limit reset (${esc(resumedBy(n.how))})` }
     case 'done': {
       const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? ctx.now) - n.job.startedAt)}` : ''
       const next = n.next ? `Next: #${n.next.id} · ${jobHeader(n.next, ctx)}` : 'Queue empty.'

@@ -91,6 +91,8 @@ interface Runtime {
   background?: { since: number; bounded: boolean }
   finishing?: { since: number; exitSentAt?: number }
   promptSeenAt?: number
+  /** When you last typed or pressed keys into the session (say, keys), to tell who ended a limit wait. */
+  saidAt?: number
 }
 
 const NUDGE =
@@ -133,6 +135,8 @@ export class Runner {
   private waiters = new Map<string, (r: Resolution) => void>()
   private limitNotified = new Set<number>()
   private ticking = false
+  private tickStartedAt = 0
+  private stallLoggedAt = 0
 
   constructor(private d: RunnerDeps) {}
 
@@ -174,8 +178,17 @@ export class Runner {
   // --- main loop ----------------------------------------------------------------
 
   async tick(): Promise<void> {
-    if (this.ticking) return
+    if (this.ticking) {
+      // One supervision pass at a time; one that hangs would stop limit restarts, so say so.
+      const now = this.d.now()
+      if (now - this.tickStartedAt > 60_000 && now - this.stallLoggedAt > 60_000) {
+        this.stallLoggedAt = now
+        this.d.log(`supervision has been stuck for ${duration(now - this.tickStartedAt)}`)
+      }
+      return
+    }
     this.ticking = true
+    this.tickStartedAt = this.d.now()
     try {
       const job = this.d.store.active()
       if (job) await this.supervise(job)
@@ -571,11 +584,13 @@ export class Runner {
     if (limit.stage === 0) {
       // Claude Code's own auto-continue should have fired at the reset. It didn't, so type it.
       // Esc first closes any limit menu; the pause stops the terminal reading Esc+"c" as Alt-c.
+      this.d.log(`#${job.id}: ${limit.force ? 'continuing now as you asked' : "the limit has reset and Claude Code hasn't continued"}; typing continue`)
       await this.d.tmux.sendKeys(rt.window, 'Escape')
       await Bun.sleep(ESC_SETTLE_MS)
       await this.typeLine(rt.window, 'continue')
       limit.stage = 1
       limit.sentAt = now
+      limit.force = false
       this.d.log(`#${job.id}: typed continue after the limit reset`)
       return
     }
@@ -588,12 +603,17 @@ export class Runner {
       return
     }
     if (limit.stage === 2 && now - (limit.sentAt ?? now) > 120_000) {
+      this.d.log(`#${job.id}: the restarted session didn't continue either; holding it for you`)
       this.hold(job, "couldn't continue after the limit reset", tail(await this.d.tmux.capture(rt.window, 60), 15))
     }
   }
 
-  private limitCleared(job: Job, rt: Runtime): void {
-    const how = rt.limit && rt.limit.stage > 0 ? 'fallback' : 'auto'
+  /** The task runs again after a usage limit. `how` = who restarted it, for the notice and the log. */
+  private limitCleared(job: Job, rt: Runtime, by?: 'claude'): void {
+    const now = this.d.now()
+    const how: 'claude' | 'afterhours' | 'you' =
+      by ?? (rt.limit && rt.limit.stage > 0 ? 'afterhours' : rt.saidAt && now - rt.saidAt < 60_000 ? 'you' : 'claude')
+    this.d.log(`#${job.id}: running again after the usage limit (restarted by ${how === 'claude' ? 'Claude Code' : how === 'afterhours' ? BRAND.name : 'you'})`)
     rt.limit = undefined
     this.limitNotified.delete(job.id)
     this.d.store.updateJob(job.id, { phase: job.plan && !job.planApproved ? 'planning' : 'working' })
@@ -792,6 +812,11 @@ export class Runner {
     if (error === 'rate_limit') {
       const pick = pickResetTime(this.limits(), text, now)
       rt.limit = { at: pick.at, window: pick.window, since: now, stage: 0 }
+      const due = (pick.at ?? now + 15 * 60_000) + this.d.config().timeouts.limitGraceSec * 1000
+      this.d.log(
+        `#${job.id}: usage limit (${pick.window ?? 'window unknown'}), resets ${pick.at ? new Date(pick.at).toISOString() : 'at an unknown time'} ` +
+          `(from the ${pick.source}); ${BRAND.name} types continue at ${new Date(due).toISOString()} unless Claude Code continues first`,
+      )
       this.d.store.updateJob(job.id, { phase: 'limited' })
       this.saveLimits({ ...this.limits(), blockedUntil: pick.at ?? now + 15 * 60_000 })
       if (!this.limitNotified.has(job.id)) {
@@ -817,7 +842,7 @@ export class Runner {
     const now = this.d.now()
     switch (payload.notification_type) {
       case 'quota_auto_resume_fired':
-        if (job.phase === 'limited') this.limitCleared(job, rt)
+        if (job.phase === 'limited') this.limitCleared(job, rt, 'claude')
         break
       case 'quota_auto_resume_stale':
       case 'quota_auto_resume_disabled':
@@ -892,6 +917,7 @@ export class Runner {
   async go(): Promise<string> {
     const job = this.d.store.active()
     if (job?.status === 'held') return this.resumeHeld(job)
+    if (job?.phase === 'limited') return this.continueNow()
     if (this.paused) {
       this.setPaused(false)
       return job ? 'Queue resumed.' : 'Queue resumed; starting the next job.'
@@ -928,6 +954,28 @@ export class Runner {
     }
     await this.relaunch(job, job.transcriptPath ? 'continue' : undefined)
     return `Restarted #${job.id}.`
+  }
+
+  /**
+   * ▶️ Continue now on a usage-limit stop: try right away instead of waiting for the reset
+   * (extra usage bought, or a reset time that was wrong). If it's still limited, the wait starts again.
+   */
+  async continueNow(): Promise<string> {
+    const job = this.d.store.active()
+    if (job?.phase === 'limited' && job.status === 'running') {
+      const rt = this.runtime(job)
+      rt.limit ??= { at: this.limits().blockedUntil ?? null, since: this.d.now(), stage: 0 }
+      rt.limit.force = true
+      if (rt.limit.stage > 0) rt.limit.stage = 0
+      this.d.log(`#${job.id}: asked to continue now`)
+      return `Trying #${job.id} again now.`
+    }
+    const until = this.limits().blockedUntil
+    if (until && until > this.d.now()) {
+      this.saveLimits({ ...this.limits(), blockedUntil: null })
+      return "The queue won't wait for the reset any more; the next task starts now."
+    }
+    return 'Nothing is waiting for a usage limit.'
   }
 
   async stop(): Promise<string> {
@@ -1010,7 +1058,8 @@ export class Runner {
     if (!pane || pane.dead) return `#${job.id} has no live session; reply go to restart it.`
     await this.typeLine(windowName(job.id), text)
     if (job.status === 'held' && job.holdReason !== 'conflict') this.d.store.updateJob(job.id, { status: 'running', holdReason: null })
-    this.runtime(job).lastActivity = this.d.now()
+    const rt = this.runtime(job)
+    rt.lastActivity = rt.saidAt = this.d.now()
     return `Typed into #${job.id}.`
   }
 
@@ -1024,6 +1073,7 @@ export class Runner {
       await this.d.tmux.sendKeys(windowName(job.id), key)
       if (key === 'Escape') await Bun.sleep(ESC_SETTLE_MS)
     }
+    this.runtime(job).saidAt = this.d.now()
     return `Pressed ${names.join(' ')} in #${job.id}.`
   }
 

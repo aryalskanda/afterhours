@@ -33,6 +33,8 @@ export class Tmux implements TmuxDriver {
     readonly socket: string,
     readonly conf: string,
     readonly env: Record<string, string>,
+    /** A tmux command that never returns would stall all supervision (usage-limit restarts included). */
+    readonly timeoutMs = 10_000,
   ) {}
 
   private async run(args: string[]): Promise<{ code: number; out: string; err: string }> {
@@ -42,12 +44,21 @@ export class Tmux implements TmuxDriver {
       stdout: 'pipe',
       stderr: 'pipe',
     })
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ])
-    return { code, out, err }
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      proc.kill('SIGKILL')
+    }, this.timeoutMs)
+    try {
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ])
+      return timedOut ? { code: -1, out: '', err: `timed out after ${this.timeoutMs / 1000}s` } : { code, out, err }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   private async must(args: string[]): Promise<string> {

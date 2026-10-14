@@ -739,6 +739,8 @@ export class TelegramBridge {
         return active ? this.o.runner.stop() : `#${id} isn't running.`
       case 'go':
         return active ? this.o.runner.go() : `#${id} isn't the current job.`
+      case 'now':
+        return active ? this.o.runner.continueNow() : `#${id} isn't waiting for a usage limit any more.`
       case 'fork':
         return active ? this.o.runner.fork() : `#${id} isn't waiting any more.`
       case 'take':
