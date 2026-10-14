@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.3
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - name: Build the binary and the launcher
+        run: |
+          bun build src/cli/cq.ts --compile --outfile dist/cq
+          clang -O2 -Wall -Werror -o dist/cq-launcher bin/cq-launcher.c
+          dist/cq version

@@ -1,0 +1,247 @@
+import { randomBytes } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { BRAND } from './brand'
+import type { Effort, ExecMode } from './types'
+
+export const CQ_HOME = resolve(process.env.CQ_HOME ?? join(homedir(), BRAND.homeDir))
+
+export const paths = {
+  home: CQ_HOME,
+  config: join(CQ_HOME, 'config.json'),
+  token: join(CQ_HOME, 'token'),
+  db: join(CQ_HOME, 'state.db'),
+  logs: join(CQ_HOME, 'logs'),
+  log: join(CQ_HOME, 'logs', 'cqd.log'),
+  jobs: join(CQ_HOME, 'jobs'),
+  bin: join(CQ_HOME, 'bin'),
+  binary: join(CQ_HOME, 'bin', 'cq'),
+  hookScript: join(CQ_HOME, 'bin', 'cq-hook'),
+  statusScript: join(CQ_HOME, 'bin', 'cq-statusline'),
+  tmuxConf: join(CQ_HOME, 'tmux.conf'),
+}
+
+export const TMUX_SOCKET = process.env.CQ_TMUX_SOCKET ?? BRAND.slug
+export const TMUX_SESSION = BRAND.slug
+export const LAUNCH_AGENT_LABEL = BRAND.agentLabel
+
+export interface Defaults {
+  project?: string
+  plan: boolean
+  review: boolean
+  execMode: ExecMode
+  model: string
+  effort: Effort
+}
+
+export interface Config {
+  port: number
+  defaults: Defaults
+  /** Short names for project folders, e.g. { myapp: "/Users/me/code/myapp" }. */
+  aliases: Record<string, string>
+  /** Folders whose Claude Code "trust this folder?" prompt cq may accept on your behalf. */
+  trustedDirs: string[]
+  /** Run each new conversation on its own git branch (a worktree), so your checkout is never touched. */
+  isolate: boolean
+  notify: 'all' | 'important' | 'off'
+  imessage: { enabled: boolean; allowSms: boolean }
+  timeouts: {
+    /** How long a permission request waits for your iMessage reply before it is denied. */
+    approvalSec: number
+    /** How long one of Claude's questions waits for your answer. */
+    questionSec: number
+    /** How long a `review` plan waits for your approval. */
+    reviewSec: number
+    /** No activity for this long while the session is idle means the job is stuck. */
+    stuckSec: number
+    /** Extra wait after a limit reset before cq types `continue` itself. */
+    limitGraceSec: number
+    /** A launch that hasn't produced its first event by then is stuck on a screen. */
+    launchSec: number
+    /**
+     * After Claude's turn ends with background commands still running, how long to wait for
+     * them before calling the job done (a dev server never finishes).
+     */
+    backgroundSec: number
+  }
+  /** The Telegram bot you control cq from. Set up with `cq telegram <token>`. */
+  telegram: { enabled: boolean; token: string | null; ownerId: number | null; ownerName: string | null }
+  /** The folder map the Telegram folder browser and search use. */
+  folders: { roots: string[]; maxDepth: number }
+  /** Models offered as buttons. */
+  models: string[]
+  /** Start queue sessions with --remote-control so they show up in the Claude app. */
+  remoteControl: boolean
+  /** Tell you when one of your other Claude Code chats (VS Code, a terminal) stops on a usage limit. */
+  watchSessions: boolean
+  /** Hold a `caffeinate -i` assertion while jobs are pending. */
+  keepAwake: boolean
+  claudePath?: string
+  tmuxPath?: string
+}
+
+export const DEFAULT_CONFIG: Config = {
+  port: 7787,
+  defaults: { plan: true, review: false, execMode: 'auto', model: 'sonnet', effort: 'high' },
+  aliases: {},
+  trustedDirs: [],
+  isolate: true,
+  notify: 'all',
+  imessage: { enabled: false, allowSms: false },
+  timeouts: {
+    approvalSec: 900,
+    questionSec: 900,
+    reviewSec: 3600,
+    stuckSec: 1200,
+    limitGraceSec: 180,
+    launchSec: 90,
+    backgroundSec: 600,
+  },
+  telegram: { enabled: false, token: null, ownerId: null, ownerName: null },
+  // Empty means "detect": see codeRoots(). `cq setup` asks.
+  folders: { roots: [], maxDepth: 6 },
+  models: ['opus', 'sonnet', 'haiku'],
+  remoteControl: false,
+  watchSessions: true,
+  keepAwake: true,
+}
+
+export function ensureHome(): void {
+  for (const dir of [paths.home, paths.logs, paths.jobs, paths.bin]) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+  }
+}
+
+export function loadConfig(): Config {
+  let raw: Partial<Config> = {}
+  try {
+    raw = JSON.parse(readFileSync(paths.config, 'utf8')) as Partial<Config>
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`cannot parse ${paths.config}: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+  return {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    defaults: { ...DEFAULT_CONFIG.defaults, ...raw.defaults },
+    aliases: { ...raw.aliases },
+    trustedDirs: [...(raw.trustedDirs ?? [])],
+    imessage: { ...DEFAULT_CONFIG.imessage, ...raw.imessage },
+    timeouts: { ...DEFAULT_CONFIG.timeouts, ...raw.timeouts },
+    telegram: { ...DEFAULT_CONFIG.telegram, ...raw.telegram },
+    folders: { ...DEFAULT_CONFIG.folders, ...raw.folders, roots: [...(raw.folders?.roots ?? DEFAULT_CONFIG.folders.roots)] },
+    models: [...(raw.models ?? DEFAULT_CONFIG.models)],
+  }
+}
+
+/** "~/x" → "/Users/me/x". */
+export function expandHome(path: string): string {
+  return path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path
+}
+
+/** Where people usually keep code, in the order `cq setup` suggests them. */
+export const COMMON_CODE_FOLDERS = [
+  '~/Documents/Programming',
+  '~/Developer',
+  '~/code',
+  '~/Code',
+  '~/Projects',
+  '~/projects',
+  '~/dev',
+  '~/src',
+  '~/repos',
+  '~/workspace',
+  '~/git',
+  '~/Documents/GitHub',
+  '~/Documents/Projects',
+]
+
+export function detectCodeFolders(): string[] {
+  const seen = new Set<string>()
+  return COMMON_CODE_FOLDERS.map(expandHome).filter(p => {
+    if (seen.has(p.toLowerCase()) || !existsSync(p)) return false
+    seen.add(p.toLowerCase())
+    return true
+  })
+}
+
+/** The folders the folder browser and search cover: configured, else detected, else home. */
+export function codeRoots(config: Config): string[] {
+  const configured = config.folders.roots.map(expandHome).filter(p => existsSync(p))
+  if (configured.length > 0) return configured
+  const detected = detectCodeFolders()
+  return detected.length > 0 ? detected.slice(0, 3) : [homedir()]
+}
+
+export function saveConfig(config: Config): void {
+  writeFileAtomic(paths.config, JSON.stringify(config, null, 2) + '\n', 0o600)
+}
+
+export function readToken(): string | null {
+  try {
+    return readFileSync(paths.token, 'utf8').trim() || null
+  } catch {
+    return null
+  }
+}
+
+export function ensureToken(): string {
+  const existing = readToken()
+  if (existing) return existing
+  const token = randomBytes(24).toString('hex')
+  writeFileAtomic(paths.token, token + '\n', 0o600)
+  return token
+}
+
+export function writeFileAtomic(path: string, text: string, mode = 0o644): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, text, { mode })
+  renameSync(tmp, path)
+  chmodSync(path, mode)
+}
+
+/** PATH for the daemon and the sessions it starts: Claude, Homebrew and the system dirs first. */
+export function searchPath(): string {
+  const home = homedir()
+  const fixed = [
+    join(home, '.local', 'bin'),
+    join(home, '.bun', 'bin'),
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ]
+  const inherited = (process.env.PATH ?? '').split(':').filter(Boolean)
+  return [...new Set([...fixed, ...inherited])].join(':')
+}
+
+/**
+ * Environment for tmux and the Claude sessions inside it. Built from an allowlist so that
+ * variables from the shell that launched cq (VS Code, another Claude session) never leak in:
+ * Claude Code treats CLAUDECODE / CLAUDE_CODE_* as "you are nested inside another session".
+ */
+export function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const keep = ['HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SSH_AUTH_SOCK', '__CF_USER_TEXT_ENCODING']
+  const env: Record<string, string> = {}
+  for (const key of keep) {
+    const value = process.env[key]
+    if (value) env[key] = value
+  }
+  env.HOME ??= homedir()
+  env.LANG ??= 'en_US.UTF-8'
+  env.SHELL ??= '/bin/zsh'
+  env.PATH = searchPath()
+  env.TERM = 'xterm-256color'
+  return { ...env, ...extra }
+}
+
+export function findExecutable(name: string, configured?: string): string | null {
+  if (configured && existsSync(configured)) return configured
+  return Bun.which(name, { PATH: searchPath() })
+}

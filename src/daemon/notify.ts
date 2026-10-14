@@ -1,0 +1,178 @@
+import { BRAND } from '../shared/brand'
+import type { Job } from '../shared/types'
+import { duration, excerpt, jobLine, oneLine, projectLabel } from './format'
+import { formatClock, windowLabel } from './limits'
+import type { Conversation } from './sessions'
+
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+export interface Question {
+  question: string
+  header?: string
+  options?: QuestionOption[]
+  multiSelect?: boolean
+}
+
+export type Notice =
+  | { type: 'started'; job: Job }
+  | { type: 'plan_approved'; job: Job; choice: string }
+  | { type: 'plan_review'; job: Job; code: string }
+  | { type: 'permission'; job: Job; code: string; tool: string; detail: string; minutes: number }
+  | { type: 'question'; job: Job; code: string; questions: Question[]; minutes: number }
+  | { type: 'trust'; job: Job; code: string }
+  | { type: 'limit'; job: Job; at: number | null; window?: string }
+  | { type: 'resumed'; job: Job; how: 'auto' | 'fallback' }
+  | { type: 'done'; job: Job; diff: string | null; next: Job | null }
+  | { type: 'held'; job: Job; reason: string; screen?: string }
+  | { type: 'failed'; job: Job; reason: string; screen?: string }
+  /**
+   * The job's conversation is open in another Claude window. `open`: it waits for you to close it
+   * (or take it over); `waiting`: you asked to take it over, once that window finishes its turn;
+   * `stuck`: it was asked to close and didn't.
+   */
+  | { type: 'conflict'; job: Job; holder: string; where: string; busy: boolean; state: 'open' | 'waiting' | 'stuck' }
+  | { type: 'took_over'; job: Job; where: string }
+  /** One of your other chats (VS Code, a terminal) stopped on a usage limit. */
+  | { type: 'session_limit'; chat: Conversation; where: string; at: number | null; window?: string }
+  | { type: 'empty' }
+
+const IMPORTANT = new Set<Notice['type']>([
+  'plan_review',
+  'permission',
+  'question',
+  'trust',
+  'limit',
+  'done',
+  'held',
+  'failed',
+  'conflict',
+  'took_over',
+  'session_limit',
+  'empty',
+])
+
+export type NotifyLevel = 'all' | 'important' | 'off'
+/** Gets the plain-text version and the notice itself (Telegram draws its own buttons from it). */
+export type Sink = (text: string, notice: Notice) => void | Promise<void>
+
+export interface NotifierOptions {
+  level: () => NotifyLevel
+  aliases: () => Record<string, string>
+  now: () => number
+  log: (line: string) => void
+}
+
+export class Notifier {
+  private sinks: Sink[] = []
+
+  constructor(private o: NotifierOptions) {}
+
+  addSink(sink: Sink): void {
+    this.sinks.push(sink)
+  }
+
+  send(notice: Notice): void {
+    const text = formatNotice(notice, this.o.aliases(), this.o.now())
+    this.o.log(`notice ${notice.type}: ${text.replace(/\n/g, ' ⏎ ')}`)
+    const level = this.o.level()
+    if (level === 'off' || (level === 'important' && !IMPORTANT.has(notice.type))) return
+    for (const sink of this.sinks) {
+      Promise.resolve()
+        .then(() => sink(text, notice))
+        .catch(err => this.o.log(`notify sink failed: ${err}`))
+    }
+  }
+}
+
+export function permissionDetail(tool: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>
+  if (tool === 'Bash' && typeof i.command === 'string') {
+    return typeof i.description === 'string' ? `${i.command}\n(${i.description})` : i.command
+  }
+  if (typeof i.file_path === 'string') return i.file_path
+  if (typeof i.url === 'string') return i.url
+  return JSON.stringify(i)
+}
+
+function formatQuestions(questions: Question[]): string {
+  return questions
+    .map((q, qi) => {
+      const opts = (q.options ?? []).map((o, oi) => `${String.fromCharCode(97 + oi)}) ${o.label}`).join('  ')
+      return `${qi + 1}. ${q.question}${opts ? `\n   ${opts}` : ''}`
+    })
+    .join('\n')
+}
+
+export function formatNotice(n: Notice, aliases: Record<string, string>, now: number): string {
+  switch (n.type) {
+    case 'started':
+      return `▶️ ${jobLine(n.job, aliases)}\n“${oneLine(n.job.prompt, 140)}”`
+    case 'plan_approved':
+      return `📝 #${n.job.id} plan approved (${n.choice}):\n${excerpt(n.job.planText, 700)}`
+    case 'plan_review':
+      return (
+        `📝 #${n.job.id} plan ready for review:\n${excerpt(n.job.planText, 1500)}\n\n` +
+        `Reply y ${n.code} to approve, or n ${n.code} <what to change>`
+      )
+    case 'permission':
+      return (
+        `🔐 #${n.job.id} wants to use ${n.tool}:\n${excerpt(n.detail, 400)}\n` +
+        `Reply y ${n.code} or n ${n.code} (denied automatically in ${n.minutes}m)`
+      )
+    case 'question':
+      return (
+        `❓ #${n.job.id} asks:\n${formatQuestions(n.questions)}\n` +
+        `Reply a ${n.code} <answer>, e.g. a ${n.code} 1a (Claude decides itself in ${n.minutes}m)`
+      )
+    case 'trust':
+      return (
+        `🔐 #${n.job.id} is the first Claude Code run in ${n.job.projectDir}.\n` +
+        `Claude asks whether to trust this folder. Reply y ${n.code} to trust it, or n ${n.code} to cancel the job.`
+      )
+    case 'limit': {
+      const when = n.at ? `resets ${formatClock(n.at, now)}` : 'reset time unknown, retrying every 15m'
+      return `⏸ #${n.job.id} hit the ${windowLabel(n.window)} · ${when} · it will continue on its own`
+    }
+    case 'resumed':
+      return `▶️ #${n.job.id} continued after the limit reset${n.how === 'fallback' ? ` (${BRAND.name} typed continue)` : ''}`
+    case 'done': {
+      const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? now) - n.job.startedAt)}` : ''
+      const diff = n.diff ? `\n${n.diff}` : ''
+      const branch = n.job.branch ? `\n🌿 On branch ${n.job.branch} (git merge ${n.job.branch})` : ''
+      const last = n.job.lastMessage ? `\n${excerpt(n.job.lastMessage, 500)}` : ''
+      const next = n.next ? `\nNext: ${jobLine(n.next, aliases)}` : '\nQueue empty.'
+      return `✅ #${n.job.id} done${took} · ${projectLabel(n.job.projectDir, aliases)}${diff}${branch}${last}${next}`
+    }
+    case 'held':
+      return (
+        `⚠️ #${n.job.id} paused: ${n.reason}${n.screen ? `\n---\n${n.screen}\n---` : ''}\n` +
+        `Reply go to retry, skip to drop it, peek to look, or keys <keys> to press keys.`
+      )
+    case 'failed':
+      return `❌ #${n.job.id} failed: ${n.reason}${n.screen ? `\n---\n${n.screen}\n---` : ''}\nReply go to retry or skip to move on.`
+    case 'conflict':
+      if (n.state === 'waiting') {
+        return `⏳ #${n.job.id} waits for its conversation to finish its turn in ${n.where} (${n.holder}), then takes it over.`
+      }
+      return (
+        `⚠️ #${n.job.id} is waiting: its conversation is open in ${n.where} (${n.holder})` +
+        `${n.state === 'stuck' ? " and didn't close when asked" : n.busy ? ' and working' : ''}.\n` +
+        `It starts by itself once you close it there. Reply take to close it there and continue here, or fork to continue in a copy.`
+      )
+    case 'took_over':
+      return `🤝 #${n.job.id} took its conversation over from ${n.where} (closed it there). Reopen it there later to see everything.`
+    case 'session_limit': {
+      const when = n.at ? ` · resets ${formatClock(n.at, now)}` : ''
+      const where = n.chat.cwd ? ` (${projectLabel(n.chat.cwd, aliases)})` : ''
+      return (
+        `⏸ Your chat “${oneLine(n.chat.title, 80)}”${where} in ${n.where} hit the ${windowLabel(n.window)}${when}.\n` +
+        `Reply q @${n.chat.sessionId.slice(0, 8)} take: continue to continue it here after the reset.`
+      )
+    }
+    case 'empty':
+      return '🏁 Queue empty.'
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "afterhours",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Queue Claude Code tasks from your phone; they run on your Mac while you're away",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "cq": "src/cli/cq.ts"
+  },
+  "scripts": {
+    "daemon": "bun src/cli/cq.ts daemon",
+    "cq": "bun src/cli/cq.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "compat": "bun scripts/compat.ts",
+    "build": "bun build src/cli/cq.ts --compile --outfile dist/cq"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.3",
+    "typescript": "^5.9.0"
+  }
+}
