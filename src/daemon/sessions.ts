@@ -2,7 +2,7 @@ import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, st
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
-const CLAUDE_DIR = process.env.CQ_CLAUDE_DIR ?? join(homedir(), '.claude')
+export const CLAUDE_DIR = process.env.CQ_CLAUDE_DIR ?? join(homedir(), '.claude')
 const CLAUDE_JSON = process.env.CQ_CLAUDE_JSON ?? join(homedir(), '.claude.json')
 
 /** An entry from ~/.claude/sessions/<pid>.json: every live Claude Code process, VS Code ones included. */
@@ -16,6 +16,8 @@ export interface LiveSession {
   name?: string
   /** When the process started (ms). */
   startedAt?: number
+  /** Its inbox socket, where other processes on this Mac can post messages (cross-session messaging). */
+  messagingSocketPath?: string
 }
 
 function alive(pid: number): boolean {
