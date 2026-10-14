@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
 import type { Job, JobSpec } from '../shared/types'
-import { continueSpec, type ChatSource } from '../daemon/chats'
+import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
 import { parseQueueText, runCommand, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { formatClock } from '../daemon/limits'
@@ -35,6 +35,13 @@ type Pending =
   | { kind: 'answer'; code: string }
   | { kind: 'changes'; code: string }
   | { kind: 'followup'; jobId: number }
+  | { kind: 'say' }
+
+/** The chat you're inside (💬 Chats → ✍️ Write here): what you type goes into it. */
+interface Focus {
+  sessionId: string
+  title: string
+}
 
 export interface TelegramStatus {
   ok: boolean
@@ -47,6 +54,8 @@ export interface TelegramStatus {
 
 const COMMANDS = [
   { command: 'new', description: 'Pick a folder, then send the prompt' },
+  { command: 'chats', description: 'Your recent chats, from any project' },
+  { command: 'leave', description: 'Leave the chat you are in' },
   { command: 'queue', description: 'Waiting and running jobs' },
   { command: 'status', description: 'Current job and usage limits' },
   { command: 'peek', description: "The running job's screen" },
@@ -71,6 +80,23 @@ const WORDS: Record<string, string> = {
 }
 
 const PENDING_TTL = 30 * 60_000
+/** Room for one message part once escaped (Telegram allows 4,096 characters). */
+const LONG_PART = 3500
+const LONG_PARTS = 3
+
+/** Splits text into parts of at most `max` characters, at paragraph, then line, then word breaks. */
+export function splitText(text: string, max: number): string[] {
+  const parts: string[] = []
+  let rest = text.trim()
+  while (rest.length > max) {
+    const window = rest.slice(0, max)
+    const cut = [window.lastIndexOf('\n\n'), window.lastIndexOf('\n'), window.lastIndexOf(' ')].find(i => i > max / 2) ?? max
+    parts.push(rest.slice(0, cut).trimEnd())
+    rest = rest.slice(cut).trimStart()
+  }
+  if (rest) parts.push(rest)
+  return parts
+}
 const MAX_PAIR_ATTEMPTS = 5
 
 function errorText(err: unknown): string {
@@ -150,6 +176,7 @@ export class TelegramBridge {
         const updates = await this.o.api.getUpdates(offset, 50, this.abort.signal)
         this.error = null
         backoff = 1000
+        await this.flushOutbox()
         for (const update of updates) {
           this.o.store.kvSet('telegram.offset', update.update_id + 1)
           await this.handle(update).catch(err => this.o.log(`telegram: update failed: ${errorText(err)}`))
@@ -193,6 +220,21 @@ export class TelegramBridge {
     return this.send(chat, { html: ui.esc(text) })
   }
 
+  /**
+   * Sends text that may be long, all of it: as it is up to one message, split into a few messages
+   * up to about 10,500 characters, and as a Markdown file beyond that.
+   */
+  private async sendLong(chat: number, text: string, filename: string): Promise<void> {
+    const parts = splitText(text, LONG_PART)
+    if (parts.length <= LONG_PARTS) {
+      for (const [i, part] of parts.entries()) {
+        await this.send(chat, { html: `${parts.length > 1 ? `<i>(${i + 1}/${parts.length})</i>\n` : ''}${ui.esc(part)}` })
+      }
+      return
+    }
+    await this.o.api.sendDocument(chat, `${filename}.md`, text, `The full text (${text.length.toLocaleString('en-US')} characters)`)
+  }
+
   /** Adds a closing line to a message and removes its buttons. */
   private async settle(chat: number, message: TgMessage | undefined, line: string): Promise<void> {
     if (!message) return
@@ -205,7 +247,44 @@ export class TelegramBridge {
   async notify(notice: Notice): Promise<void> {
     const chat = this.owner
     if (chat === null || !this.running) return
-    await this.send(chat, ui.noticeView(notice, { ...this.uiContext(), now: this.o.now() }))
+    if (!(await this.deliver(chat, ui.noticeView(notice, { ...this.uiContext(), now: this.o.now() })))) return
+    if (notice.type === 'done' && ui.longReply(notice.job.lastMessage)) {
+      await this.sendLong(chat, notice.job.lastMessage!, `reply-${notice.job.id}`).catch(err =>
+        this.o.log(`telegram: couldn't send #${notice.job.id}'s full answer: ${errorText(err)}`),
+      )
+    }
+  }
+
+  /**
+   * Sends a notice, or keeps it to send later when Telegram can't be reached (and behind any already
+   * kept, so they arrive in order). Returns whether it went out now.
+   */
+  private async deliver(chat: number, view: ui.View): Promise<boolean> {
+    if (this.state.outbox().length === 0) {
+      try {
+        await this.send(chat, view)
+        return true
+      } catch (err) {
+        this.o.log(`telegram: couldn't send a notice (${errorText(err)}); keeping it to send later`)
+      }
+    }
+    this.state.addOutbox(view.html, view.keyboard, this.o.now())
+    return false
+  }
+
+  /** Sends what was kept while Telegram was unreachable, oldest first; drops what's a day old. */
+  async flushOutbox(): Promise<void> {
+    const chat = this.owner
+    if (chat === null) return
+    this.state.pruneOutbox(this.o.now() - 24 * 60 * 60_000)
+    for (const item of this.state.outbox()) {
+      try {
+        await this.send(chat, { html: item.html, keyboard: item.keyboard as ui.View['keyboard'] })
+      } catch {
+        return
+      }
+      this.state.deleteOutbox(item.id)
+    }
   }
 
   // --- context ---------------------------------------------------------------------
@@ -267,14 +346,23 @@ export class TelegramBridge {
     if (m.from.id !== this.owner || !text) return // only you; strangers get no reply
     const chat = m.chat.id
 
-    if (text === ui.KEYS.newTask) return this.newTask(chat)
+    if (text === ui.KEYS.newTask) {
+      await this.leaveChat(chat, true)
+      return this.newTask(chat)
+    }
     if (text === ui.KEYS.queue) return this.showQueue(chat)
     if (text === ui.KEYS.status) return this.showStatus(chat)
     if (text === ui.KEYS.peek) return this.showPeek(chat)
+    if (text === ui.KEYS.chats) return this.showChats(chat, 0)
+    if (text === ui.KEYS.leave) return this.leaveChat(chat)
     if (text.startsWith('/')) return this.onCommand(chat, text)
 
     const pending = this.takePending()
     if (pending) return this.onPendingText(chat, pending, text)
+
+    // Inside a chat, everything you type goes there.
+    const focus = this.focus()
+    if (focus) return this.sendToChat(chat, focus, text)
 
     const word = WORDS[text.toLowerCase()]
     if (word) return this.onCommand(chat, `/${word}`)
@@ -312,7 +400,12 @@ export class TelegramBridge {
         await this.send(chat, { html: ui.HELP_HTML }, ui.MAIN_KEYBOARD)
         return
       case 'new':
+        await this.leaveChat(chat, true)
         return this.newTask(chat)
+      case 'chats':
+        return this.showChats(chat, 0)
+      case 'leave':
+        return this.leaveChat(chat)
       case 'queue':
         return this.showQueue(chat)
       case 'status':
@@ -365,12 +458,17 @@ export class TelegramBridge {
       case 'followup': {
         const job = this.o.store.getJob(p.jobId)
         if (!job?.sessionId) return this.newDraft(chat, text)
+        // Open in VS Code or a terminal since: continuing it from here means taking it over.
+        const open = this.o.chats.get(job.sessionId)?.where != null
         const draft = this.state.addDraft(
-          { ...this.choices(), folder: job.projectDir, prompt: text, sessionId: job.sessionId, followJob: job.id },
+          { ...this.choices(), folder: job.projectDir, prompt: text, sessionId: job.sessionId, followJob: job.id, takeover: open },
           this.o.now(),
         )
         return this.showDraft(chat, draft)
       }
+      case 'say':
+        await this.sendText(chat, await this.o.runner.say(text))
+        return
     }
   }
 
@@ -486,6 +584,9 @@ export class TelegramBridge {
           break
         case 'w':
           toast = await this.onChatButton(chat, q.message, parts[0]!, parts[1]!)
+          break
+        case 'c':
+          toast = await this.onChatsButton(chat, q.message, parts[0]!, parts[1])
           break
       }
     } catch (err) {
@@ -775,6 +876,91 @@ export class TelegramBridge {
     return reply
   }
 
+  // --- your chats -------------------------------------------------------------------
+
+  private focus(): Focus | null {
+    return this.o.store.kvGet<Focus | null>('telegram.focus') ?? null
+  }
+
+  private setFocus(f: Focus | null): void {
+    this.o.store.kvSet('telegram.focus', f)
+  }
+
+  private noticeContext(): ui.NoticeContext {
+    return { ...this.uiContext(), now: this.o.now() }
+  }
+
+  private async showChats(chat: number, page: number, messageId?: number): Promise<void> {
+    const { chats, more } = this.o.chats.recent(page, ui.CHATS_PER_PAGE)
+    const view = ui.recentChatsView(chats, page, more, this.noticeContext())
+    if (messageId) await this.edit(chat, messageId, view)
+    else await this.send(chat, view)
+  }
+
+  /** Leaves the chat you're in. `quiet`: only if you were in one, and with no reply (another action follows). */
+  private async leaveChat(chat: number, quiet = false): Promise<void> {
+    const f = this.focus()
+    if (!f && quiet) return
+    this.setFocus(null)
+    if (quiet) return
+    await this.send(chat, { html: f ? `⬅️ Left “${ui.esc(ui.clip(f.title, 80))}”. New messages make new tasks again.` : "You're not in a chat." }, ui.MAIN_KEYBOARD)
+  }
+
+  /** c:… buttons: 💬 Chats pages, a chat's view, ✍️ Write here, 📜 Full reply, ⬅️ Leave. */
+  private async onChatsButton(chat: number, message: TgMessage | undefined, op: string, arg?: string): Promise<string | undefined> {
+    const at = message?.message_id
+    if (op === 'l') {
+      await this.showChats(chat, Math.max(0, Number(arg) || 0), at)
+      return
+    }
+    if (op === 'x') {
+      await this.leaveChat(chat)
+      return 'Left the chat.'
+    }
+    const c = arg ? this.o.chats.get(arg) : null
+    if (!c?.cwd) return 'That chat is gone.'
+    switch (op) {
+      case 'o': {
+        const view = ui.chatView(c, this.noticeContext(), this.focus()?.sessionId === c.sessionId)
+        if (at) await this.edit(chat, at, view)
+        else await this.send(chat, view)
+        return
+      }
+      case 'w':
+        this.setFocus({ sessionId: c.sessionId, title: c.title })
+        this.setPending(null)
+        await this.send(chat, { html: ui.enteredChatHtml(c, this.noticeContext()) }, ui.CHAT_KEYBOARD)
+        return `💬 ${ui.clip(c.title, 60)}`
+      case 'r':
+        await this.sendLong(chat, c.lastReply ?? '(no reply yet)', `reply-${c.sessionId.slice(0, 8)}`)
+        return
+      default:
+        return
+    }
+  }
+
+  /** What you type inside a chat: typed into it if the queue is running it, else a task that continues it. */
+  private async sendToChat(chat: number, f: Focus, text: string): Promise<void> {
+    const c = this.o.chats.get(f.sessionId)
+    if (!c?.cwd || !existsSync(c.cwd)) {
+      this.setFocus(null)
+      await this.send(chat, { html: "That chat is gone, so you've left it. New messages make new tasks again." }, ui.MAIN_KEYBOARD)
+      return
+    }
+    const name = `“${ui.clip(c.title, 60)}”`
+    const typed = await this.o.runner.typeIfFree(c.sessionId, text)
+    if (typed !== null) {
+      await this.sendText(chat, `⌨️ Typed into ${name} (#${typed}). Claude reads it when its current step ends.`)
+      return
+    }
+    const choices = this.choices()
+    const job = this.o.runner.enqueue(
+      continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text }),
+    )
+    const take = c.where && !c.running ? ` It's open in ${c.where}: it closes there first.` : ''
+    await this.sendText(chat, `➕ Sent to ${name} as #${job.id}. ${this.whenText(job)}${take}`)
+  }
+
   /** Buttons on "your chat in VS Code hit a usage limit". */
   private async onChatButton(chat: number, message: TgMessage | undefined, sessionId: string, op: string): Promise<string | undefined> {
     if (op === 'x') {
@@ -848,6 +1034,21 @@ export class TelegramBridge {
         await this.o.folders.rebuild()
         if (at) await this.edit(chat, at, this.settingsView())
         return `Folder map rebuilt: ${this.o.folders.size} folders.`
+      case 'type': {
+        const job = this.o.store.active()
+        if (!job) return 'Nothing is running.'
+        this.setPending({ kind: 'say' })
+        await this.sendText(chat, `⌨️ Send what to type into #${job.id}. It's typed as you write it, then Enter.`)
+        return 'Waiting for what to type.'
+      }
+      case 'keys': {
+        const job = this.o.store.active()
+        if (!job) return 'Nothing is running.'
+        await this.send(chat, ui.keysView(job.id))
+        return
+      }
+      case 'k':
+        return parts[1] ? this.o.runner.keys([parts[1]]) : undefined
       case 'watch': {
         const config = this.o.config()
         config.watchSessions = !config.watchSessions

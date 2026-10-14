@@ -40,6 +40,8 @@ export interface RunnerDeps {
   log: (line: string) => void
   /** Defaults to Bun.sleep; tests make waiting instant. */
   sleep?: (ms: number) => Promise<void>
+  /** Opens a conversation in VS Code again, after a task took it from there. */
+  reopenInVsCode?: (sessionId: string) => void
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -137,6 +139,8 @@ export class Runner {
   private ticking = false
   private tickStartedAt = 0
   private stallLoggedAt = 0
+  /** When each job was last started again after its window vanished (one try per 10 minutes). */
+  private recoveredAt = new Map<number, number>()
 
   constructor(private d: RunnerDeps) {}
 
@@ -246,6 +250,7 @@ export class Runner {
     let branch = job.branch ?? lives?.branch ?? null
     let sessionArgs: string[]
     let isNew = false
+    let tookEntry: string | null = null
     if (sessionId && job.fork) {
       const copy = randomUUID()
       sessionArgs = ['--resume', sessionId, '--fork-session', '--session-id', copy]
@@ -256,6 +261,7 @@ export class Runner {
       let stuck = false
       if (canTakeOver(job, holders)) {
         tookFrom = whereLabel(holders[0]!)
+        tookEntry = holders[0]!.entrypoint ?? 'claude'
         const left = await this.release(sessionId, holders)
         stuck = left.length > 0
         holders = left
@@ -322,6 +328,7 @@ export class Runner {
       branch,
       launches: job.launches + 1,
       launchSpec: { cwd, argv },
+      ...(tookEntry ? { tookFrom: tookEntry } : {}),
       startedAt: job.startedAt ?? now,
       startHead,
       lastEventAt: now,
@@ -404,6 +411,15 @@ export class Runner {
     if (!pane || pane.dead) {
       if (rt.finishing) return this.finish(job)
       if (job.status === 'held') return
+      // The window is gone entirely (the Mac restarted, or tmux was stopped), not Claude exiting
+      // in it: start the conversation again once, rather than failing the task.
+      if (!pane && job.sessionId && rt.sessionStarted && now - (this.recoveredAt.get(job.id) ?? 0) > 10 * 60_000) {
+        this.recoveredAt.set(job.id, now)
+        this.d.log(`#${job.id}: its window is gone; starting the conversation again`)
+        await this.relaunch(job, 'continue')
+        this.d.notify({ type: 'recovered', job: this.d.store.getJob(job.id)! })
+        return
+      }
       const screen = pane ? tail(await this.d.tmux.capture(rt.window, 80), 12) : undefined
       const reason = pane ? `Claude exited (code ${pane.deadStatus ?? '?'})` : 'its tmux window is gone'
       return this.hold(job, reason, screen, 'failed')
@@ -652,6 +668,10 @@ export class Runner {
     await this.d.tmux.killWindow(windowName(job.id))
     const done = this.d.store.updateJob(job.id, { status: 'done', phase: null, finishedAt: now, summary: diff })
     this.runtimes.delete(job.id)
+    // Taken from VS Code: open it there again (unless more is queued for it), so VS Code is up to date.
+    if (job.tookFrom === 'claude-vscode' && job.sessionId && this.d.config().reopenInVsCode && !this.d.store.pendingForSession(job.sessionId)) {
+      this.d.reopenInVsCode?.(job.sessionId)
+    }
     const next = this.paused ? null : (this.d.store.queued()[0] ?? null)
     this.d.notify({ type: 'done', job: done, diff, next })
   }
@@ -1061,6 +1081,24 @@ export class Runner {
     const rt = this.runtime(job)
     rt.lastActivity = rt.saidAt = this.d.now()
     return `Typed into #${job.id}.`
+  }
+
+  /**
+   * Types a message into the running task's chat if it's in the middle of ordinary work: Claude
+   * Code queues it until its current step ends. Not while a dialog is up (Enter would pick an
+   * option) or while a plan, a limit or the end of the task is being handled. Returns the job id.
+   */
+  async typeIfFree(sessionId: string, text: string): Promise<number | null> {
+    const job = this.d.store.active()
+    if (!job || job.sessionId !== sessionId || job.status !== 'running' || job.phase !== 'working') return null
+    if (this.d.store.pendingApprovals(job.id).length > 0) return null
+    const rt = this.runtimes.get(job.id)
+    if (!rt?.sessionStarted || rt.plan || rt.finishing || rt.limit) return null
+    const screen = await this.d.tmux.capture(rt.window, 40)
+    if (planDialog(screen).present || trustDialog(screen).present || /Do you want|❯\s*1\./.test(screen)) return null
+    await this.typeLine(rt.window, text)
+    rt.lastActivity = rt.saidAt = this.d.now()
+    return job.id
   }
 
   async keys(keys: string[]): Promise<string> {

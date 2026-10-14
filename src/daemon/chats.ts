@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import type { Effort, ExecMode, JobSpec } from '../shared/types'
-import { findConversation, listConversations, whereLabel, type Conversation, type LiveSession } from './sessions'
+import { findConversation, listConversations, listRecentConversations, whereLabel, type Conversation, type LiveSession } from './sessions'
 import type { Store } from './store'
 
 /** The prompt a hand-off continues a stopped conversation with (Claude Code's own wording). */
@@ -28,6 +28,8 @@ export interface Chat extends Conversation {
 export interface ChatSource {
   /** Recent conversations in a folder, newest first, including its jobs' worktrees. */
   list(folder: string, limit: number): Chat[]
+  /** Your recent chats across every project, a page at a time. */
+  recent(page: number, perPage: number): { chats: Chat[]; more: boolean }
   get(sessionId: string): Chat | null
 }
 
@@ -42,6 +44,12 @@ export function chatSource(o: { store: Store; liveSessions: () => LiveSession[];
       const live = o.liveSessions()
       const running = o.store.active()?.sessionId ?? null
       return listConversations(dirs, limit, o.claudeDir).map(c => withState(c, live, running))
+    },
+    recent(page, perPage) {
+      const { chats, more } = listRecentConversations(page * perPage, perPage, o.claudeDir)
+      const live = o.liveSessions()
+      const running = o.store.active()?.sessionId ?? null
+      return { chats: chats.map(c => withState(c, live, running)), more }
     },
     get(sessionId) {
       const c = findConversation(sessionId, o.claudeDir)

@@ -122,6 +122,12 @@ export async function runDaemon(): Promise<void> {
       }
     },
     log,
+    reopenInVsCode: sessionId => {
+      // Only into a VS Code that's running: never start it just for this.
+      if (Bun.spawnSync(['pgrep', '-f', 'Visual Studio Code.app/Contents/MacOS/']).exitCode !== 0) return
+      Bun.spawn(['open', '-g', `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`], { stdout: 'ignore', stderr: 'ignore' })
+      log(`opened chat ${sessionId} in VS Code again`)
+    },
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
@@ -194,6 +200,18 @@ export async function runDaemon(): Promise<void> {
   }
   startTelegram()
   notifier.addSink((_text, notice) => telegram?.notify(notice))
+
+  // Without Full Disk Access a task can stop on a macOS prompt nobody is there to click: say so, once a day.
+  setTimeout(() => {
+    if (hasFullDiskAccess() || Date.now() - (store.kvGet<number>('warned.fullDiskAccess') ?? 0) < 24 * 3600_000) return
+    store.kvSet('warned.fullDiskAccess', Date.now())
+    notifier.send({
+      type: 'setup_warning',
+      message:
+        'Full Disk Access is missing, so a task can stop on a macOS prompt nobody is there to click. ' +
+        `On the Mac: System Settings → Privacy & Security → Full Disk Access → add ${join(paths.bin, 'cq-launcher').replace(homedir(), '~')}, then run cq restart.`,
+    })
+  }, 20_000)
 
   let bridge: IMessageBridge | null = null
   if (config.imessage.enabled) {

@@ -53,6 +53,8 @@ export interface BotApi {
   getMe(): Promise<TgUser>
   getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TgUpdate[]>
   sendMessage(chatId: number, html: string, markup?: Markup): Promise<TgMessage>
+  /** Sends text as a file, for answers too long for messages. */
+  sendDocument(chatId: number, filename: string, content: string, caption?: string): Promise<TgMessage>
   editMessageText(chatId: number, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<void>
   answerCallbackQuery(id: string, text?: string): Promise<void>
   setMyCommands(commands: { command: string; description: string }[]): Promise<void>
@@ -79,15 +81,14 @@ interface ApiResponse<T> {
 export class TelegramApi implements BotApi {
   constructor(private token: string) {}
 
-  private async call<T>(method: string, body: object, timeoutMs = 15_000, signal?: AbortSignal): Promise<T> {
+  private async call<T>(method: string, body: object | FormData, timeoutMs = 15_000, signal?: AbortSignal): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       const timeout = AbortSignal.timeout(timeoutMs)
       let res: Response
       try {
         res = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          ...(body instanceof FormData ? { body } : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
           signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         })
       } catch (err) {
@@ -126,6 +127,14 @@ export class TelegramApi implements BotApi {
       link_preview_options: { is_disabled: true },
       ...(markup ? { reply_markup: markup } : {}),
     })
+  }
+
+  sendDocument(chatId: number, filename: string, content: string, caption?: string): Promise<TgMessage> {
+    const form = new FormData()
+    form.append('chat_id', String(chatId))
+    form.append('document', new Blob([content], { type: 'text/markdown' }), filename)
+    if (caption) form.append('caption', caption)
+    return this.call('sendDocument', form, 60_000)
   }
 
   async editMessageText(chatId: number, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<void> {

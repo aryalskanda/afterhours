@@ -77,6 +77,8 @@ export interface Config {
   watchSessions: boolean
   /** And continue it by itself at the reset: inside the open chat, else here. */
   autoContinueChats: boolean
+  /** When a task that took a chat from VS Code ends, open the chat there again so VS Code is up to date. */
+  reopenInVsCode: boolean
   /** Hold a `caffeinate -i` assertion while jobs are pending. */
   keepAwake: boolean
   claudePath?: string
@@ -107,6 +109,7 @@ export const DEFAULT_CONFIG: Config = {
   remoteControl: false,
   watchSessions: true,
   autoContinueChats: true,
+  reopenInVsCode: true,
   keepAwake: true,
 }
 

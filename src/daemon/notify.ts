@@ -43,6 +43,10 @@ export type Notice =
    * it didn't restart, so job `jobId` continues it here; `resume` = it was closed, so a job resumes it.
    */
   | { type: 'chat_continue'; chat: Conversation; where: string; how: 'inbox' | 'takeover' | 'resume'; jobId?: number }
+  /** The task's window was gone (the Mac restarted, or tmux stopped), so it was started again. */
+  | { type: 'recovered'; job: Job }
+  /** Something in the setup needs you (shown once a day at most). */
+  | { type: 'setup_warning'; message: string }
   | { type: 'empty' }
 
 const IMPORTANT = new Set<Notice['type']>([
@@ -58,6 +62,8 @@ const IMPORTANT = new Set<Notice['type']>([
   'took_over',
   'session_limit',
   'chat_continue',
+  'recovered',
+  'setup_warning',
   'empty',
 ])
 
@@ -189,6 +195,10 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       if (n.how === 'takeover') return `🤝 Your chat ${name} didn't restart in ${n.where}, so #${n.jobId} continues it here (closing it there).`
       return `▶️ #${n.jobId} continues your chat ${name} after the usage limit (it was closed in ${n.where}).`
     }
+    case 'recovered':
+      return `🔁 #${n.job.id}'s window was gone (the Mac restarted?), so it continues where it left off.`
+    case 'setup_warning':
+      return `⚠️ ${n.message}`
     case 'empty':
       return '🏁 Queue empty.'
   }

@@ -108,7 +108,7 @@ describe('chats', () => {
     now: () => now,
     source: 'cli' as const,
     cwd: project,
-    chats: { list: () => list, get: () => null },
+    chats: { list: () => list, recent: () => ({ chats: list, more: false }), get: () => null },
   })
 
   test('lists the folder\'s chats with the ids q @<id>: takes', async () => {

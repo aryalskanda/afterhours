@@ -14,6 +14,7 @@ import type { Draft } from './state'
 //   d:<draft>:<op>[:<arg>…]  a draft card    a:<code>:y|n|c  an approval
 //   o:<code>:<q>.<opt>|t     a question       j:<job>:<op>    a job       g:<op>  global
 //   w:<session>:c|f|x        one of your other chats (it hit a usage limit)
+//   c:l:<page> · c:o|w|r:<session> · c:x   your chats: a page, open one, write in it, its full reply, leave it
 
 export interface View {
   html: string
@@ -49,11 +50,20 @@ export const KEYS = {
   queue: '📋 Queue',
   status: '📊 Status',
   peek: '👀 Peek',
+  chats: '💬 Chats',
+  leave: '⬅️ Leave chat',
 }
 
 /** The buttons that stay under the text box. */
 export const MAIN_KEYBOARD: ReplyKeyboard = {
-  keyboard: [[{ text: KEYS.newTask }, { text: KEYS.queue }], [{ text: KEYS.status }, { text: KEYS.peek }]],
+  keyboard: [[{ text: KEYS.newTask }, { text: KEYS.queue }], [{ text: KEYS.status }, { text: KEYS.peek }], [{ text: KEYS.chats }]],
+  is_persistent: true,
+  resize_keyboard: true,
+}
+
+/** While you're inside a chat: what you type goes into it until you leave. */
+export const CHAT_KEYBOARD: ReplyKeyboard = {
+  keyboard: [[{ text: KEYS.leave }, { text: KEYS.chats }], [{ text: KEYS.status }, { text: KEYS.peek }]],
   is_persistent: true,
   resize_keyboard: true,
 }
@@ -218,6 +228,75 @@ export function chatsView(d: Draft, folder: string, chats: Chat[], hasLast: bool
   }
 }
 
+export const CHATS_PER_PAGE = 8
+
+/** 💬 Chats: your recent chats from every project, newest first. */
+export function recentChatsView(chats: Chat[], page: number, more: boolean, ctx: NoticeContext): View {
+  const lines = chats.map((c, i) => {
+    const state = chatState(c)
+    return (
+      `${page * CHATS_PER_PAGE + i + 1}. ${chatIcon(c)} <b>${esc(clip(c.title, 60))}</b>\n` +
+      `   📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}${state ? ` · ${esc(state)}` : ''} · ${duration(ctx.now - c.updatedAt)} ago`
+    )
+  })
+  const html =
+    chats.length > 0
+      ? `💬 <b>Your chats</b>, newest first${page > 0 ? ` · page ${page + 1}` : ''}\n${lines.join('\n')}\n<i>Tap one to open it.</i>`
+      : page > 0
+        ? '💬 <i>No older chats.</i>'
+        : '💬 <i>No Claude Code chats yet.</i>'
+  const nav = [...(page > 0 ? [btn('◀️ Newer', `c:l:${page - 1}`)] : []), ...(more ? [btn('Older ▶️', `c:l:${page + 1}`)] : [])]
+  return {
+    html,
+    keyboard: [...chats.map(c => [btn(`${chatIcon(c)} ${clip(c.title, 40)}`, `c:o:${c.sessionId}`)]), ...(nav.length > 0 ? [nav] : [])],
+  }
+}
+
+/** One chat: where it is, your last prompt and Claude's last reply. */
+export function chatView(c: Chat, ctx: NoticeContext, inside: boolean): View {
+  const state = chatState(c)
+  const long = (c.lastReply?.length ?? 0) > 1500
+  const html = [
+    `💬 <b>${esc(clip(c.title, 120))}</b>`,
+    `📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}${state ? ` · ${esc(state)}` : ''} · ${duration(ctx.now - c.updatedAt)} ago`,
+    c.lastPrompt ? `<b>You:</b>\n${quote(c.lastPrompt, 500)}` : '',
+    c.lastReply ? `<b>Claude:</b>\n${quote(c.lastReply, 1500)}` : '',
+    inside ? "<i>You're in this chat: what you type goes here.</i>" : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  return {
+    html,
+    keyboard: [
+      [inside ? btn('⬅️ Leave chat', 'c:x') : btn('✍️ Write here', `c:w:${c.sessionId}`), ...(long ? [btn('📜 Full reply', `c:r:${c.sessionId}`)] : [])],
+      [btn('↩️ All chats', 'c:l:0')],
+    ],
+  }
+}
+
+/** Sent when you enter a chat, with CHAT_KEYBOARD. */
+export function enteredChatHtml(c: Chat, ctx: NoticeContext): string {
+  const open = c.where ? ` It's open in ${esc(c.where)}: your first message closes it there and continues it here.` : ''
+  return (
+    `💬 <b>You're in “${esc(clip(c.title, 80))}”</b> · 📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}\n` +
+    `Everything you type now goes into this chat, as if you typed it there.${open}\n<i>Tap ${KEYS.leave} to stop.</i>`
+  )
+}
+
+/** 🔘 Keys: press keys in the running task, for a screen Afterhours doesn't know. */
+export function keysView(jobId: number): View {
+  const k = (label: string, key: string) => btn(label, `g:k:${key}`)
+  return {
+    html: `🔘 <b>Press keys in #${jobId}</b>\n<i>For a screen ${BRAND.name} can't answer. 👀 Peek shows the result.</i>`,
+    keyboard: [
+      [k('1', '1'), k('2', '2'), k('3', '3')],
+      [k('⏎ Enter', 'Enter'), k('⎋ Esc', 'Escape'), k('⇥ Tab', 'Tab')],
+      [k('↑', 'Up'), k('↓', 'Down'), k('⇧⇥ Shift-Tab', 'BTab')],
+      [btn('👀 Peek', 'g:peek')],
+    ],
+  }
+}
+
 export function recentView(d: Draft, recent: string[], ctx: UiContext): View {
   const id = d.id
   const html = recent.length > 0 ? '⭐ <b>Recent folders</b>' : '⭐ <i>No recent folders yet. Browse or search instead.</i>'
@@ -373,14 +452,19 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
           `✅ <b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}\n` +
           `${n.diff ? `<i>${esc(n.diff)}</i>\n` : ''}` +
           `${n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code> · merge with <code>git merge ${esc(n.job.branch)}</code>\n` : ''}` +
-          `${quote(n.job.lastMessage, 2000)}\n${next}`,
+          (longReply(n.job.lastMessage)
+            ? `${quote(n.job.lastMessage, 600)}\n<i>Claude's full answer follows.</i>\n${next}`
+            : `${quote(n.job.lastMessage, 2000)}\n${next}`),
         keyboard: [[btn('➕ Follow up', `j:${n.job.id}:fu`)]],
       }
     }
     case 'held':
       return {
         html: `⚠️ <b>#${n.job.id} paused</b>: ${esc(n.reason)}${n.screen ? `\n<pre>${esc(clip(n.screen, 1500))}</pre>` : ''}`,
-        keyboard: [[btn('▶️ Go', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`), btn('👀 Peek', `j:${n.job.id}:peek`)]],
+        keyboard: [
+          [btn('▶️ Go', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`), btn('👀 Peek', `j:${n.job.id}:peek`)],
+          [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
+        ],
       }
     case 'failed':
       return {
@@ -457,9 +541,21 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       }
       return { html: `▶️ <b>#${n.jobId} continues your chat ${name}</b> after the usage limit (it was closed in ${esc(n.where)}).` }
     }
+    case 'recovered':
+      return {
+        html: `🔁 <b>#${n.job.id}'s window was gone</b> (the Mac restarted?), so it continues where it left off.`,
+        keyboard: [[btn('👀 Peek', `j:${n.job.id}:peek`), btn('⏹ Stop', `j:${n.job.id}:stop`)]],
+      }
+    case 'setup_warning':
+      return { html: `⚠️ ${esc(n.message)}` }
     case 'empty':
       return { html: '🏁 Queue empty.' }
   }
+}
+
+/** A final answer too long for the done message: it follows in full (more messages, or a file). */
+export function longReply(text: string | null | undefined): boolean {
+  return (text?.trim().length ?? 0) > 2000
 }
 
 export function statusView(text: string, paused: boolean): View {
@@ -471,6 +567,7 @@ export function statusView(text: string, paused: boolean): View {
         paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'),
         btn('👀 Peek', 'g:peek'),
       ],
+      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
     ],
   }
 }
@@ -490,7 +587,10 @@ export function peekView(jobId: number | null, screen: string): View {
   if (jobId === null) return { html: '👀 Nothing is running.', keyboard: [[btn('🔄 Refresh', 'g:peek')]] }
   return {
     html: `👀 <b>#${jobId}</b>\n<pre>${esc(clip(screen, 3500)) || '(blank screen)'}</pre>`,
-    keyboard: [[btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)]],
+    keyboard: [
+      [btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)],
+      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
+    ],
   }
 }
 
@@ -526,6 +626,8 @@ export const HELP_HTML =
   '<b>Send me what Claude should do.</b> I reply with a card: pick the folder, mode, model and effort with the buttons, then tap ▶️ Queue. ' +
   'It starts with the choices you used last, so usually you just tap ▶️ Queue.\n\n' +
   `${KEYS.newTask}: pick the folder first, then send the prompt.\n` +
+  `${KEYS.chats}: any chat from any project, VS Code ones too. Open one and tap ✍️ Write here: everything you type then goes into that chat until you leave.\n` +
+  '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +
   '💬 Chat… on a card continues any chat in that folder, including one open in VS Code: 🤝 Take over closes it there and continues it here.\n' +
   `${KEYS.queue} · ${KEYS.status} · ${KEYS.peek}\n\n` +
   "I'll message you when a plan is ready, when Claude needs permission or has a question, when a usage limit pauses work, and when a job finishes. " +

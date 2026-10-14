@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS tg_folders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS tg_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  html TEXT NOT NULL,
+  keyboard TEXT,
+  created_at INTEGER NOT NULL
+);
 `
 
 /** The choices a task is queued with; the last ones you used prefill the next draft. */
@@ -157,6 +163,28 @@ export class TelegramState {
   folderId(path: string): number {
     this.db.query<Row, [string]>('INSERT OR IGNORE INTO tg_folders (path) VALUES (?)').run(path)
     return this.db.query<{ id: number }, [string]>('SELECT id FROM tg_folders WHERE path = ?').get(path)!.id
+  }
+
+  /** A message that couldn't be sent (Telegram unreachable), kept to send later in order. */
+  addOutbox(html: string, keyboard: unknown, now: number): void {
+    this.db
+      .query<Row, SqlValue[]>('INSERT INTO tg_outbox (html, keyboard, created_at) VALUES (?, ?, ?)')
+      .run(html, keyboard ? JSON.stringify(keyboard) : null, now)
+  }
+
+  outbox(): { id: number; html: string; keyboard: unknown; createdAt: number }[] {
+    return this.db
+      .query<{ id: number; html: string; keyboard: string | null; created_at: number }, []>('SELECT * FROM tg_outbox ORDER BY id')
+      .all()
+      .map(r => ({ id: r.id, html: r.html, keyboard: r.keyboard ? JSON.parse(r.keyboard) : undefined, createdAt: r.created_at }))
+  }
+
+  deleteOutbox(id: number): void {
+    this.db.query<Row, [number]>('DELETE FROM tg_outbox WHERE id = ?').run(id)
+  }
+
+  pruneOutbox(olderThan: number): void {
+    this.db.query<Row, [number]>('DELETE FROM tg_outbox WHERE created_at < ?').run(olderThan)
   }
 
   folderPath(id: number): string | null {

@@ -11,6 +11,7 @@ import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import type { BotApi, InlineKeyboard, Markup, TgMessage, TgUpdate, TgUser } from '../src/telegram/api'
 import { TelegramBridge } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
+import type { Job } from '../src/shared/types'
 import { FakeTmux, makeTree } from './fakes'
 
 const OWNER = 7001
@@ -35,7 +36,10 @@ class FakeApi implements BotApi {
   getUpdates(): Promise<never> {
     return new Promise(() => {}) // the tests feed updates through handle()
   }
+  /** Plays Telegram being unreachable. */
+  down = false
   async sendMessage(chat: number, html: string, markup?: Markup): Promise<TgMessage> {
+    if (this.down) throw new Error('telegram sendMessage: 0 network is down')
     const id = this.next++
     this.sent.push({ id, chat, html, markup })
     return { message_id: id, chat: { id: chat, type: 'private' }, date: 0, text: html }
@@ -45,6 +49,11 @@ class FakeApi implements BotApi {
   }
   async answerCallbackQuery(id: string, text?: string): Promise<void> {
     this.answers.push({ id, text })
+  }
+  documents: { chat: number; filename: string; content: string }[] = []
+  async sendDocument(chat: number, filename: string, content: string): Promise<TgMessage> {
+    this.documents.push({ chat, filename, content })
+    return { message_id: this.next++, chat: { id: chat, type: 'private' }, date: 0 }
   }
   async setMyCommands(): Promise<void> {}
 
@@ -87,6 +96,7 @@ function setup() {
   const killed: number[] = []
   const chats: ChatSource = {
     list: folder => chatList.filter(c => c.cwd === folder),
+    recent: (page, perPage) => ({ chats: chatList.slice(page * perPage, (page + 1) * perPage), more: chatList.length > (page + 1) * perPage }),
     get: sessionId => chatList.find(c => c.sessionId === sessionId) ?? null,
   }
   const runner = new Runner({
@@ -163,6 +173,23 @@ async function paired(): Promise<Harness> {
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
   return h
+}
+
+/** Queues a task in beta from a card and plays the hooks of it starting. */
+async function running(h: Harness) {
+  await h.say('Do the thing')
+  const card = h.api.last().id
+  await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
+  await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
+  await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+  await h.tap(button(h.api.view(card).keyboard, '🗺 Mode'), card)
+  await h.tap(button(h.api.view(card).keyboard, /^auto$/), card)
+  await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+  await h.runner.tick()
+  const job = h.store.active()!
+  await h.runner.onHook('SessionStart', job.id, { session_id: job.sessionId!, transcript_path: '/t.jsonl' })
+  await h.runner.onHook('UserPromptSubmit', job.id, { permission_mode: 'auto' })
+  return job
 }
 
 describe('pairing', () => {
@@ -304,21 +331,6 @@ describe('queueing with buttons', () => {
 })
 
 describe('notifications with buttons', () => {
-  async function running(h: Harness) {
-    await h.say('Do the thing')
-    const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
-    await h.tap(button(h.api.view(card).keyboard, '🗺 Mode'), card)
-    await h.tap(button(h.api.view(card).keyboard, /^auto$/), card)
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
-    await h.runner.tick()
-    const job = h.store.active()!
-    await h.runner.onHook('SessionStart', job.id, { session_id: job.sessionId!, transcript_path: '/t.jsonl' })
-    await h.runner.onHook('UserPromptSubmit', job.id, { permission_mode: 'auto' })
-    return job
-  }
 
   test('started, then Allow on a permission request', async () => {
     const h = await paired()
@@ -569,5 +581,119 @@ describe('your other chats (VS Code, a terminal)', () => {
     await h.tap(button(h.api.view(msg).keyboard, '👀 Watching other chats ✓'), msg)
     expect(h.config().watchSessions).toBe(false)
     expect(h.api.view(msg).html).toContain('Other chats: not watched')
+  })
+})
+
+describe('every session from your phone', () => {
+  const SID = 'dddddddd-1111-2222-3333-444444444444'
+  const chat = (h: Harness, over: Partial<Chat> = {}): Chat => ({
+    sessionId: SID,
+    cwd: join(h.root, 'beta'),
+    title: 'Dark mode for settings',
+    lastPrompt: 'Add a dark mode toggle',
+    lastReply: 'Added the toggle to the settings page.',
+    updatedAt: h.now() - 600_000,
+    model: 'claude-sonnet-5-5',
+    permissionMode: 'auto',
+    limit: null,
+    where: null,
+    busy: false,
+    running: false,
+    ...over,
+  })
+
+  test('💬 Chats → open one → ✍️ Write here: what you type goes into that chat, in order, until you leave', async () => {
+    const h = await paired()
+    h.chatList.push(chat(h), chat(h, { sessionId: 'eeeeeeee-1111-2222-3333-444444444444', title: 'Older chat', where: 'VS Code' }))
+    await h.say(KEYS.chats)
+    const list = h.api.last().id
+    expect(h.api.view(list).html).toContain('Dark mode for settings')
+    expect(h.api.view(list).html).toContain('📁 beta')
+    await h.tap(button(h.api.view(list).keyboard, 'Dark mode for settings'), list)
+    expect(h.api.view(list).html).toContain('<b>Claude:</b>')
+    expect(h.api.view(list).html).toContain('Added the toggle to the settings page.')
+    await h.tap(button(h.api.view(list).keyboard, '✍️ Write here'), list)
+    expect(h.api.last().html).toContain('You\'re in “Dark mode for settings”')
+    expect(JSON.stringify(h.api.last().markup)).toContain(KEYS.leave)
+
+    await h.say('Now add a test for the toggle')
+    await h.say('And mention it in the README')
+    expect(h.api.last().html).toContain('➕ Sent to “Dark mode for settings” as #')
+    expect(h.store.queued().map(j => [j.prompt, j.sessionId, j.sessionPolicy, j.model])).toEqual([
+      ['Now add a test for the toggle', SID, 'session', 'sonnet'],
+      ['And mention it in the README', SID, 'session', 'sonnet'],
+    ])
+    expect(h.store.queued()[0]!.takeoverAt).toBeNull() // not open anywhere: just resumed
+
+    await h.say(KEYS.leave)
+    expect(h.api.last().html).toContain('Left “Dark mode for settings”')
+    await h.say('Something new')
+    expect(h.api.last().html).toContain('Something new') // a new task card again
+    expect(h.store.queued()).toHaveLength(2)
+  })
+
+  test('a chat open in VS Code: your message takes it over', async () => {
+    const h = await paired()
+    h.chatList.push(chat(h, { where: 'VS Code' }))
+    await h.say('/chats')
+    await h.tap(button(h.api.view(h.api.last().id).keyboard, 'Dark mode'), h.api.last().id)
+    await h.tap(button(h.api.view(h.api.last().id).keyboard, '✍️ Write here'), h.api.last().id)
+    expect(h.api.last().html).toContain("It's open in VS Code")
+    await h.say('Keep going')
+    expect(h.api.last().html).toContain('it closes there first')
+    expect(h.store.queued()[0]!.takeoverAt).not.toBeNull()
+  })
+
+  test('the chat the queue is running: your message is typed straight into it', async () => {
+    const h = await paired()
+    const job = await running(h)
+    h.chatList.push(chat(h, { sessionId: job.sessionId!, running: true }))
+    h.store.kvSet('telegram.focus', { sessionId: job.sessionId, title: 'Dark mode for settings' })
+    await h.say('also handle the system theme')
+    expect(h.tmux.windows.get(windowName(job.id))!.input).toEqual(['text:also handle the system theme', 'Enter'])
+    expect(h.api.last().html).toContain(`Typed into “Dark mode for settings” (#${job.id})`)
+  })
+
+  test('⌨️ Type and 🔘 Keys reach the running task from Peek', async () => {
+    const h = await paired()
+    const job = await running(h)
+    await h.say(KEYS.peek)
+    const peek = h.api.last().id
+    await h.tap(button(h.api.view(peek).keyboard, '⌨️ Type'), peek)
+    await h.say('yes, use the second option')
+    expect(h.tmux.windows.get(windowName(job.id))!.input).toEqual(['text:yes, use the second option', 'Enter'])
+    await h.tap(button(h.api.view(peek).keyboard, '🔘 Keys'), peek)
+    const keys = h.api.last().id
+    await h.tap(button(h.api.view(keys).keyboard, '⏎ Enter'), keys)
+    await h.tap(button(h.api.view(keys).keyboard, '↓'), keys)
+    expect(h.tmux.windows.get(windowName(job.id))!.input.slice(-2)).toEqual(['Enter', 'Down'])
+  })
+
+  test("Claude's long final answer arrives in full: a few messages, or a file", async () => {
+    const h = await paired()
+    const para = 'word '.repeat(150).trim()
+    const medium = Array.from({ length: 8 }, (_, i) => `Part ${i + 1}: ${para}`).join('\n\n')
+    await h.bridge.notify({ type: 'done', job: { id: 9, projectDir: join(h.root, 'beta'), lastMessage: medium, startedAt: h.now(), finishedAt: h.now(), branch: null } as Job, diff: null, next: null })
+    const sent = h.api.sent.slice(-3)
+    expect(sent[0]!.html).toContain("Claude's full answer follows.")
+    expect(sent[1]!.html).toContain('(1/2)')
+    expect(sent[2]!.html).toContain('(2/2)')
+    expect(sent[2]!.html).toContain('Part 8')
+    const huge = 'x'.repeat(20_000)
+    await h.bridge.notify({ type: 'done', job: { id: 10, projectDir: join(h.root, 'beta'), lastMessage: huge, startedAt: h.now(), finishedAt: h.now(), branch: null } as Job, diff: null, next: null })
+    expect(h.api.documents).toEqual([{ chat: OWNER, filename: 'reply-10.md', content: huge }])
+  })
+
+  test('notices sent while Telegram is unreachable arrive later, in order', async () => {
+    const h = await paired()
+    h.api.down = true
+    await h.bridge.notify({ type: 'empty' })
+    await h.bridge.notify({ type: 'setup_warning', message: 'Full Disk Access is missing' })
+    const before = h.api.sent.length
+    h.api.down = false
+    await h.bridge.flushOutbox()
+    expect(h.api.sent.slice(before).map(m => m.html)).toEqual(['🏁 Queue empty.', '⚠️ Full Disk Access is missing'])
+    await h.bridge.flushOutbox()
+    expect(h.api.sent.length).toBe(before + 2)
   })
 })

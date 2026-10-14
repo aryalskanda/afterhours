@@ -31,6 +31,8 @@ export interface Job {
    * idle windows that opened it before then are closed so this job can continue it.
    */
   takeoverAt: number | null
+  /** The kind of window it took the conversation from (claude-vscode, cli…), to give it back afterwards. */
+  tookFrom: string | null
   /** Run on its own git branch in a worktree instead of in your checkout. */
   isolate: boolean
   /** Where Claude actually runs: the worktree (or its matching subfolder), else projectDir. */

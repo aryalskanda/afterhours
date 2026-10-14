@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -305,6 +305,51 @@ export function listConversations(dirs: string[], limit: number, claudeDir = CLA
     }
   }
   return found.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+}
+
+/** Scratch and system temp folders: chats there are test runs, not your work. */
+const TEMP_DIRS = /^\/(private\/)?(tmp|var\/folders)\//
+
+/**
+ * Your most recent conversations across every project, newest first: `limit` of them after skipping
+ * `skip`, and whether there are more. Chats whose folder is gone, or in a temp folder, are left out.
+ */
+export function listRecentConversations(skip: number, limit: number, claudeDir = CLAUDE_DIR): { chats: Conversation[]; more: boolean } {
+  const root = join(claudeDir, 'projects')
+  const files: { path: string; mtime: number }[] = []
+  let dirs: string[] = []
+  try {
+    dirs = readdirSync(root)
+  } catch {
+    return { chats: [], more: false }
+  }
+  for (const dir of dirs) {
+    let names: string[]
+    try {
+      names = readdirSync(join(root, dir))
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue
+      try {
+        files.push({ path: join(root, dir, name), mtime: statSync(join(root, dir, name)).mtimeMs })
+      } catch {
+        // Removed while listing.
+      }
+    }
+  }
+  files.sort((a, b) => b.mtime - a.mtime)
+  const chats: Conversation[] = []
+  let usable = 0
+  for (const f of files) {
+    const c = readConversation(f.path)
+    if (!c?.cwd || TEMP_DIRS.test(c.cwd) || !existsSync(c.cwd)) continue
+    if (usable++ < skip) continue
+    if (chats.length === limit) return { chats, more: true }
+    chats.push(c)
+  }
+  return { chats, more: false }
 }
 
 /** A conversation by its full session id, wherever it ran. */

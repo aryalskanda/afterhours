@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   session_id TEXT,
   fork INTEGER NOT NULL DEFAULT 0,
   takeover_at INTEGER,
+  took_from TEXT,
   isolate INTEGER NOT NULL DEFAULT 0,
   work_dir TEXT,
   branch TEXT,
@@ -116,6 +117,7 @@ const COLUMNS = {
   sessionId: 'session_id',
   fork: 'fork',
   takeoverAt: 'takeover_at',
+  tookFrom: 'took_from',
   isolate: 'isolate',
   workDir: 'work_dir',
   branch: 'branch',
@@ -145,6 +147,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'branch', 'TEXT'],
   ['threads', 'work_dir', 'TEXT'],
   ['jobs', 'takeover_at', 'INTEGER'],
+  ['jobs', 'took_from', 'TEXT'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec'])
 
@@ -198,7 +201,16 @@ export class Store {
         `SELECT MIN(position) AS lo, MAX(position) AS hi FROM jobs WHERE status = 'queued'`,
       )
       .get()
-    const position = spec.front ? (edge?.lo ?? 1) - 1 : (edge?.hi ?? 0) + 1
+    let position = spec.front ? (edge?.lo ?? 1) - 1 : (edge?.hi ?? 0) + 1
+    // At the front, but after what's already queued for the same conversation, so messages you
+    // type into one chat run in the order you sent them.
+    const same = spec.front && spec.sessionId ? this.lastQueuedPosition(spec.sessionId) : null
+    if (same !== null) {
+      const next = this.db
+        .query<{ p: number | null }, [number]>(`SELECT MIN(position) AS p FROM jobs WHERE status = 'queued' AND position > ?`)
+        .get(same)?.p
+      position = next === null || next === undefined ? same + 1 : (same + next) / 2
+    }
     const row = this.db
       .query<Row, SqlValue[]>(
         `INSERT INTO jobs (position, status, project_dir, prompt, plan, review, exec_mode, model, effort,
@@ -223,6 +235,14 @@ export class Store {
       )
     if (!row) throw new Error('failed to insert job')
     return toJob(row)
+  }
+
+  private lastQueuedPosition(sessionId: string): number | null {
+    return (
+      this.db
+        .query<{ p: number | null }, [string]>(`SELECT MAX(position) AS p FROM jobs WHERE status = 'queued' AND session_id = ?`)
+        .get(sessionId)?.p ?? null
+    )
   }
 
   getJob(id: number): Job | null {

@@ -28,6 +28,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
   const files = new Map<string, string>()
   let holders: LiveSession[] = []
   const killed: number[] = []
+  const reopened: string[] = []
   /** Windows that ignore being asked to close. */
   let stubborn = false
   const runner = new Runner({
@@ -68,6 +69,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     },
     log: line => logs.push(line),
     sleep: async () => {},
+    reopenInVsCode: sid => reopened.push(sid),
   })
   const spec = (over: Partial<JobSpec> = {}): JobSpec => ({
     projectDir: project,
@@ -100,6 +102,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
       holders = h
     },
     killed,
+    reopened,
     setStubborn: (v: boolean) => {
       stubborn = v
     },
@@ -767,5 +770,62 @@ describe('taking a chat over from VS Code', () => {
     expect(canTakeOver({ takeoverAt: 100 }, [{ ...base, status: 'busy' }])).toBe(false)
     expect(canTakeOver({ takeoverAt: 100 }, [{ ...base, kind: 'background' }])).toBe(false)
     expect(canTakeOver({ takeoverAt: 99 }, [base])).toBe(false)
+  })
+})
+
+describe('queue order', () => {
+  test('several messages for one chat at the front keep the order you sent them', async () => {
+    const h = setup()
+    h.runner.setPaused(true)
+    const other = h.runner.enqueue(h.spec({ prompt: 'other task' }))
+    const sid = 'bbbbbbbb-1111-2222-3333-444444444444'
+    const one = h.runner.enqueue(h.spec({ prompt: 'first', sessionPolicy: 'session', sessionId: sid, front: true }))
+    const two = h.runner.enqueue(h.spec({ prompt: 'second', sessionPolicy: 'session', sessionId: sid, front: true }))
+    const three = h.runner.enqueue(h.spec({ prompt: 'third', sessionPolicy: 'session', sessionId: sid, front: true }))
+    const urgent = h.runner.enqueue(h.spec({ prompt: 'urgent', front: true }))
+    expect(h.store.queued().map(j => j.id)).toEqual([urgent.id, one.id, two.id, three.id, other.id])
+  })
+})
+
+describe('keeping in sync', () => {
+  test("the Mac restarted mid-task: the conversation starts again by itself, once per 10 minutes", async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    h.tmux.windows.delete(windowName(j.id)) // tmux and Claude went away with the reboot
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(j.id)!.argv
+    expect(argv.slice(1, 3)).toEqual(['--resume', j.sid])
+    expect(argv.at(-1)).toBe('continue')
+    expect(lastNotice(h, 'recovered').job.id).toBe(j.id)
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid })
+    h.tmux.windows.delete(windowName(j.id))
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'held', error: 'its tmux window is gone' })
+  })
+
+  test('a chat taken from VS Code opens there again when the task ends', async () => {
+    const h = setup()
+    const sid = 'cccccccc-1111-2222-3333-444444444444'
+    h.setHolders([{ pid: 999, sessionId: sid, entrypoint: 'claude-vscode', kind: 'interactive', status: 'idle', startedAt: h.now() - 60_000 }])
+    const job = h.runner.enqueue(h.spec({ plan: false, sessionPolicy: 'session', sessionId: sid, takeover: true }))
+    await h.runner.tick()
+    expect(h.store.getJob(job.id)!.tookFrom).toBe('claude-vscode')
+    await h.runner.onHook('SessionStart', job.id, { session_id: sid })
+    await h.runner.onHook('UserPromptSubmit', job.id, { permission_mode: 'auto' })
+    await finishTurn(h, { id: job.id, sid, window: h.tmux.windows.get(windowName(job.id))! })
+    expect(h.store.getJob(job.id)!.status).toBe('done')
+    expect(h.reopened).toEqual([sid])
+  })
+
+  test('typing into the running chat only while it is doing ordinary work', async () => {
+    const h = setup()
+    expect(await h.runner.typeIfFree('nope', 'hi')).toBeNull()
+    const j = await startJob(h, { plan: false })
+    expect(await h.runner.typeIfFree('another-chat', 'hi')).toBeNull()
+    j.window.screen = 'Do you want to proceed?\n❯ 1. Yes'
+    expect(await h.runner.typeIfFree(j.sid, 'hi')).toBeNull()
+    j.window.screen = ''
+    expect(await h.runner.typeIfFree(j.sid, 'also add tests')).toBe(j.id)
+    expect(j.window.input).toEqual(['text:also add tests', 'Enter'])
   })
 })
