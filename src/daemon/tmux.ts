@@ -44,18 +44,15 @@ export class Tmux implements TmuxDriver {
       stdout: 'pipe',
       stderr: 'pipe',
     })
-    let timedOut = false
-    const timer = setTimeout(() => {
-      timedOut = true
-      proc.kill('SIGKILL')
-    }, this.timeoutMs)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<null>(resolve => (timer = setTimeout(() => resolve(null), this.timeoutMs)))
+    // Raced as a whole: after a kill, a process it started can still hold the output open.
+    const done = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
     try {
-      const [out, err, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ])
-      return timedOut ? { code: -1, out: '', err: `timed out after ${this.timeoutMs / 1000}s` } : { code, out, err }
+      const r = await Promise.race([done, deadline])
+      if (r) return { code: r[2], out: r[0], err: r[1] }
+      proc.kill('SIGKILL')
+      return { code: -1, out: '', err: `timed out after ${this.timeoutMs / 1000}s` }
     } finally {
       clearTimeout(timer)
     }
