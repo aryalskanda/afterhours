@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
 import type { Job, JobSpec } from '../shared/types'
-import { CONTINUE_PROMPT, modeFor, modelAlias, type ChatSource } from '../daemon/chats'
+import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, runCommand, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { formatClock } from '../daemon/limits'
@@ -452,6 +452,7 @@ export class TelegramBridge {
       roots: this.roots(),
       models: config.models,
       watch: config.watchSessions,
+      autoContinue: config.autoContinueChats,
       now: this.o.now(),
     })
   }
@@ -777,8 +778,12 @@ export class TelegramBridge {
   /** Buttons on "your chat in VS Code hit a usage limit". */
   private async onChatButton(chat: number, message: TgMessage | undefined, sessionId: string, op: string): Promise<string | undefined> {
     if (op === 'x') {
-      await this.settle(chat, message, 'Ignored.')
-      return 'Ignored.'
+      const w = this.o.store.getWatch(sessionId)
+      const waiting = w && (w.state === 'waiting' || w.state === 'sent')
+      if (waiting) this.o.store.setWatchState(sessionId, 'cancelled', this.o.now())
+      const line = waiting ? "OK, it won't be continued." : 'Ignored.'
+      await this.settle(chat, message, line)
+      return line
     }
     const c = this.o.chats.get(sessionId)
     if (!c?.cwd || !existsSync(c.cwd)) {
@@ -798,19 +803,9 @@ export class TelegramBridge {
     if (op !== 'c') return
     const pending = this.o.store.pendingForSession(sessionId)
     if (pending) return `Already queued as #${pending.id}.`
-    const job = this.o.runner.enqueue({
-      projectDir: c.cwd,
-      prompt: CONTINUE_PROMPT,
-      ...modeFor(c.permissionMode),
-      model: modelAlias(c.model) ?? choices.model,
-      effort: choices.effort,
-      sessionPolicy: 'session',
-      sessionId,
-      isolate: false,
-      takeover: true,
-      front: true,
-      source: 'telegram',
-    })
+    const job = this.o.runner.enqueue(continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: true, source: 'telegram' }))
+    // It continues here now, so the automatic continue at the reset isn't needed.
+    if (this.o.store.getWatch(sessionId)) this.o.store.setWatchState(sessionId, 'handed', this.o.now(), { jobId: job.id })
     await this.settle(chat, message, `✅ Queued #${job.id}. ${this.whenText(job)}`)
     return `Queued #${job.id}.`
   }
@@ -859,6 +854,14 @@ export class TelegramBridge {
         this.o.saveConfig(config)
         if (at) await this.edit(chat, at, this.settingsView())
         return config.watchSessions ? 'Watching your other chats.' : 'Not watching your other chats.'
+      }
+      case 'auto': {
+        const config = this.o.config()
+        config.autoContinueChats = !config.autoContinueChats
+        if (config.autoContinueChats) config.watchSessions = true
+        this.o.saveConfig(config)
+        if (at) await this.edit(chat, at, this.settingsView())
+        return config.autoContinueChats ? 'Your chats continue by themselves after a usage limit.' : "I'll only tell you when a chat hits a usage limit."
       }
       default:
         return

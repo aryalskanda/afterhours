@@ -402,6 +402,7 @@ describe('your other chats (VS Code, a terminal)', () => {
     cwd: join(h.root, 'beta'),
     title: 'Claude Code prompt queue optimizer',
     lastPrompt: 'Build the queue',
+    lastReply: null,
     updatedAt: h.now() - 3_600_000,
     model: 'claude-opus-5-5',
     permissionMode: 'plan',
@@ -521,6 +522,43 @@ describe('your other chats (VS Code, a terminal)', () => {
     expect(h.killed).toEqual([4321])
     expect(h.store.getJob(job.id)!.status).toBe('running')
     expect(h.api.view(msg.id).html).toContain('took the conversation over from VS Code')
+  })
+
+  test("a chat in VS Code that will continue at the reset: Don't continue cancels it", async () => {
+    const h = await paired()
+    const c = chat(h, { limit: { text: 'resets 4:55am', at: h.now() - 60_000 } })
+    h.chatList.push(c)
+    const due = h.now() + 3_600_000
+    h.store.putWatch({ sessionId: SID, cwd: c.cwd, title: c.title, where: 'VS Code', stopAt: h.now() - 60_000, dueAt: due, state: 'waiting', sentAt: null, jobId: null, updatedAt: h.now() })
+    await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: due - 180_000, window: 'five_hour', autoAt: due })
+    const msg = h.api.last().id
+    expect(h.api.view(msg).html).toContain("I'll tell it to continue, so it carries on in VS Code")
+    await h.tap(button(h.api.view(msg).keyboard, 'Don’t continue'), msg)
+    expect(h.store.getWatch(SID)!.state).toBe('cancelled')
+    expect(h.api.view(msg).html).toContain("OK, it won't be continued.")
+  })
+
+  test('Continue here instead hands a waiting chat to the queue now', async () => {
+    const h = await paired()
+    const c = chat(h)
+    h.chatList.push(c)
+    h.store.putWatch({ sessionId: SID, cwd: c.cwd, title: c.title, where: 'VS Code', stopAt: h.now(), dueAt: h.now() + 60_000, state: 'waiting', sentAt: null, jobId: null, updatedAt: h.now() })
+    await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: h.now(), autoAt: h.now() + 60_000 })
+    await h.tap(button(h.api.view(h.api.last().id).keyboard, 'Continue here instead'), h.api.last().id)
+    const job = h.store.queued()[0]!
+    expect(job).toMatchObject({ sessionId: SID, prompt: 'Continue from where you left off.' })
+    expect(job.takeoverAt).not.toBeNull()
+    expect(h.store.getWatch(SID)).toMatchObject({ state: 'handed', jobId: job.id })
+  })
+
+  test('/settings turns automatic continue off', async () => {
+    const h = await paired()
+    await h.say('/settings')
+    const msg = h.api.last().id
+    expect(h.api.view(msg).html).toContain('and continue it at the reset')
+    await h.tap(button(h.api.view(msg).keyboard, '▶️ Auto-continue ✓'), msg)
+    expect(h.config().autoContinueChats).toBe(false)
+    expect(h.api.view(msg).html).not.toContain('and continue it at the reset')
   })
 
   test('/settings turns watching your other chats off', async () => {

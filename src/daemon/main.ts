@@ -22,12 +22,13 @@ import {
 } from '../shared/config'
 import { TelegramApi } from '../telegram/api'
 import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
-import { chatSource } from './chats'
+import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
 import { Notifier } from './notify'
 import { Runner, type HookPayload } from './runner'
-import { liveConversation, liveSessions, sessionHolders } from './sessions'
+import { deliverToInbox } from './inbox'
+import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { Store } from './store'
 import { git, KeepAwake } from './system'
 import { Tmux, TMUX_CONF } from './tmux'
@@ -127,12 +128,23 @@ export async function runDaemon(): Promise<void> {
   const watcher = new SessionWatcher({
     liveSessions: () => liveSessions(),
     conversation: s => liveConversation(s),
+    findConversation: sessionId => findConversation(sessionId),
     queued: sessionId => store.active()?.sessionId === sessionId || store.pendingForSession(sessionId) !== null,
     limits: () => runner.limits(),
-    kvGet: key => store.kvGet(key),
-    kvSet: (key, value) => store.kvSet(key, value),
+    store,
     notify: notice => notifier.send(notice),
     enabled: () => config.watchSessions,
+    autoContinue: () => config.watchSessions && config.autoContinueChats,
+    graceMs: () => config.timeouts.limitGraceSec * 1000,
+    deliver: (s, text) => deliverToInbox(s, text),
+    enqueue: (chat, takeover) => {
+      // The same model and effort the bot would pick: your last choices, else your defaults.
+      const last = store.kvGet<{ model?: string; effort?: Config['defaults']['effort'] }>('telegram.last') ?? {}
+      return runner.enqueue(
+        continueSpec(chat, { model: last.model ?? config.defaults.model, effort: last.effort ?? config.defaults.effort, takeover, source: 'watch' }),
+      )
+    },
+    log,
     now: Date.now,
   })
 
@@ -290,11 +302,7 @@ export async function runDaemon(): Promise<void> {
     folders.refreshIfStale()
     // About every 30 s: did one of your other chats (VS Code, a terminal) stop on a usage limit?
     if (++watchTicks % 15 === 0) {
-      try {
-        watcher.check()
-      } catch (err) {
-        log(`watching other chats failed: ${err instanceof Error ? err.message : err}`)
-      }
+      watcher.check().catch(err => log(`watching other chats failed: ${err instanceof Error ? err.message : err}`))
     }
     await runner.tick()
     keepAwake.set(config.keepAwake && runner.hasWork())

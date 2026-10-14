@@ -412,11 +412,28 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
     case 'session_limit': {
       const sid = n.chat.sessionId
       const when = n.at ? ` · resets ${formatClock(n.at, ctx.now)}` : ''
+      const head = [
+        `⏸ <b>Your chat in ${esc(n.where)} hit the ${windowLabel(n.window)}</b>${esc(when)}`,
+        `${n.chat.cwd ? `📁 ${esc(ctx.label(n.chat.cwd))} · ` : ''}“${esc(clip(n.chat.title, 120))}”`,
+        quote(n.chat.lastPrompt, 600),
+      ]
+      if (n.autoAt) {
+        return {
+          html: [
+            ...head,
+            `<i>At ${esc(formatClock(n.autoAt, ctx.now))} I'll tell it to continue, so it carries on in ${esc(n.where)}. If it doesn't start, I'll continue it here.</i>`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+          keyboard: [
+            [btn('✖️ Don’t continue', `w:${sid}:x`), btn('🤝 Continue here instead', `w:${sid}:c`)],
+            [btn('✏️ Follow up…', `w:${sid}:f`)],
+          ],
+        }
+      }
       return {
         html: [
-          `⏸ <b>Your chat in ${esc(n.where)} hit the ${windowLabel(n.window)}</b>${esc(when)}`,
-          `${n.chat.cwd ? `📁 ${esc(ctx.label(n.chat.cwd))} · ` : ''}“${esc(clip(n.chat.title, 120))}”`,
-          quote(n.chat.lastPrompt, 600),
+          ...head,
           `<i>▶️ continues it here after the reset. It closes the chat in ${esc(n.where)} first; reopen it there later to see everything.</i>`,
         ]
           .filter(Boolean)
@@ -426,6 +443,19 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
           [btn('✖️ Ignore', `w:${sid}:x`)],
         ],
       }
+    }
+    case 'chat_continue': {
+      const name = `“${esc(clip(n.chat.title, 120))}”`
+      if (n.how === 'inbox') {
+        return {
+          html: `▶️ <b>The usage limit reset:</b> I told your chat ${name} in ${esc(n.where)} to continue.`,
+          keyboard: [[btn('🤝 Continue here instead', `w:${n.chat.sessionId}:c`)]],
+        }
+      }
+      if (n.how === 'takeover') {
+        return { html: `🤝 <b>Your chat ${name} didn't restart</b> in ${esc(n.where)}, so #${n.jobId} continues it here (closing it there).` }
+      }
+      return { html: `▶️ <b>#${n.jobId} continues your chat ${name}</b> after the usage limit (it was closed in ${esc(n.where)}).` }
     }
     case 'empty':
       return { html: '🏁 Queue empty.' }
@@ -471,6 +501,7 @@ export function settingsView(o: {
   roots: string[]
   models: string[]
   watch: boolean
+  autoContinue: boolean
   now: number
 }): View {
   const built = o.builtAt ? `rebuilt ${duration(o.now - o.builtAt)} ago` : 'not built yet'
@@ -481,11 +512,12 @@ export function settingsView(o: {
       `Notifications: <b>${esc(o.notify)}</b>\n` +
       `Folder map: ${o.folders} folders under ${o.roots.map(r => esc(basename(r))).join(', ')} · ${built}\n` +
       `Models: ${esc(o.models.join(', '))} <i>(change in ~/${BRAND.homeDir}/config.json)</i>\n` +
-      `Other chats: ${o.watch ? 'I tell you when one in VS Code or a terminal hits a usage limit' : 'not watched'}\n` +
+      `Other chats: ${o.watch ? `I tell you when one in VS Code or a terminal hits a usage limit${o.autoContinue ? ', and continue it at the reset' : ''}` : 'not watched'}\n` +
       '<i>New tasks start with the choices you used last.</i>',
     keyboard: [
       [n('all', '🔔 All'), n('important', '🔕 Important'), n('off', '🔇 Off')],
-      [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), btn('🔄 Rescan folders', 'g:rescan')],
+      [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')],
+      [btn('🔄 Rescan folders', 'g:rescan')],
     ],
   }
 }

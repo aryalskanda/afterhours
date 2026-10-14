@@ -67,7 +67,37 @@ CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS watches (
+  session_id TEXT PRIMARY KEY,
+  cwd TEXT,
+  title TEXT NOT NULL,
+  where_label TEXT NOT NULL,
+  stop_at INTEGER NOT NULL,
+  due_at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  sent_at INTEGER,
+  job_id INTEGER,
+  updated_at INTEGER NOT NULL
+);
 `
+
+/**
+ * One of your other chats (VS Code, a terminal) that stopped on a usage limit and is to be continued
+ * at the reset. waiting → sent (continue posted to its inbox) → done; or handed (a job continues it);
+ * or cancelled (you said don't, or it went away).
+ */
+export interface Watch {
+  sessionId: string
+  cwd: string | null
+  title: string
+  where: string
+  stopAt: number
+  dueAt: number
+  state: 'waiting' | 'sent' | 'done' | 'handed' | 'cancelled'
+  sentAt: number | null
+  jobId: number | null
+  updatedAt: number
+}
 
 const COLUMNS = {
   id: 'id',
@@ -303,6 +333,60 @@ export class Store {
       .query<{ work_dir: string }, [string]>('SELECT DISTINCT work_dir FROM jobs WHERE project_dir = ? AND work_dir IS NOT NULL')
       .all(projectDir)
       .map(r => r.work_dir)
+  }
+
+  // --- watches (your other chats waiting for a usage-limit reset) ----------------
+
+  private toWatch(r: Row): Watch {
+    return {
+      sessionId: r.session_id as string,
+      cwd: (r.cwd as string | null) ?? null,
+      title: r.title as string,
+      where: r.where_label as string,
+      stopAt: r.stop_at as number,
+      dueAt: r.due_at as number,
+      state: r.state as Watch['state'],
+      sentAt: (r.sent_at as number | null) ?? null,
+      jobId: (r.job_id as number | null) ?? null,
+      updatedAt: r.updated_at as number,
+    }
+  }
+
+  putWatch(w: Watch): void {
+    this.db
+      .query<Row, SqlValue[]>(
+        `INSERT INTO watches (session_id, cwd, title, where_label, stop_at, due_at, state, sent_at, job_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (session_id) DO UPDATE SET cwd = excluded.cwd, title = excluded.title, where_label = excluded.where_label,
+           stop_at = excluded.stop_at, due_at = excluded.due_at, state = excluded.state, sent_at = excluded.sent_at,
+           job_id = excluded.job_id, updated_at = excluded.updated_at`,
+      )
+      .run(w.sessionId, w.cwd, w.title, w.where, w.stopAt, w.dueAt, w.state, w.sentAt, w.jobId, w.updatedAt)
+  }
+
+  getWatch(sessionId: string): Watch | null {
+    const row = this.db.query<Row, [string]>('SELECT * FROM watches WHERE session_id = ?').get(sessionId)
+    return row ? this.toWatch(row) : null
+  }
+
+  /** Chats still to be continued: waiting for their reset, or sent continue and not yet seen running. */
+  openWatches(): Watch[] {
+    return this.db
+      .query<Row, []>(`SELECT * FROM watches WHERE state IN ('waiting', 'sent') ORDER BY due_at`)
+      .all()
+      .map(r => this.toWatch(r))
+  }
+
+  setWatchState(sessionId: string, state: Watch['state'], now: number, patch: { sentAt?: number; jobId?: number } = {}): void {
+    this.db
+      .query<Row, SqlValue[]>(
+        'UPDATE watches SET state = ?, sent_at = COALESCE(?, sent_at), job_id = COALESCE(?, job_id), updated_at = ? WHERE session_id = ?',
+      )
+      .run(state, patch.sentAt ?? null, patch.jobId ?? null, now, sessionId)
+  }
+
+  pruneWatches(olderThan: number): void {
+    this.db.query<Row, [number]>(`DELETE FROM watches WHERE state NOT IN ('waiting', 'sent') AND updated_at < ?`).run(olderThan)
   }
 
   // --- events -----------------------------------------------------------------

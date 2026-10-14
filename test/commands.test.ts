@@ -90,6 +90,7 @@ describe('chats', () => {
     cwd: project,
     title: 'Claude Code prompt queue optimizer',
     lastPrompt: null,
+    lastReply: null,
     updatedAt: now - 2 * 3_600_000,
     model: null,
     permissionMode: null,

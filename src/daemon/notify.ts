@@ -36,8 +36,13 @@ export type Notice =
    */
   | { type: 'conflict'; job: Job; holder: string; where: string; busy: boolean; state: 'open' | 'waiting' | 'stuck' }
   | { type: 'took_over'; job: Job; where: string }
-  /** One of your other chats (VS Code, a terminal) stopped on a usage limit. */
-  | { type: 'session_limit'; chat: Conversation; where: string; at: number | null; window?: string }
+  /** One of your other chats (VS Code, a terminal) stopped on a usage limit; `autoAt` = when it's continued. */
+  | { type: 'session_limit'; chat: Conversation; where: string; at: number | null; window?: string; autoAt?: number | null }
+  /**
+   * That chat was continued at the reset: `inbox` = continue posted into the open chat; `takeover` =
+   * it didn't restart, so job `jobId` continues it here; `resume` = it was closed, so a job resumes it.
+   */
+  | { type: 'chat_continue'; chat: Conversation; where: string; how: 'inbox' | 'takeover' | 'resume'; jobId?: number }
   | { type: 'empty' }
 
 const IMPORTANT = new Set<Notice['type']>([
@@ -52,6 +57,7 @@ const IMPORTANT = new Set<Notice['type']>([
   'conflict',
   'took_over',
   'session_limit',
+  'chat_continue',
   'empty',
 ])
 
@@ -173,10 +179,15 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
     case 'session_limit': {
       const when = n.at ? ` · resets ${formatClock(n.at, now)}` : ''
       const where = n.chat.cwd ? ` (${projectLabel(n.chat.cwd, aliases)})` : ''
-      return (
-        `⏸ Your chat “${oneLine(n.chat.title, 80)}”${where} in ${n.where} hit the ${windowLabel(n.window)}${when}.\n` +
-        `Reply q @${n.chat.sessionId.slice(0, 8)} take: continue to continue it here after the reset.`
-      )
+      const head = `⏸ Your chat “${oneLine(n.chat.title, 80)}”${where} in ${n.where} hit the ${windowLabel(n.window)}${when}.`
+      if (n.autoAt) return `${head}\nI'll tell it to continue at ${formatClock(n.autoAt, now)}, so it carries on in ${n.where}.`
+      return `${head}\nReply q @${n.chat.sessionId.slice(0, 8)} take: continue to continue it here after the reset.`
+    }
+    case 'chat_continue': {
+      const name = `“${oneLine(n.chat.title, 80)}”`
+      if (n.how === 'inbox') return `▶️ The usage limit reset: I told your chat ${name} in ${n.where} to continue.`
+      if (n.how === 'takeover') return `🤝 Your chat ${name} didn't restart in ${n.where}, so #${n.jobId} continues it here (closing it there).`
+      return `▶️ #${n.jobId} continues your chat ${name} after the usage limit (it was closed in ${n.where}).`
     }
     case 'empty':
       return '🏁 Queue empty.'

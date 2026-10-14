@@ -1,10 +1,18 @@
 import { existsSync } from 'node:fs'
-import type { ExecMode } from '../shared/types'
+import type { Effort, ExecMode, JobSpec } from '../shared/types'
 import { findConversation, listConversations, whereLabel, type Conversation, type LiveSession } from './sessions'
 import type { Store } from './store'
 
 /** The prompt a hand-off continues a stopped conversation with (Claude Code's own wording). */
 export const CONTINUE_PROMPT = 'Continue from where you left off.'
+
+/**
+ * What Afterhours posts into an open chat's inbox at the reset. Claude shows it as a message from
+ * another session working on your behalf, so it says who sent it and why.
+ */
+export const CONTINUE_INBOX =
+  'Your usage limit has reset. Please continue the task from where you left off. ' +
+  '(Sent by Afterhours, which your user set up to continue their chats after usage limits.)'
 
 /** A conversation plus where it's open right now. */
 export interface Chat extends Conversation {
@@ -69,4 +77,27 @@ export function chatState(c: Chat): string {
   else if (c.where) parts.push(`open in ${c.where}${c.busy ? ', working' : ''}`)
   if (c.limit && !c.busy && !c.running) parts.push('stopped at a usage limit')
   return parts.join(' · ')
+}
+
+/**
+ * A job that continues `chat` in the same conversation, at the front of the queue: the chat's own
+ * mode and model family, your effort. `takeover` closes it first where it's open.
+ */
+export function continueSpec(
+  chat: Pick<Conversation, 'sessionId' | 'cwd' | 'permissionMode' | 'model'> & { cwd: string },
+  o: { model: string; effort: Effort; takeover: boolean; source: string; prompt?: string },
+): JobSpec {
+  return {
+    projectDir: chat.cwd,
+    prompt: o.prompt ?? CONTINUE_PROMPT,
+    ...modeFor(chat.permissionMode),
+    model: modelAlias(chat.model) ?? o.model,
+    effort: o.effort,
+    sessionPolicy: 'session',
+    sessionId: chat.sessionId,
+    isolate: false,
+    takeover: o.takeover,
+    front: true,
+    source: o.source,
+  }
 }

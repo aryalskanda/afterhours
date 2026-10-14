@@ -75,6 +75,8 @@ export interface Config {
   remoteControl: boolean
   /** Tell you when one of your other Claude Code chats (VS Code, a terminal) stops on a usage limit. */
   watchSessions: boolean
+  /** And continue it by itself at the reset: inside the open chat, else here. */
+  autoContinueChats: boolean
   /** Hold a `caffeinate -i` assertion while jobs are pending. */
   keepAwake: boolean
   claudePath?: string
@@ -104,6 +106,7 @@ export const DEFAULT_CONFIG: Config = {
   models: ['opus', 'sonnet', 'haiku'],
   remoteControl: false,
   watchSessions: true,
+  autoContinueChats: true,
   keepAwake: true,
 }
 

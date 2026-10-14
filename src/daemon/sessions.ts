@@ -160,6 +160,8 @@ export interface Conversation {
   cwd: string | null
   title: string
   lastPrompt: string | null
+  /** Claude's last answer in full (its text, not tool calls or errors). */
+  lastReply: string | null
   /** When the transcript last changed (ms). */
   updatedAt: number
   /** Model of Claude's last reply, e.g. claude-opus-5-5. */
@@ -243,6 +245,7 @@ export function readConversation(path: string): Conversation | null {
     cwd: null,
     title: '',
     lastPrompt: null,
+    lastReply: null,
     updatedAt,
     model: null,
     permissionMode: null,
@@ -262,7 +265,11 @@ export function readConversation(path: string): Conversation | null {
       last = e
       if (typeof e.permissionMode === 'string') c.permissionMode = e.permissionMode
       const model = e.type === 'assistant' ? e.message?.model : undefined
-      if (model && model !== '<synthetic>') c.model = model
+      if (model && model !== '<synthetic>') {
+        c.model = model
+        const said = textOf(e.message?.content).trim()
+        if (said && !e.isApiErrorMessage) c.lastReply = said
+      }
       const typed = typedPrompt(e)
       if (typed) c.lastPrompt = typed
     }
