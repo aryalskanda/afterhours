@@ -13,7 +13,8 @@ export interface TmuxDriver {
   pane(name: string): Promise<PaneInfo | null>
   sendKeys(name: string, ...keys: string[]): Promise<void>
   sendText(name: string, text: string): Promise<void>
-  capture(name: string, lines?: number): Promise<string>
+  /** `escapes`: keep the colour codes. */
+  capture(name: string, lines?: number, escapes?: boolean): Promise<string>
   killWindow(name: string): Promise<void>
 }
 
@@ -113,8 +114,8 @@ export class Tmux implements TmuxDriver {
     await this.must(['send-keys', '-t', this.target(name), '-l', '--', text])
   }
 
-  async capture(name: string, lines = 60): Promise<string> {
-    const r = await this.run(['capture-pane', '-p', '-J', '-t', this.target(name), '-S', `-${lines}`])
+  async capture(name: string, lines = 60, escapes = false): Promise<string> {
+    const r = await this.run(['capture-pane', '-p', '-J', ...(escapes ? ['-e'] : []), '-t', this.target(name), '-S', `-${lines}`])
     return r.code === 0 ? r.out : ''
   }
 

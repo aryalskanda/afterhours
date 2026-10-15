@@ -32,6 +32,9 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     createdAt: job.createdAt,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
+    contextPct: job.contextPct,
+    costUsd: job.costUsd,
+    usage: job.usage,
   }
 }
 

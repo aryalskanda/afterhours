@@ -13,6 +13,17 @@ import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOpt
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
+import { toolName, toolSummary } from './tools'
+import { costOf, readTranscript, usageOf } from './transcript'
+
+/** A tool call starting or ending in the running task, for apps watching it live. */
+export interface ToolActivity {
+  job: number
+  at: number
+  phase: 'start' | 'end'
+  tool: string
+  detail: string
+}
 
 export interface RunnerDeps {
   store: Store
@@ -35,6 +46,8 @@ export interface RunnerDeps {
     diffStat(dir: string, since: string | null): Promise<string | null>
     worktree(projectDir: string, jobId: number, prompt: string): Promise<Worktree | null>
     commitAll(dir: string, message: string): Promise<boolean>
+    /** The folder's files as a git tree, without touching the index or refs; null outside git. */
+    snapshot(dir: string): Promise<string | null>
   }
   killPid: (pid: number) => void
   log: (line: string) => void
@@ -42,6 +55,8 @@ export interface RunnerDeps {
   sleep?: (ms: number) => Promise<void>
   /** Opens a conversation in VS Code again, after a task took it from there. */
   reopenInVsCode?: (sessionId: string) => void
+  /** Tool calls as they happen, for apps watching the task. */
+  activity?: (a: ToolActivity) => void
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -114,6 +129,11 @@ const ACTIVITY_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse'
 
 /** Background work that always finishes and wakes the session; shells and monitors may run forever. */
 const FINITE_TASKS = new Set(['subagent', 'workflow'])
+
+/** From when a task's own runs of its conversation count (a little before it started, for clocks). */
+export function taskStart(job: Pick<Job, 'startedAt'>): number {
+  return job.startedAt ? job.startedAt - 1000 : 0
+}
 
 export function windowName(jobId: number): string {
   return `job-${jobId}`
@@ -321,6 +341,7 @@ export class Runner {
       remoteControl: config.remoteControl,
     })
     const startHead = job.launches === 0 ? await this.d.git.head(cwd) : job.startHead
+    const startTree = job.launches === 0 ? await this.d.git.snapshot(cwd) : job.startTree
     const updated = this.d.store.updateJob(job.id, {
       status: 'running',
       phase: 'launching',
@@ -334,6 +355,7 @@ export class Runner {
       ...(tookEntry ? { tookFrom: tookEntry } : {}),
       startedAt: job.startedAt ?? now,
       startHead,
+      startTree,
       lastEventAt: now,
     })
     this.d.store.setThread(job.projectDir, sessionId, now, workDir)
@@ -672,7 +694,8 @@ export class Runner {
     if (job.branch && job.workDir) await this.d.git.commitAll(job.workDir, `${BRAND.name} #${job.id}: ${oneLine(job.prompt, 72)}`)
     const diff = await this.d.git.diffStat(job.workDir ?? job.projectDir, job.startHead)
     await this.d.tmux.killWindow(windowName(job.id))
-    const done = this.d.store.updateJob(job.id, { status: 'done', phase: null, finishedAt: now, summary: diff })
+    const ending = await this.endState(job)
+    const done = this.d.store.updateJob(job.id, { status: 'done', phase: null, finishedAt: now, summary: diff, ...ending })
     this.runtimes.delete(job.id)
     // Taken from VS Code: open it there again (unless more is queued for it), so VS Code is up to date.
     if (job.tookFrom === 'claude-vscode' && job.sessionId && this.d.config().reopenInVsCode && !this.d.store.pendingForSession(job.sessionId)) {
@@ -727,9 +750,13 @@ export class Runner {
         if (!rt.finishing) this.d.store.updateJob(job.id, patch)
         return {}
       }
+      case 'ToolStart':
+        this.toolActivity(job, 'start', payload)
+        return {}
       case 'PostToolUse':
         rt.lastTool = `${payload.tool_name ?? 'tool'} ${excerpt(permissionDetail(String(payload.tool_name), payload.tool_input), 80)}`
         if (job.status === 'held' && job.holdReason !== 'conflict') this.d.store.updateJob(job.id, { status: 'running', holdReason: null })
+        this.toolActivity(job, 'end', payload)
         return {}
       case 'PermissionRequest':
         return this.onPermissionRequest(job, rt, payload)
@@ -744,6 +771,12 @@ export class Runner {
       default:
         return {}
     }
+  }
+
+  private toolActivity(job: Job, phase: 'start' | 'end', payload: HookPayload): void {
+    if (!this.d.activity || typeof payload.tool_name !== 'string') return
+    const cwd = typeof payload.cwd === 'string' ? payload.cwd : (job.launchSpec?.cwd ?? job.projectDir)
+    this.d.activity({ job: job.id, at: this.d.now(), phase, tool: toolName(payload.tool_name), detail: toolSummary(payload.tool_name, payload.tool_input, cwd) })
   }
 
   private async onPermissionRequest(job: Job, rt: Runtime, payload: HookPayload): Promise<HookResponse> {
@@ -887,12 +920,20 @@ export class Runner {
     return {}
   }
 
-  onStatusline(jobId: number, payload: { rate_limits?: unknown }): string {
+  onStatusline(jobId: number, payload: { rate_limits?: unknown; context_window?: unknown; cost?: unknown }): string {
     const now = this.d.now()
     if (payload?.rate_limits) {
       this.saveLimits({ ...this.limits(), ...windowsFromStatusline(payload.rate_limits), updatedAt: now })
     }
-    const job = this.d.store.getJob(jobId)
+    let job = this.d.store.getJob(jobId)
+    if (job && (job.status === 'running' || job.status === 'held')) {
+      const pct = (payload?.context_window as { used_percentage?: unknown } | undefined)?.used_percentage
+      const cost = (payload?.cost as { total_cost_usd?: unknown } | undefined)?.total_cost_usd
+      const patch: Partial<Job> = {}
+      if (typeof pct === 'number' && Number.isFinite(pct) && Math.round(pct) !== (job.contextPct === null ? null : Math.round(job.contextPct))) patch.contextPct = pct
+      if (typeof cost === 'number' && Number.isFinite(cost) && cost !== job.costUsd) patch.costUsd = cost
+      if (Object.keys(patch).length > 0) job = this.d.store.updateJob(job.id, patch)
+    }
     const five = this.limits().fiveHour?.usedPct
     return [`cq #${jobId}`, job ? modeLabel(job) : null, five !== null && five !== undefined ? `5h ${Math.round(five)}%` : null]
       .filter(Boolean)
@@ -1023,13 +1064,32 @@ export class Runner {
     return `Skipped #${job.id}.${next ? ` Next up: #${next.id}.` : ' Queue empty.'}`
   }
 
+  /** Where the task left the files, and the tokens its conversation used: kept when it ends. */
+  private async endState(job: Job): Promise<Partial<Pick<Job, 'endTree' | 'usage' | 'costUsd'>>> {
+    const dir = job.launchSpec?.cwd ?? job.workDir ?? job.projectDir
+    const ending: Partial<Pick<Job, 'endTree' | 'usage' | 'costUsd'>> = { endTree: job.startTree ? await this.d.git.snapshot(dir) : null }
+    if (job.transcriptPath) {
+      try {
+        const t = readTranscript(job.transcriptPath)
+        const since = taskStart(job)
+        ending.usage = usageOf(t, since)
+        const cost = costOf(t, since)
+        if (cost) ending.costUsd = cost.usd
+      } catch {
+        // The transcript is gone; the task just has no count.
+      }
+    }
+    return ending
+  }
+
   private async cancelActive(job: Job): Promise<void> {
     await this.d.tmux.killWindow(windowName(job.id))
     for (const a of this.d.store.pendingApprovals(job.id)) {
       this.d.store.resolveApproval(a.code, 'expired', null, this.d.now())
       this.waiters.get(a.code)?.({ status: 'expired', answer: null })
     }
-    this.d.store.updateJob(job.id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now() })
+    const ending = job.launches > 0 ? await this.endState(job) : {}
+    this.d.store.updateJob(job.id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now(), ...ending })
     this.runtimes.delete(job.id)
     this.limitNotified.delete(job.id)
     // A usage limit, if any, still applies: the next job waits for the same reset.
@@ -1122,11 +1182,11 @@ export class Runner {
     return `Pressed ${names.join(' ')} in #${job.id}.`
   }
 
-  /** The last `lines` of the running job's screen. */
-  async screen(lines: number): Promise<{ jobId: number; text: string } | null> {
+  /** The last `lines` of the running job's screen; `escapes` keeps its colours. */
+  async screen(lines: number, escapes = false): Promise<{ jobId: number; text: string } | null> {
     const job = this.d.store.active()
     if (!job) return null
-    return { jobId: job.id, text: tail(await this.d.tmux.capture(windowName(job.id), Math.max(lines, 40) + 20), lines) }
+    return { jobId: job.id, text: tail(await this.d.tmux.capture(windowName(job.id), Math.max(lines, 40) + 20, escapes), lines) }
   }
 
   async peek(lines: number): Promise<string> {

@@ -4,17 +4,38 @@
 
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve, sep } from 'node:path'
-import type { HostSession, MachineInfo, PolicyInfo, Request, RequestType, Result, Role, Snapshot } from '@afterhours/protocol'
+import { join, resolve, sep } from 'node:path'
+import type {
+  DiffSummary,
+  FilePatch,
+  FilesResult,
+  HostSession,
+  MachineInfo,
+  Notice as WireNotice,
+  PolicyInfo,
+  Request,
+  RequestType,
+  Result,
+  Role,
+  Snapshot,
+  TranscriptPage,
+} from '@afterhours/protocol'
 import { expandHome, type Config } from '../../shared/config'
-import type { Effort, JobSpec } from '../../shared/types'
+import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type ChatSource } from '../chats'
+import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
 import type { FolderMap } from '../folders'
-import type { Runner } from '../runner'
+import { taskStart, type Runner } from '../runner'
+import { findSessions } from '../sessions'
 import type { Store } from '../store'
+import type { git as gitModule } from '../system'
+import { transcriptPage } from '../transcript'
 import type { DeviceRow, RemoteDb } from './db'
 import type { Feed } from './feed'
 import { approvalInfo, chatInfo, jobInfo, limitsInfo } from './wire'
+
+/** What this machine can do beyond protocol 1's first version; apps hide what isn't listed. */
+export const FEATURES = ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi']
 
 type Outcome = Omit<Result, 'type' | 'id'>
 
@@ -38,6 +59,11 @@ const NEEDS: Record<RequestType, Role> = {
   'devices.remove': 'owner',
   'devices.rename': 'owner',
   command: 'owner',
+  transcript: 'viewer',
+  timeline: 'viewer',
+  diff: 'viewer',
+  // Any file in the shared folders, not only what a task changed.
+  files: 'operator',
 }
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 /** Requests that change something: audited, and answered from memory when retried. */
@@ -58,6 +84,7 @@ export interface RouterDeps {
   removeDevice: (id: string, by: string) => boolean
   /** Filled in when an app answers an approval, so other apps hear who did. */
   resolvedBy: Map<string, string>
+  git: Pick<typeof gitModule, 'snapshot' | 'changes' | 'patch' | 'show' | 'treeOf' | 'top'>
   now: () => number
   log: (line: string) => void
 }
@@ -186,6 +213,7 @@ export class Router {
         isolate: config.isolate,
       },
       models: [...new Set([...config.models, config.defaults.model])],
+      features: FEATURES,
     }
   }
 
@@ -270,7 +298,7 @@ export class Router {
       case 'peek': {
         if (!policy.allowScreens) return { ok: false, code: 'policy', error: 'This machine keeps its screens to itself (cq remote screens on).' }
         if (notRunning(r.job)) return { ok: false, code: 'gone', error: `#${r.job} isn't running.` }
-        const screen = await runner.screen(r.lines ?? 40)
+        const screen = await runner.screen(r.lines ?? 40, r.ansi === true)
         return screen ? { ok: true, data: { job: screen.jobId, text: screen.text } } : { ok: true, data: null, text: 'Nothing is running.' }
       }
       case 'say':
@@ -327,7 +355,130 @@ export class Router {
         const text = await this.d.command(r.text, spec => this.guard(spec))
         return text === null ? { ok: false, code: 'invalid', error: `Unknown command "${word}". Try help.` } : { ok: true, text }
       }
+      case 'transcript':
+        return this.transcript(r, roots)
+      case 'timeline': {
+        const job = store.getJob(r.job)
+        if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+        const events = this.d.db.eventsForJob(r.job).map(e => ({ type: 'event' as const, seq: e.seq, at: e.at, notice: JSON.parse(e.notice) as WireNotice, text: e.text }))
+        return { ok: true, data: { events } }
+      }
+      case 'diff':
+        return this.diff(r, roots)
+      case 'files':
+        return this.files(r, roots)
     }
+  }
+
+  private transcript(r: Extract<Request, { type: 'transcript' }>, roots: string[]): Outcome {
+    let path: string | null = null
+    let since: number | undefined
+    if (r.job !== undefined) {
+      const job = this.d.store.getJob(r.job)
+      if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+      if (!isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
+      path = job.transcriptPath && existsSync(job.transcriptPath) ? job.transcriptPath : null
+      if (!path && job.sessionId) path = findSessions(job.sessionId).find(s => s.sessionId === job.sessionId)?.path ?? null
+      // Not started yet: an empty conversation, not an error.
+      if (!path) return { ok: true, data: emptyPage(job.sessionId ?? '') }
+      since = taskStart(job)
+    } else if (r.session) {
+      const found = findSessions(r.session).find(s => s.sessionId === r.session)
+      if (!found) return { ok: false, code: 'not-found', error: 'That conversation is gone.' }
+      if (!found.cwd || !isAllowed(found.cwd, roots)) return { ok: false, code: 'policy', error: 'That conversation is outside the folders this machine shares with apps.' }
+      path = found.path
+    } else {
+      return { ok: false, code: 'invalid', error: 'Say which task or conversation.' }
+    }
+    try {
+      return { ok: true, data: transcriptPage(path, { before: r.before, after: r.after, limit: r.limit, since }) satisfies TranscriptPage }
+    } catch {
+      return { ok: false, code: 'not-found', error: 'The conversation’s transcript is gone.' }
+    }
+  }
+
+  /** Where a task's files are now: its worktree or folder, if it's still there. */
+  private jobDir(job: Job): string | null {
+    for (const dir of [job.launchSpec?.cwd, job.workDir, job.projectDir]) if (dir && isDir(dir)) return dir
+    return null
+  }
+
+  private async diff(r: Extract<Request, { type: 'diff' }>, roots: string[]): Promise<Outcome> {
+    const { git } = this.d
+    const job = this.d.store.getJob(r.job)
+    if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+    if (!isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
+    const dir = this.jobDir(job)
+    const none: DiffSummary = { dir: job.workDir ?? job.projectDir, branch: job.branch, basis: 'none', files: [], truncated: false }
+    if (!dir) return { ok: true, data: none }
+    const active = job.status === 'running' || job.status === 'held'
+    // Exact: the folder when the task started, to when it ended (or now, while it runs).
+    let from: string | null = job.startTree
+    let to: string | null = job.startTree ? (job.endTree ?? (active ? await git.snapshot(dir) : null)) : null
+    let basis: DiffSummary['basis'] = from && to ? 'exact' : 'none'
+    if (!from || !to) {
+      // Older tasks: from the commit it started on to the files as they are now, your edits included.
+      from = job.startTree ?? (job.startHead ? await git.treeOf(dir, job.startHead) : null)
+      to = from ? await git.snapshot(dir) : null
+      basis = from && to ? 'since-start' : 'none'
+    }
+    if (!from || !to) return { ok: true, data: none }
+    const changes = await git.changes(dir, from, to)
+    const top = await git.top(dir)
+    if (!changes || !top) return { ok: true, data: none }
+    // A repo can reach beyond the folders apps may see: only what's inside them, and no secrets.
+    const files = changes.files.filter(f => isAllowed(join(top, f.path), roots) && !isSecretPath(f.path))
+    if (r.file === undefined) {
+      return { ok: true, data: { dir: job.workDir ?? job.projectDir, branch: job.branch, basis, files, truncated: changes.truncated } satisfies DiffSummary }
+    }
+    const entry = files.find(f => f.path === r.file)
+    if (!entry) return { ok: false, code: 'not-found', error: `#${job.id} didn't change ${r.file}, or it isn't shared with apps.` }
+    const patch = await git.patch(dir, from, to, entry.path, entry.from)
+    if (!patch) return { ok: false, code: 'failed', error: 'Git couldn’t show that diff.' }
+    return { ok: true, data: { path: entry.path, ...patch } satisfies FilePatch }
+  }
+
+  private async files(r: Extract<Request, { type: 'files' }>, roots: string[]): Promise<Outcome> {
+    let root: string
+    let job: Job | null = null
+    if (r.job !== undefined) {
+      job = this.d.store.getJob(r.job)
+      if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+      if (!isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
+      const dir = this.jobDir(job)
+      // Paths are relative to the repo's top, as a task's diff names them.
+      root = (dir ? await this.d.git.top(dir) : null) ?? dir ?? job.projectDir
+    } else if (r.folder) {
+      root = resolve(expandHome(r.folder))
+      if (!isAllowed(root, roots)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
+    } else {
+      return { ok: false, code: 'invalid', error: 'Say which task or folder.' }
+    }
+    const rel = (r.path ?? '').replace(/^\/+/, '')
+    // Only inside the folders the machine shares with apps, even when the repo reaches further.
+    const allowedHere = (abs: string) => isAllowed(abs, roots)
+    if (r.query !== undefined) {
+      if (!isDir(root)) return { ok: true, data: { root, path: '', entries: [] } satisfies FilesResult }
+      const entries = (await searchFiles(root, r.query)).filter(e => allowedHere(join(root, e.path)))
+      return { ok: true, data: { root, path: '', entries } satisfies FilesResult }
+    }
+    if (r.read) {
+      if (isSecretPath(rel)) return { ok: false, code: 'policy', error: 'That file holds secrets; it stays on the machine.' }
+      if (!allowedHere(join(root, rel))) return { ok: false, code: 'policy', error: 'That file is outside the folders this machine shares with apps.' }
+      // A finished task's files as it left them, even after its worktree is gone.
+      if (job?.endTree && job.status !== 'running' && job.status !== 'held') {
+        const bytes = await this.d.git.show(this.jobDir(job) ?? job.projectDir, job.endTree, rel)
+        if (bytes) return { ok: true, data: { root, path: rel, file: fileContent(rel, bytes, bytes.length) } satisfies FilesResult }
+      }
+      if (!isDir(root)) return { ok: false, code: 'not-found', error: 'The task’s folder is gone.' }
+      const file = readFileInside(root, rel)
+      return file ? { ok: true, data: { root, path: rel, file } satisfies FilesResult } : { ok: false, code: 'not-found', error: `No file ${rel}.` }
+    }
+    if (!isDir(root)) return { ok: false, code: 'not-found', error: 'The folder is gone.' }
+    const listed = listFolder(root, rel)
+    if (!listed || !allowedHere(join(root, listed.path))) return { ok: false, code: 'not-found', error: `No folder ${rel || root}.` }
+    const entries = listed.entries.filter(e => allowedHere(join(root, e.path)))
+    return { ok: true, data: { root, path: listed.path, entries } satisfies FilesResult }
   }
 
   private queue(r: Extract<Request, { type: 'queue' }>, config: Config): Outcome {
@@ -390,6 +541,10 @@ export class Router {
     this.d.log(`${name} sent a message to chat ${chat.sessionId.slice(0, 8)} as #${job.id}`)
     return { ok: true, text: `Sent to ${title} as #${job.id}.`, data: { job: jobInfo(job) } }
   }
+}
+
+function emptyPage(session: string): TranscriptPage {
+  return { session, items: [], before: null, total: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: null, updatedAt: 0 }
 }
 
 export function publicDevice(d: DeviceRow) {

@@ -3,8 +3,9 @@
 import type { JobInfo } from '@afterhours/protocol'
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { router } from 'expo-router'
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 import { ScrollView, Text, View } from 'react-native'
+import { parseAnsi, type Run } from '../lib/ansi'
 import { useNow } from '../app-state'
 import { basename, clock, duration, oneLine, phaseLabel } from '../lib/format'
 import type { MachineState } from '../lib/state'
@@ -115,11 +116,83 @@ export function LimitRow(props: { label: string; window?: { usedPct: number | nu
   )
 }
 
-/** A terminal's text, newest lines in view; it stays where you scrolled to if you scrolled up. */
-export function Terminal(props: { text: string; testID?: string; height?: number }) {
+/** The 16 terminal colours, readable on the terminal's dark background. */
+const ANSI = ['#4a5060', '#ff6b6b', '#5fd27e', '#f5c451', '#6aa8ff', '#d48cff', '#56d4e0', '#d7dae0', '#7d8494', '#ff8f8f', '#8ce99a', '#ffe08a', '#9cc4ff', '#e6a8ff', '#8ae6ee', '#ffffff']
+const MATCH = '#ffd60a'
+
+function colour(v: Run['fg'], fallback: string): string {
+  return v === undefined ? fallback : typeof v === 'number' ? (ANSI[v] ?? fallback) : v
+}
+
+/** Matches of `find` in a line, as [start, end) ranges, case-insensitive. */
+function matches(line: string, find: string): [number, number][] {
+  if (!find) return []
+  const out: [number, number][] = []
+  const hay = line.toLowerCase()
+  const needle = find.toLowerCase()
+  for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) out.push([i, i + needle.length])
+  return out
+}
+
+/** How many times `find` appears in a terminal's text (its colour codes aside). */
+export function countMatches(text: string, find: string, ansi: boolean): number {
+  if (!find.trim()) return 0
+  const lines = ansi ? parseAnsi(text).map(l => l.map(r => r.text).join('')) : text.split('\n')
+  return lines.reduce((n, l) => n + matches(l, find.trim()).length, 0)
+}
+
+/** One line's runs, with `find`'s matches highlighted across them. */
+function Line(props: { runs: Run[]; find: string; ink: string; last: boolean }) {
+  const hits = matches(props.runs.map(r => r.text).join(''), props.find)
+  const parts: { text: string; run: Run; hit: boolean }[] = []
+  let pos = 0
+  for (const run of props.runs) {
+    let start = 0
+    while (start < run.text.length) {
+      const at = pos + start
+      const hit = hits.find(([a, b]) => at >= a && at < b)
+      const next = hit ? Math.min(hit[1] - pos, run.text.length) : Math.min(...hits.map(([a]) => a - pos).filter(a => a > start), run.text.length)
+      parts.push({ text: run.text.slice(start, next), run, hit: hit !== undefined })
+      start = next
+    }
+    pos += run.text.length
+  }
+  return (
+    <Text>
+      {parts.map((p, i) => {
+        const fg = colour(p.run.inverse ? p.run.bg : p.run.fg, props.ink)
+        const bg = p.run.inverse ? colour(p.run.fg, props.ink) : p.run.bg === undefined ? undefined : colour(p.run.bg, 'transparent')
+        return (
+          <Text
+            key={i}
+            style={{
+              color: p.hit ? '#000000' : p.run.dim ? '#8a90a0' : fg,
+              backgroundColor: p.hit ? MATCH : bg,
+              fontWeight: p.run.bold ? '700' : undefined,
+              fontStyle: p.run.italic ? 'italic' : undefined,
+              textDecorationLine: p.run.underline ? 'underline' : undefined,
+            }}
+          >
+            {p.text}
+          </Text>
+        )
+      })}
+      {props.last ? '' : '\n'}
+    </Text>
+  )
+}
+
+/**
+ * A terminal's text, newest lines in view; it stays where you scrolled to if you scrolled up.
+ * `ansi`: the text carries colour codes. `find` highlights matches.
+ */
+export function Terminal(props: { text: string; testID?: string; height?: number; ansi?: boolean; find?: string; fontSize?: number }) {
   const { c, m, wide } = useTheme()
   const ref = useRef<ScrollView>(null)
   const atEnd = useRef(true)
+  const lines = useMemo(() => (props.ansi ? parseAnsi(props.text) : props.text.split('\n').map(text => [{ text }])), [props.text, props.ansi])
+  const size = props.fontSize ?? (wide ? 12 : 12.5)
+  const find = (props.find ?? '').trim()
   return (
     <ScrollView
       ref={ref}
@@ -136,8 +209,8 @@ export function Terminal(props: { text: string; testID?: string; height?: number
       testID={props.testID}
     >
       <ScrollView horizontal nestedScrollEnabled contentContainerStyle={{ padding: m.rowX }}>
-        <Text selectable style={{ fontFamily: mono, fontSize: wide ? 12 : 12.5, lineHeight: wide ? 17 : 18, color: c.terminalInk }}>
-          {props.text || ' '}
+        <Text selectable style={{ fontFamily: mono, fontSize: size, lineHeight: Math.round(size * 1.42), color: c.terminalInk }}>
+          {props.text ? lines.map((runs, i) => <Line key={i} runs={runs} find={find} ink={c.terminalInk} last={i === lines.length - 1} />) : ' '}
         </Text>
       </ScrollView>
     </ScrollView>

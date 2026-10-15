@@ -121,7 +121,7 @@ function setup() {
     scripts: { hook: '/h', status: '/s' },
     writeFile: () => {},
     sessionHolders: id => holders.filter(h => h.sessionId === id),
-    git: { head: async () => null, diffStat: async () => null, worktree: async () => null, commitAll: async () => false },
+    git: { head: async () => null, diffStat: async () => null, worktree: async () => null, commitAll: async () => false, snapshot: async () => null },
     killPid: pid => {
       killed.push(pid)
       holders = holders.filter(h => h.pid !== pid)

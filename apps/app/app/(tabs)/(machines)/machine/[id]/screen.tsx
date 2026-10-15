@@ -4,10 +4,12 @@
 import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router'
 import { useCallback, useRef, useState } from 'react'
 import { hub, useMachine } from '../../../../../src/app-state'
-import { Terminal } from '../../../../../src/components/bits'
-import { Block, Button, EmptyState, Group, HStack, Note, Page, TextArea, Txt } from '../../../../../src/components/ui'
+import { countMatches, Terminal } from '../../../../../src/components/bits'
+import { Block, Button, EmptyState, FieldRow, Group, HStack, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { ScreenText } from '../../../../../src/lib/results'
+import { supports } from '../../../../../src/lib/state'
+import { useTheme } from '../../../../../src/theme'
 
 const EVERY_MS = 2500
 
@@ -33,6 +35,12 @@ export default function ScreenView() {
   const act = useAction()
   const poke = useRef<() => void>(() => {})
   const jobId = m?.active?.id
+  const [find, setFind] = useState('')
+  const [size, setSize] = useState<number | null>(null)
+  const { wide } = useTheme()
+  const colours = useRef(false)
+  colours.current = m ? supports(m, 'peek.ansi') : false
+  const fontSize = size ?? (wide ? 12 : 12.5)
 
   useFocusEffect(
     useCallback(() => {
@@ -49,7 +57,7 @@ export default function ScreenView() {
         inflight = true
         if (timer) clearTimeout(timer)
         timer = null
-        const r = await hub.request(id, { type: 'peek', lines: 60 }, { timeoutMs: 10_000 })
+        const r = await hub.request(id, { type: 'peek', lines: 120, ...(colours.current ? { ansi: true } : {}) }, { timeoutMs: 10_000 })
         inflight = false
         if (stopped) return
         if (r.ok) {
@@ -95,7 +103,25 @@ export default function ScreenView() {
         <EmptyState title="The screen stays on the machine" text="To share it, run cq remote screens on, on the machine." />
       ) : (
         <>
-          {text !== null ? <Terminal text={text} testID="terminal" /> : <Note text={note ?? 'Reading the screen…'} />}
+          {text !== null ? (
+            <>
+              <Group>
+                <FieldRow placeholder="Find on the screen" value={find} onChangeText={setFind} autoCapitalize="none" autoCorrect={false} testID="screen-find" />
+                <Row
+                  title={find.trim() ? `${countMatches(text, find, colours.current)} found` : 'Text size'}
+                  trailing={
+                    <HStack>
+                      <Button small kind="gray" title="A−" onPress={() => setSize(Math.max(9, fontSize - 1))} testID="screen-smaller" />
+                      <Button small kind="gray" title="A+" onPress={() => setSize(Math.min(18, fontSize + 1))} testID="screen-bigger" />
+                    </HStack>
+                  }
+                />
+              </Group>
+              <Terminal text={text} ansi={colours.current} find={find} fontSize={fontSize} testID="terminal" />
+            </>
+          ) : (
+            <Note text={note ?? 'Reading the screen…'} />
+          )}
           {text !== null && note ? <Note ok={false} text={note} /> : null}
           {canAct && jobId && p?.allowTyping ? (
             <>

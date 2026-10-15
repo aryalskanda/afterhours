@@ -10,6 +10,7 @@ import {
   PairResult,
   PROTOCOL,
   Welcome,
+  type Activity,
   type Event,
   type MachineInfo,
   type Request,
@@ -51,6 +52,7 @@ interface Listeners {
   state: Set<(s: State) => void>
   snapshot: Set<(s: Snapshot) => void>
   status: Set<(status: MachineStatus, detail?: string) => void>
+  activity: Set<(a: Activity) => void>
 }
 
 interface Pending {
@@ -219,7 +221,7 @@ export class MachineConnection {
   private failures = 0
   private closed = false
   private readonly pending = new Map<string, Pending>()
-  private readonly listeners: Listeners = { event: new Set(), state: new Set(), snapshot: new Set(), status: new Set() }
+  private readonly listeners: Listeners = { event: new Set(), state: new Set(), snapshot: new Set(), status: new Set(), activity: new Set() }
 
   constructor(
     private readonly client: AppClient,
@@ -393,6 +395,9 @@ export class MachineConnection {
         this.machine = message.machine
         this.role = message.role
         for (const l of this.listeners.snapshot) l(message)
+        return
+      case 'activity':
+        for (const l of this.listeners.activity) l(message)
         return
       case 'pair.result':
         return

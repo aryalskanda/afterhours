@@ -9,13 +9,17 @@ The app for your Afterhours machines, on iPhone, Android and the web. The deskto
   - Plans: rendered. Approve, or Ask for changes.
   - Folder trust.
 - **A machine**:
-  - the running task, with Screen (live), Stop, Skip, Continue now (after a limit), typing and keys;
+  - the running task, with Screen (live, in colour, with find and text size), Stop, Skip, Continue now (after a limit), typing and keys;
   - the queue (Run next, Remove);
   - usage limits, recent tasks, Pause and Resume;
   - the machine's rules, and its devices (owners).
-- **A task**: what it was asked and how it runs, what happened, Claude's final answer and the plan, rendered. Follow up in the same conversation.
+- **A task**: what it was asked and how it runs, how full its context is, its tokens and cost (as Claude Code counts them). Then three views:
+  - Activity: the conversation as it happens: what you and Claude said, each tool call in a line (tap it for what came back), and what it's doing right now.
+  - Changes: the files it changed, with lines added and removed; each opens its diff, numbered, and the whole file as the task left it.
+  - Answer: Claude's final answer and the plan, rendered, and every notice about the task.
+  Follow up in the same conversation.
 - **New task**: the machine, a folder (recent ones, or search), the prompt, then plan or not, permission mode, model, effort, its own branch, run next. It starts from what you used last time on that machine. What the machine doesn't allow isn't offered.
-- **Chats**: your Claude Code conversations on a machine. Read where one left off and write into it.
+- **Chats**: your Claude Code conversations on a machine. Read one whole, tool calls included, and write into it.
 - **Settings**: this device's name and key, app lock and Face ID before Allow, machines, about.
 
 A banner (and a buzz) tells you when something new needs you while the app is open. Push notifications for when it's closed come later; they need your accounts (below).

@@ -27,7 +27,7 @@ import { runCommand } from './commands'
 import { FolderMap } from './folders'
 import { Notifier } from './notify'
 import { Remote, type RemoteStatus } from './remote'
-import { Runner, type HookPayload } from './runner'
+import { Runner, type HookPayload, type ToolActivity } from './runner'
 import { deliverToInbox } from './inbox'
 import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { Store } from './store'
@@ -92,6 +92,8 @@ export async function runDaemon(): Promise<void> {
   store.expirePendingApprovals(Date.now())
 
   const notifier = new Notifier({ level: () => config.notify, aliases: () => config.aliases, now: Date.now, log })
+  // Tool calls go to the apps once remote access is set up below.
+  let onActivity: (a: ToolActivity) => void = () => {}
   const runner = new Runner({
     store,
     tmux: new Tmux(tmuxPath, TMUX_SOCKET, paths.tmuxConf, cleanEnv()),
@@ -118,6 +120,7 @@ export async function runDaemon(): Promise<void> {
     log,
     // Only into a VS Code that's running on this desktop: never started just for this.
     reopenInVsCode: sessionId => reopenInVsCode(sessionId, log),
+    activity: a => onActivity(a),
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
@@ -173,9 +176,11 @@ export async function runDaemon(): Promise<void> {
     config: getConfig,
     command: (text, guard) => runCommand(text, { ...commandContext('remote'), guard }),
     version: VERSION,
+    git,
     log,
     now: Date.now,
   })
+  onActivity = a => remote.activity(a)
   remote.apply()
   notifier.addSink((text, notice) => remote.notice(text, notice), { unfiltered: true })
 

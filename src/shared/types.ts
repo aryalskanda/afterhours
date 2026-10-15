@@ -54,6 +54,24 @@ export interface Job {
   finishedAt: number | null
   lastEventAt: number | null
   transcriptPath: string | null
+  /**
+   * The folder's files when the task first started and when it ended, as git trees (written to the
+   * repo's object store, no ref or index touched), so its diff is exactly its own changes.
+   */
+  startTree: string | null
+  endTree: string | null
+  /** From Claude Code's status line: how full the context is (0-100), and the session's cost. */
+  contextPct: number | null
+  costUsd: number | null
+  /** Tokens the conversation used, counted from its transcript when the task ended. */
+  usage: Usage | null
+}
+
+export interface Usage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
 }
 
 export interface JobSpec {

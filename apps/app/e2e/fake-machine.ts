@@ -8,7 +8,10 @@ import {
   newIdentity,
   peerId,
   PROTOCOL,
+  type Activity,
   type ApprovalInfo,
+  type DiffFile,
+  type TranscriptItem,
   type Event,
   type HostSession,
   type JobInfo,
@@ -60,6 +63,46 @@ export const SAMPLE_PLAN = `## Plan
 | src/theme.ts | new |
 | src/settings/Appearance.tsx | toggle |`
 
+/** A task's conversation as the transcript request gives it. `running`: the last tool hasn't answered. */
+type WithoutIndex<T> = T extends unknown ? Omit<T, 'i'> : never
+
+export function sampleTranscript(running: boolean): TranscriptItem[] {
+  const at = now() - 11 * 60_000
+  const items: WithoutIndex<TranscriptItem>[] = [
+    { kind: 'you', at, text: 'Add a dark mode toggle to the settings page' },
+    { kind: 'claude', at: at + 20_000, text: 'I’ll look at how the settings page is built first.' },
+    { kind: 'tool', at: at + 30_000, id: 't1', name: 'Read', detail: 'src/settings/index.tsx', result: '     1→import { Group } from \'../ui\'\n     2→\n     3→export function Settings() {', error: false },
+    { kind: 'tool', at: at + 40_000, id: 't2', name: 'Grep', detail: 'theme in src', result: 'src/theme.ts\nsrc/app.tsx', error: false },
+    { kind: 'tool', at: at + 60_000, id: 't3', name: 'Edit', detail: 'src/settings/index.tsx', result: 'The file src/settings/index.tsx has been updated.', error: false },
+    { kind: 'tool', at: at + 90_000, id: 't4', name: 'Bash', detail: 'npm test -- --watch=false', result: running ? null : 'Tests: 12 passed', error: false },
+  ]
+  if (!running) items.push({ kind: 'claude', at: at + 120_000, text: 'Done. The toggle is in **Settings → Appearance**.' })
+  return items.map((item, i) => ({ ...item, i }) as TranscriptItem)
+}
+
+export const SAMPLE_CHANGES: DiffFile[] = [
+  { path: 'src/settings/Appearance.tsx', status: 'added', added: 41, removed: 0, binary: false },
+  { path: 'src/settings/index.tsx', status: 'modified', added: 3, removed: 1, binary: false },
+  { path: 'src/theme.ts', status: 'added', added: 24, removed: 0, binary: false },
+]
+
+export const SAMPLE_PATCH = `diff --git a/src/settings/index.tsx b/src/settings/index.tsx
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/settings/index.tsx
++++ b/src/settings/index.tsx
+@@ -1,7 +1,9 @@ import
+ import { Group } from '../ui'
++import { Appearance } from './Appearance'
+ 
+ export function Settings() {
+   return (
+     <Group>
+-      <Notifications />
++      <Notifications />
++      <Appearance />
+     </Group>
+`
+
 export const SAMPLE_ANSWER = `Done. The toggle is in **Settings → Appearance**.
 
 - Theme store: \`src/theme.ts\`
@@ -85,6 +128,8 @@ export interface FakeMachine {
   failAnswers(n: number): void
   /** Removes a device, as `cq devices remove` does. */
   removeDevice(id: string): void
+  /** A tool call in the running task, to listening apps. */
+  activity(a: Omit<Activity, 'type'>): void
   devices(): string[]
   stop(): void
 }
@@ -103,14 +148,25 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
   const details = new Map<number, { plan: string | null; answer: string | null }>()
 
   if (o.sample !== false) {
-    state.active = job(14, { status: 'running', phase: 'working', startedAt: now() - 12 * 60_000, branch: 'afterhours/14-dark-mode' })
+    state.active = job(14, { status: 'running', phase: 'working', startedAt: now() - 12 * 60_000, branch: 'afterhours/14-dark-mode', contextPct: 38 })
     state.queued = [job(15, { prompt: 'Fix the flaky checkout test', folder: '/home/me/code/shop/api', mode: 'acceptEdits', plan: false })]
-    state.recent = [job(12, { status: 'done', prompt: 'Add CSV export to reports', createdAt: now() - 7_500_000, startedAt: now() - 7_200_000, finishedAt: now() - 5_400_000, summary: 'Added CSV export' })]
+    state.recent = [
+      job(12, {
+        status: 'done',
+        prompt: 'Add CSV export to reports',
+        createdAt: now() - 7_500_000,
+        startedAt: now() - 7_200_000,
+        finishedAt: now() - 5_400_000,
+        summary: 'Added CSV export',
+        usage: { input: 3_100, output: 18_400, cacheRead: 1_240_000, cacheWrite: 96_000 },
+        costUsd: 1.84,
+      }),
+    ]
     details.set(12, { plan: SAMPLE_PLAN, answer: SAMPLE_ANSWER })
     details.set(14, { plan: SAMPLE_PLAN, answer: null })
   }
 
-  const machine = (): MachineInfo => ({ id, name, os: 'Linux', arch: 'arm64', version: '0.1.0', protocol: PROTOCOL })
+  const machine = (): MachineInfo => ({ id, name, os: 'Linux', arch: 'arm64', version: '0.2.0', protocol: PROTOCOL })
   const snapshot = (role: Role): Snapshot => ({
     type: 'snapshot',
     seq,
@@ -125,6 +181,7 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     policy: { allowedRoots: ['/home/me/code'], allowBypass: false, allowScreens: true, allowTyping: true },
     defaults: { plan: true, review: false, mode: 'auto', model: 'sonnet', effort: 'high', isolate: true },
     models: ['opus', 'sonnet', 'haiku'],
+    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi'],
   })
 
   const host: Host = new Host({
@@ -197,8 +254,48 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
             ],
           },
         })
-      case 'peek':
-        return reply(session, r, { ok: true, data: { job: state.active?.id ?? 0, text: '⏺ Editing src/theme.ts\n  ⎿  Added 24 lines\n\n✻ Working… (2m 10s · esc to interrupt)' } })
+      case 'peek': {
+        const text = r.ansi
+          ? '\x1b[32m⏺\x1b[0m Editing \x1b[1msrc/theme.ts\x1b[22m\n  ⎿  Added \x1b[32m24\x1b[39m lines\n\n\x1b[38;5;208m✻\x1b[0m Working… \x1b[2m(2m 10s · esc to interrupt)\x1b[22m'
+          : '⏺ Editing src/theme.ts\n  ⎿  Added 24 lines\n\n✻ Working… (2m 10s · esc to interrupt)'
+        return reply(session, r, { ok: true, data: { job: state.active?.id ?? 0, text } })
+      }
+      case 'transcript': {
+        const running = r.job !== undefined && state.active?.id === r.job
+        const chat: TranscriptItem[] = [
+          { kind: 'you', i: 0, at: now() - 900_000, text: 'Make the checkout faster' },
+          { kind: 'tool', i: 1, at: now() - 890_000, id: 'c1', name: 'Read', detail: 'src/checkout.ts', result: 'export function total(items) {', error: false },
+          { kind: 'claude', i: 2, at: now() - 880_000, text: 'I moved the **price lookup** out of the loop.' },
+        ]
+        const all = r.session ? chat : r.job === 15 ? [] : sampleTranscript(running)
+        const limit = r.limit ?? 100
+        const start = r.after !== undefined ? Math.max(0, r.after + 1) : Math.max(0, Math.min(r.before ?? all.length, all.length) - limit)
+        const end = r.after !== undefined ? start + limit : Math.min(r.before ?? all.length, all.length)
+        return reply(session, r, {
+          ok: true,
+          data: {
+            session: '3f0c2a9e-0000-4000-8000-000000000001',
+            items: all.slice(start, end),
+            before: start > 0 ? start : null,
+            total: all.length,
+            usage: { input: 2_400, output: 9_800, cacheRead: 610_000, cacheWrite: 48_000 },
+            cost: { usd: 0.92, linesAdded: 68, linesRemoved: 1 },
+            updatedAt: now(),
+          },
+        })
+      }
+      case 'timeline':
+        return reply(session, r, { ok: true, data: { events: events.filter(e => 'job' in e.notice && (typeof e.notice.job === 'number' ? e.notice.job : e.notice.job.id) === r.job) } })
+      case 'diff': {
+        if (r.file === undefined) return reply(session, r, { ok: true, data: { dir: '/home/me/code/shop/web', branch: 'afterhours/14-dark-mode', basis: 'exact', files: SAMPLE_CHANGES, truncated: false } })
+        if (!SAMPLE_CHANGES.some(f => f.path === r.file)) return reply(session, r, { ok: false, code: 'not-found', error: `#${r.job} didn't change ${r.file}.` })
+        return reply(session, r, { ok: true, data: { path: r.file, patch: SAMPLE_PATCH, binary: false, truncated: false } })
+      }
+      case 'files': {
+        if (session.role === 'viewer') return reply(session, r, { ok: false, code: 'forbidden', error: 'This device is a viewer here; that needs operator.' })
+        if (r.read) return reply(session, r, { ok: true, data: { root: '/home/me/code/shop/web', path: r.path, file: { path: r.path, kind: 'text', size: 120, text: "import { Group } from '../ui'\nimport { Appearance } from './Appearance'\n\nexport function Settings() {\n  return <Group><Appearance /></Group>\n}\n", truncated: false } } })
+        return reply(session, r, { ok: true, data: { root: '/home/me/code/shop/web', path: r.path ?? '', entries: [{ name: 'src', path: 'src', kind: 'dir', size: null }] } })
+      }
       case 'devices':
         return reply(session, r, { ok: true, data: [...roles.entries()].map(([device, role]) => ({ id: device, name: device === session.device ? session.hello.name : 'Another device', platform: 'test', role, addedAt: now(), lastSeen: now() })) })
       case 'devices.remove':
@@ -231,6 +328,9 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     removeDevice(device) {
       roles.delete(device)
       host.unlink(device)
+    },
+    activity(a) {
+      host.broadcast({ type: 'activity', ...a })
     },
     devices: () => [...roles.keys()],
     stop: () => host.stop(),

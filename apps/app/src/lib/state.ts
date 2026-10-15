@@ -1,7 +1,7 @@
 // What the app knows about each machine, and how a snapshot, a queue change or an event changes
 // it. Pure functions: the hub calls them, tests call them, React only reads the result.
 
-import type { ApprovalInfo, Defaults, Event, JobInfo, LimitsInfo, MachineInfo, MachineStatus, Notice, PolicyInfo, Role, Snapshot, State } from '@afterhours/protocol'
+import type { Activity, ApprovalInfo, Defaults, Event, JobInfo, LimitsInfo, MachineInfo, MachineStatus, Notice, PolicyInfo, Role, Snapshot, State } from '@afterhours/protocol'
 
 /** A paired machine, as kept on this device. */
 export interface SavedMachine {
@@ -32,10 +32,15 @@ export interface MachineState extends SavedMachine {
   models: string[]
   /** The newest events, oldest first. */
   events: Event[]
+  /** What the machine can do beyond the first version (`transcript`, `diff`…). */
+  features: string[]
+  /** Tool calls of its latest task as they happened, oldest first (not kept). */
+  activity: Activity[]
 }
 
 const MAX_EVENTS = 400
 const MAX_RECENT = 25
+const MAX_ACTIVITY = 60
 
 export function machineState(saved: SavedMachine): MachineState {
   return {
@@ -53,6 +58,8 @@ export function machineState(saved: SavedMachine): MachineState {
     defaults: null,
     models: [],
     events: [],
+    features: [],
+    activity: [],
   }
 }
 
@@ -80,8 +87,27 @@ export function applySnapshot(m: MachineState, s: Snapshot): MachineState {
     policy: s.policy,
     defaults: s.defaults ?? m.defaults,
     models: s.models ?? m.models,
+    features: s.features ?? [],
     lastSeq: Math.max(m.lastSeq, s.seq),
   }
+}
+
+/** Whether the machine runs a version of Afterhours that can do `feature`. */
+export function supports(m: Pick<MachineState, 'features'>, feature: string): boolean {
+  return m.features.includes(feature)
+}
+
+/** A tool call in the running task; a new task's calls replace the last one's. */
+export function applyActivity(m: MachineState, a: Activity): MachineState {
+  const same = m.activity.length === 0 || m.activity[m.activity.length - 1]!.job === a.job
+  const list = same ? [...m.activity, a] : [a]
+  return { ...m, activity: list.slice(-MAX_ACTIVITY) }
+}
+
+/** What the task is doing right now: its last tool call if that hasn't finished. */
+export function nowDoing(m: Pick<MachineState, 'activity'>, job: number): Activity | null {
+  const last = m.activity[m.activity.length - 1]
+  return last && last.job === job && last.phase === 'start' ? last : null
 }
 
 export function applyState(m: MachineState, s: State): MachineState {

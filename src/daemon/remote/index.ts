@@ -23,11 +23,11 @@ import type { JobSpec } from '../../shared/types'
 import type { ChatSource } from '../chats'
 import type { FolderMap } from '../folders'
 import type { Notice } from '../notify'
-import type { Runner } from '../runner'
+import type { Runner, ToolActivity } from '../runner'
 import type { Store } from '../store'
 import { RemoteDb, type AuditEntry } from './db'
 import { Feed } from './feed'
-import { publicDevice, Router } from './router'
+import { publicDevice, Router, type RouterDeps } from './router'
 
 export interface RemoteDeps {
   store: Store
@@ -39,6 +39,8 @@ export interface RemoteDeps {
   version: string
   log: (line: string) => void
   now: () => number
+  /** Reading tasks' changes: git trees, diffs and files. */
+  git: RouterDeps['git']
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
@@ -83,6 +85,7 @@ export class Remote {
       machine: () => this.machine(),
       removeDevice: (id, by) => this.removeDevice(id, by),
       resolvedBy: this.resolvedBy,
+      git: d.git,
       now: d.now,
       log: d.log,
     })
@@ -151,6 +154,11 @@ export class Remote {
   /** The notifier sink. */
   notice(text: string, notice: Notice): void {
     this.feed.record(text, notice)
+  }
+
+  /** A tool call in the running task, to the apps listening (not stored). */
+  activity(a: ToolActivity): void {
+    this.host?.broadcast({ type: 'activity', ...a })
   }
 
   /** Call every few seconds from the daemon's loop. */

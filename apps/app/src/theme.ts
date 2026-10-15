@@ -28,6 +28,11 @@ const light = {
   terminal: '#0e1320',
   terminalInk: '#e4e7ee',
   shadow: '#000000',
+  /** Diffs: added and removed lines, and their marks. */
+  addedBg: '#e7f6ec',
+  added: '#1b7a3a',
+  removedBg: '#fdeceb',
+  removed: '#b3261e',
 }
 
 export type Colors = typeof light
@@ -54,6 +59,10 @@ const dark: Colors = {
   terminal: '#05080f',
   terminalInk: '#e4e7ee',
   shadow: '#000000',
+  addedBg: 'rgba(48, 209, 88, 0.14)',
+  added: '#5fd27e',
+  removedBg: 'rgba(255, 105, 97, 0.15)',
+  removed: '#ff8a83',
 }
 
 export const palette = { light, dark }

@@ -1,15 +1,17 @@
-// One Claude Code conversation: where it left off (your last message, Claude's last reply), and a
-// box to write the next one.
+// One Claude Code conversation: all of it (or, from an older machine, your last message and Claude's
+// last reply), and a box to write the next one.
 
 import type { ChatInfo } from '@afterhours/protocol'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { chatCache, hub, useMachine, useNow } from '../../../../../src/app-state'
+import { Conversation } from '../../../../../src/components/Conversation'
 import { Markdown } from '../../../../../src/components/Markdown'
 import { Block, Button, EmptyState, Group, HStack, LoadingRows, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { ago, oneLine, shortPath } from '../../../../../src/lib/format'
 import { ChatList, Queued } from '../../../../../src/lib/results'
+import { supports } from '../../../../../src/lib/state'
 
 export default function ChatScreen() {
   const { machine: id, session } = useLocalSearchParams<{ machine: string; session: string }>()
@@ -66,20 +68,26 @@ export default function ChatScreen() {
               </Txt>
             </Block>
           </Group>
-          {chat.lastPrompt ? (
-            <Group header="You">
-              <Block>
-                <Txt selectable>{chat.lastPrompt}</Txt>
-              </Block>
-            </Group>
-          ) : null}
-          {chat.lastReply ? (
-            <Group header="Claude" testID="chat-reply">
-              <Block>
-                <Markdown text={chat.lastReply} />
-              </Block>
-            </Group>
-          ) : null}
+          {supports(m, 'transcript') ? (
+            <Conversation machine={m} session={session} live={chat.busy || chat.running} testID="chat-conversation" />
+          ) : (
+            <>
+              {chat.lastPrompt ? (
+                <Group header="You">
+                  <Block>
+                    <Txt selectable>{chat.lastPrompt}</Txt>
+                  </Block>
+                </Group>
+              ) : null}
+              {chat.lastReply ? (
+                <Group header="Claude" testID="chat-reply">
+                  <Block>
+                    <Markdown text={chat.lastReply} />
+                  </Block>
+                </Group>
+              ) : null}
+            </>
+          )}
         </>
       ) : missing ? (
         <Note text={`Not among the recent chats ${m.name} shares with apps.`} />

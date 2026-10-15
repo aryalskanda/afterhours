@@ -19,7 +19,7 @@ import {
   type SocketFactory,
   Snapshot,
 } from '@afterhours/protocol'
-import { applyEvent, applySnapshot, applyState, machineState, saved, wantsAttention, withStatus, type MachineState, type SavedMachine } from './state'
+import { applyActivity, applyEvent, applySnapshot, applyState, machineState, saved, wantsAttention, withStatus, type MachineState, type SavedMachine } from './state'
 
 /** A request as screens write it (the hub adds the id). */
 export type RequestBody = Request extends infer R ? (R extends { id: string } ? Omit<R, 'id'> : never) : never
@@ -167,6 +167,7 @@ export class Hub {
       this.saveSoon()
     })
     conn.on('state', s => this.updateMachine(m.id, x => applyState(x, s)))
+    conn.on('activity', a => this.updateMachine(m.id, x => applyActivity(x, a)))
     conn.on('event', e => {
       this.updateMachine(m.id, x => applyEvent(x, e))
       this.saveSoon()

@@ -15,6 +15,7 @@ import { Remote } from '../src/daemon/remote'
 import { RemoteDb } from '../src/daemon/remote/db'
 import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
+import { git } from '../src/daemon/system'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { FakeTmux } from './fakes'
 
@@ -81,7 +82,7 @@ function machine() {
     scripts: { hook: '/bin/true', status: '/bin/true' },
     writeFile: () => {},
     sessionHolders: () => [],
-    git: { head: async () => null, diffStat: async () => null, worktree: async () => null, commitAll: async () => false },
+    git: { head: async () => null, diffStat: async () => null, worktree: async () => null, commitAll: async () => false, snapshot: async () => null },
     killPid: () => {},
     log: () => {},
     sleep: async () => {},
@@ -95,6 +96,7 @@ function machine() {
     command: (text, guard) =>
       runCommand(text, { runner, store, config: () => config, saveConfig: c => (config = c), now: Date.now, source: 'remote', guard, chats }),
     version: '0.1.0-test',
+    git,
     log: () => {},
     now: Date.now,
     identityPath: join(dir, 'identity.json'),
@@ -359,5 +361,124 @@ describe('the event log', () => {
     expect(db.eventsAfter(3, 10).map(e => e.seq)).toEqual([4, 5])
     expect(db.lastSeq()).toBe(5)
     store.close()
+  })
+})
+
+describe('seeing the work', () => {
+  const base = { plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'remote' }
+  const sh = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe' })
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+    return r.stdout.toString().trim()
+  }
+
+  test('the snapshot lists what this machine can do', async () => {
+    const m = machine()
+    const app = await pairedApp(m)
+    expect(app.snapshots[0]!.features).toEqual(['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi'])
+  })
+
+  test('a task’s conversation, a page at a time, only in shared folders', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const path = join(dir, 'conversation.jsonl')
+    const lines = [
+      { type: 'user', cwd: m.project, timestamp: new Date().toISOString(), message: { content: 'Add a CSV export' } },
+      { type: 'assistant', cwd: m.project, message: { id: 'a', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }] } },
+      { type: 'user', cwd: m.project, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: '12 passed' }] } },
+      { type: 'assistant', cwd: m.project, message: { id: 'b', content: [{ type: 'text', text: 'Done.' }] } },
+    ]
+    require('node:fs').writeFileSync(path, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Add a CSV export' }, Date.now())
+    m.store.updateJob(job.id, { transcriptPath: path, startedAt: Date.now() - 60_000 })
+
+    const page = await conn.request({ type: 'transcript', job: job.id })
+    expect(page.ok).toBe(true)
+    const data = page.data as { items: { kind: string }[]; total: number; before: number | null }
+    expect(data.items.map(i => i.kind)).toEqual(['you', 'tool', 'claude'])
+    expect(data.items[1]).toMatchObject({ name: 'Bash', detail: 'npm test', result: '12 passed' })
+    expect((await conn.request({ type: 'transcript', job: job.id, limit: 1 })).data).toMatchObject({ before: 2, total: 3 })
+
+    // A task that hasn't started has an empty conversation; one outside the shared folders, none.
+    const waiting = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Later' }, Date.now())
+    expect((await conn.request({ type: 'transcript', job: waiting.id })).data).toMatchObject({ items: [], total: 0 })
+    const elsewhere = m.store.addJob({ ...base, projectDir: m.outside, prompt: 'x' }, Date.now())
+    m.store.updateJob(elsewhere.id, { transcriptPath: path })
+    expect(await conn.request({ type: 'transcript', job: elsewhere.id })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await conn.request({ type: 'transcript', session: '00000000-0000-4000-8000-000000000000' })).toMatchObject({ ok: false, code: 'not-found' })
+    expect(await conn.request({ type: 'transcript' })).toMatchObject({ ok: false, code: 'invalid' })
+  })
+
+  test('a task’s exact changes and one file’s diff; secrets stay out', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    sh(m.project, 'init', '-q', '-b', 'main')
+    sh(m.project, 'config', 'user.email', 't@example.com')
+    sh(m.project, 'config', 'user.name', 'T')
+    const write = (rel: string, text: string) => require('node:fs').writeFileSync(join(m.project, rel), text)
+    write('orders.ts', 'export const orders = []\n')
+    sh(m.project, 'add', '-A')
+    sh(m.project, 'commit', '-q', '-m', 'init')
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Add CSV' }, Date.now())
+    const startTree = await git.snapshot(m.project)
+    write('orders.ts', 'export const orders = []\nexport const csv = true\n')
+    write('csv.ts', 'export function toCsv() {}\n')
+    write('.env', 'STRIPE_KEY=sk_live_x\n')
+    const endTree = await git.snapshot(m.project)
+    m.store.updateJob(job.id, { status: 'done', startTree, endTree, finishedAt: Date.now() })
+
+    const summary = await conn.request({ type: 'diff', job: job.id })
+    expect(summary.ok).toBe(true)
+    expect(summary.data).toMatchObject({
+      basis: 'exact',
+      files: [
+        { path: 'csv.ts', status: 'added', added: 1, removed: 0 },
+        { path: 'orders.ts', status: 'modified', added: 1, removed: 0 },
+      ],
+    })
+    const patch = await conn.request({ type: 'diff', job: job.id, file: 'orders.ts' })
+    expect((patch.data as { patch: string }).patch).toContain('+export const csv = true')
+    expect(await conn.request({ type: 'diff', job: job.id, file: '.env' })).toMatchObject({ ok: false, code: 'not-found' })
+  })
+
+  test('files: operators may browse and read inside shared folders; never secrets', async () => {
+    const m = machine()
+    const write = (rel: string, text: string) => require('node:fs').writeFileSync(join(m.project, rel), text)
+    write('README.md', '# Shop\n')
+    write('.env', 'SECRET=1\n')
+    const viewer = await pairedApp(m, { role: 'viewer' })
+    expect(await viewer.conn.request({ type: 'files', folder: m.project })).toMatchObject({ ok: false, code: 'forbidden' })
+
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const listed = await conn.request({ type: 'files', folder: m.project })
+    expect((listed.data as { entries: { name: string }[] }).entries.map(e => e.name)).toEqual(['README.md'])
+    expect((await conn.request({ type: 'files', folder: m.project, path: 'README.md', read: true })).data).toMatchObject({ file: { kind: 'text', text: '# Shop\n' } })
+    expect(await conn.request({ type: 'files', folder: m.project, path: '.env', read: true })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await conn.request({ type: 'files', folder: m.project, path: '../../elsewhere', read: true })).toMatchObject({ ok: false })
+    expect(await conn.request({ type: 'files', folder: m.outside })).toMatchObject({ ok: false, code: 'policy' })
+    expect(((await conn.request({ type: 'files', folder: m.project, query: 'read' })).data as { entries: { path: string }[] }).entries.map(e => e.path)).toEqual(['README.md'])
+  })
+
+  test('a task’s timeline: every notice about it, and who answered', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Add CSV' }, Date.now())
+    const other = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Something else' }, Date.now())
+    m.remote.notice('started', { type: 'started', job } as Notice)
+    m.remote.notice('started', { type: 'started', job: other } as Notice)
+    m.remote.notice('done', { type: 'done', job, diff: '1 file changed', next: null } as Notice)
+    const r = await conn.request({ type: 'timeline', job: job.id })
+    const events = (r.data as { events: Event[] }).events
+    expect(events.map(e => e.notice.type)).toEqual(['started', 'done'])
+  })
+
+  test('tool calls reach watching apps as they happen', async () => {
+    const m = machine()
+    const app = await pairedApp(m, { role: 'viewer' })
+    const seen: unknown[] = []
+    app.conn.on('activity', a => seen.push(a))
+    m.remote.activity({ job: 4, at: 1, phase: 'start', tool: 'Bash', detail: 'npm test' })
+    await until(() => seen.length === 1)
+    expect(seen[0]).toEqual({ type: 'activity', job: 4, at: 1, phase: 'start', tool: 'Bash', detail: 'npm test' })
   })
 })

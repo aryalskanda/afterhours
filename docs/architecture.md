@@ -139,8 +139,12 @@ The protocol and the crypto get an external review before a public launch.
 | --- | --- | --- |
 | `sync {since}` | viewer | Start receiving events: the ones after `since` (up to 200), then a snapshot |
 | `snapshot`, `jobs` | viewer | The queue, the running task, waiting approvals, limits, the machine's rules |
-| `peek` | viewer | The running task's screen (if the machine shows screens) |
+| `peek {lines, ansi}` | viewer | The running task's screen (if the machine shows screens), with its colours when `ansi` |
 | `chats`, `folders` | viewer | Conversations and folders, only within the allowed folders |
+| `transcript {job\|session, before, after, limit}` | viewer | A conversation a page at a time: what you and Claude said, each tool call in a line with an excerpt of its result, and Claude Code's own cost and token totals (a task counts only its own runs) |
+| `timeline {job}` | viewer | Every notice about one task (events are kept 14 days) |
+| `diff {job, file}` | viewer | The files a task changed, exactly: git trees of its folder when it started and ended (written to the object store; no commit, ref or index touched), so your own earlier edits aren't in it. With `file`, that file's diff. Only files inside the allowed folders, never secrets |
+| `files {job\|folder, path, query, read}` | operator | Browse, search names and read files inside the allowed folders; never `.env` files, keys, credentials or `.git`, and never through a link that leaves the folder. A finished task's files are read as it left them |
 | `queue {folder, prompt, options}` | operator | Queue a task: plan or not, review, mode, model, effort, conversation, own branch, front |
 | `answer {code, decision, text}` | operator | Answer a permission request, a question, a plan review, a folder-trust prompt |
 | `control {action, job}` | operator | go, pause, stop, skip, continue (after a limit), fork, take over. `job` makes sure it's still the running one |
@@ -153,7 +157,8 @@ The protocol and the crypto get an external review before a public launch.
 - `result {id, ok, text, data, error, code}`;
 - `event {seq, at, notice, text}`: every daemon notice, plus `resolved` when an approval was answered anywhere or expired. Events are stored 14 days.
 - `state`: the queue changed;
-- `snapshot`;
+- `activity {job, phase, tool, detail}`: a tool call starting or ending in the running task (not stored);
+- `snapshot`, with `features`: what this machine can do beyond the first version, so apps hide what an older one can't;
 - `pair.result` (pairing only).
 
 ## Phases

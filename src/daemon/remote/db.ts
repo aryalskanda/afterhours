@@ -153,6 +153,17 @@ export class RemoteDb {
       .all(seq, limit)
   }
 
+  /** Everything said about one task, oldest first (events are kept 14 days). */
+  eventsForJob(job: number, limit = 300): StoredEvent[] {
+    return this.db
+      .query<StoredEvent, [number, number, number]>(
+        `SELECT seq, at, notice, text FROM remote_events
+         WHERE json_extract(notice, '$.job.id') = ? OR (json_extract(notice, '$.type') = 'resolved' AND json_extract(notice, '$.job') = ?)
+         ORDER BY seq LIMIT ?`,
+      )
+      .all(job, job, limit)
+  }
+
   lastSeq(): number {
     return this.db.query<{ seq: number | null }, []>('SELECT MAX(seq) AS seq FROM remote_events').get()?.seq ?? 0
   }

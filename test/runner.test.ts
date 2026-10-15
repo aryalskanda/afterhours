@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Notice } from '../src/daemon/notify'
-import { canTakeOver, Runner, windowName } from '../src/daemon/runner'
+import { canTakeOver, Runner, windowName, type ToolActivity } from '../src/daemon/runner'
+import { sessionSettings } from '../src/daemon/launch'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
@@ -29,6 +30,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
   let holders: LiveSession[] = []
   const killed: number[] = []
   const reopened: string[] = []
+  const activity: ToolActivity[] = []
   /** Windows that ignore being asked to close. */
   let stubborn = false
   const runner = new Runner({
@@ -62,6 +64,10 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
         gitCalls.push(`commit ${dir} ${message}`)
         return true
       },
+      snapshot: async dir => {
+        gitCalls.push(`snapshot ${dir}`)
+        return opts.gitRepo ? `tree-${gitCalls.filter(c => c.startsWith('snapshot')).length}` : null
+      },
     },
     killPid: pid => {
       killed.push(pid)
@@ -70,6 +76,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     log: line => logs.push(line),
     sleep: async () => {},
     reopenInVsCode: sid => reopened.push(sid),
+    activity: a => activity.push(a),
   })
   const spec = (over: Partial<JobSpec> = {}): JobSpec => ({
     projectDir: project,
@@ -103,6 +110,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     },
     killed,
     reopened,
+    activity,
     setStubborn: (v: boolean) => {
       stubborn = v
     },
@@ -324,7 +332,9 @@ describe('own branch (worktree) isolation', () => {
     expect(h.runner.launchSpec(j.id)!.cwd).toBe(worktree)
     expect(h.tmux.windows.get(windowName(j.id))!.cwd).toBe(worktree)
     await finishTurn(h, j)
-    expect(h.gitCalls).toEqual([`worktree #${j.id}`, `commit ${worktree} Afterhours #${j.id}: Add dark mode`])
+    // The folder is snapshotted when the task starts and after its work is committed, for its diff.
+    expect(h.gitCalls).toEqual([`worktree #${j.id}`, `snapshot ${worktree}`, `commit ${worktree} Afterhours #${j.id}: Add dark mode`, `snapshot ${worktree}`])
+    expect(h.store.getJob(j.id)).toMatchObject({ startTree: 'tree-1', endTree: 'tree-2' })
     expect(lastNotice(h, 'done').job.branch).toBe(`afterhours/${j.id}-task`)
   })
 
@@ -339,7 +349,7 @@ describe('own branch (worktree) isolation', () => {
     expect(spec.cwd).toBe(worktree)
     expect(h.gitCalls.filter(c => c.startsWith('worktree'))).toEqual([`worktree #${first.id}`])
     await finishTurn(h, second)
-    expect(h.gitCalls.at(-1)).toBe(`commit ${worktree} Afterhours #${second.id}: And add tests`)
+    expect(h.gitCalls.filter(c => c.startsWith('commit')).at(-1)).toBe(`commit ${worktree} Afterhours #${second.id}: And add tests`)
     expect(lastNotice(h, 'done').job.branch).toBe(`afterhours/${first.id}-task`)
   })
 
@@ -355,7 +365,7 @@ describe('own branch (worktree) isolation', () => {
     expect(h.runner.launchSpec(followUp.id)!.cwd).toBe(worktree)
     expect(h.store.getJob(followUp.id)).toMatchObject({ workDir: worktree, branch: `afterhours/${first.id}-task` })
     await finishTurn(h, followUp)
-    expect(h.gitCalls.at(-1)).toBe(`commit ${worktree} Afterhours #${followUp.id}: Create hello.txt`)
+    expect(h.gitCalls.filter(c => c.startsWith('commit')).at(-1)).toBe(`commit ${worktree} Afterhours #${followUp.id}: Create hello.txt`)
   })
 
   test('if you removed the worktree, the next task starts a fresh conversation', async () => {
@@ -859,5 +869,45 @@ describe('ask mode', () => {
     await h.runner.tick()
     expect(w.input.at(-2)).toBe("text:This task is a question: answer it directly in your reply. Don't present a plan or change anything.")
     expect(h.notices.some(n => n.type === 'plan_approved')).toBe(false)
+  })
+})
+
+describe('watching a task', () => {
+  test('each tool call reaches apps as it starts and ends, in a line', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    const cwd = h.store.getJob(j.id)!.launchSpec!.cwd
+    await h.runner.onHook('ToolStart', j.id, { tool_name: 'Bash', tool_input: { command: 'npm test -- --watch=false\nmore' }, cwd })
+    await h.runner.onHook('PostToolUse', j.id, { tool_name: 'Edit', tool_input: { file_path: join(cwd, 'src', 'csv.ts') }, cwd })
+    await h.runner.onHook('ToolStart', j.id, { tool_name: 'mcp__github__create_issue', tool_input: { title: 'Flaky test' } })
+    expect(h.activity.map(a => [a.job, a.phase, a.tool, a.detail])).toEqual([
+      [j.id, 'start', 'Bash', 'npm test -- --watch=false'],
+      [j.id, 'end', 'Edit', 'src/csv.ts'],
+      [j.id, 'start', 'github · create_issue', 'Flaky test'],
+    ])
+    // A tool starting is activity: the watchdog doesn't call the task stuck while tools run.
+    expect(h.store.getJob(j.id)!.lastEventAt).toBe(h.now())
+  })
+
+  test('every tool start is hooked, asynchronously, apart from the question hook', () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec())
+    const settings = sessionSettings(job, h.config(), { hook: '/h', status: '/s' }) as { hooks: Record<string, { matcher?: string; hooks: { command: string; async?: boolean }[] }[]> }
+    expect(settings.hooks.PreToolUse).toEqual([
+      { matcher: 'AskUserQuestion', hooks: [expect.objectContaining({ command: "'/h' PreToolUse" })] },
+      { hooks: [expect.objectContaining({ command: "'/h' ToolStart", async: true })] },
+    ])
+  })
+
+  test('the status line keeps the running task’s context and cost', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    h.runner.onStatusline(j.id, { context_window: { used_percentage: 42.4 }, cost: { total_cost_usd: 0.31 } })
+    expect(h.store.getJob(j.id)).toMatchObject({ contextPct: 42.4, costUsd: 0.31 })
+    // Rounded the same: not written again.
+    h.runner.onStatusline(j.id, { context_window: { used_percentage: 42.2 } })
+    expect(h.store.getJob(j.id)!.contextPct).toBe(42.4)
+    h.runner.onStatusline(j.id, { context_window: { used_percentage: 57 } })
+    expect(h.store.getJob(j.id)!.contextPct).toBe(57)
   })
 })

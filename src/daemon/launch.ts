@@ -33,7 +33,11 @@ export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths):
       UserPromptSubmit: on('UserPromptSubmit'),
       // Waits for your iMessage reply, so it needs room beyond the approval timeout.
       PermissionRequest: on('PermissionRequest', config.timeouts.approvalSec + 60),
-      PreToolUse: [{ matcher: 'AskUserQuestion', hooks: [command('PreToolUse', config.timeouts.questionSec + 60)] }],
+      PreToolUse: [
+        { matcher: 'AskUserQuestion', hooks: [command('PreToolUse', config.timeouts.questionSec + 60)] },
+        // Every tool call as it starts, for apps watching the task; async, so nothing waits on it.
+        { hooks: [{ ...command('ToolStart', 15), async: true }] },
+      ],
       // Activity signal for the watchdog and `st`; async, so tool calls never wait on it.
       PostToolUse: [{ hooks: [{ ...command('PostToolUse', 15), async: true }] }],
       Stop: on('Stop', 30),

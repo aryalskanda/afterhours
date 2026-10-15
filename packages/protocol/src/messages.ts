@@ -63,6 +63,10 @@ export type Welcome = z.infer<typeof Welcome>
 
 // --- what a machine reports -----------------------------------------------------------------
 
+/** Tokens a conversation used: what Claude read (new, from cache, written to cache) and wrote. */
+export const Usage = z.object({ input: z.number(), output: z.number(), cacheRead: z.number(), cacheWrite: z.number() })
+export type Usage = z.infer<typeof Usage>
+
 export const JobInfo = z.object({
   id: z.number().int(),
   status: z.enum(['queued', 'running', 'held', 'done', 'failed', 'cancelled']),
@@ -86,6 +90,12 @@ export const JobInfo = z.object({
   createdAt: z.number(),
   startedAt: z.number().nullable(),
   finishedAt: z.number().nullable(),
+  /** How full the conversation's context is (0-100), from Claude Code's status line. */
+  contextPct: z.number().nullable().optional(),
+  /** What Claude Code reported the session cost, when it reports one. */
+  costUsd: z.number().nullable().optional(),
+  /** Tokens the task's conversation used, counted from its transcript when it finished. */
+  usage: Usage.nullable().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -235,7 +245,8 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('jobs'), recent: z.number().int().min(0).max(100).optional() }),
   /** One task in full: its plan and Claude's final answer. */
   withId({ type: z.literal('task'), job: z.number().int() }),
-  withId({ type: z.literal('peek'), lines: z.number().int().min(5).max(200).optional(), job: z.number().int().optional() }),
+  /** `ansi`: the screen with its colour codes (newer machines). */
+  withId({ type: z.literal('peek'), lines: z.number().int().min(5).max(200).optional(), job: z.number().int().optional(), ansi: z.boolean().optional() }),
   withId({ type: z.literal('say'), text: z.string().min(1).max(20_000), job: z.number().int().optional() }),
   withId({ type: z.literal('keys'), keys: z.array(z.string().min(1).max(20)).min(1).max(20), job: z.number().int().optional() }),
   withId({ type: z.literal('chats'), folder: z.string().max(4096).optional(), page: z.number().int().min(0).max(1000).optional(), limit: z.number().int().min(1).max(50).optional() }),
@@ -246,6 +257,34 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('devices.rename'), device: PeerId, name: z.string().min(1).max(80) }),
   /** The text commands (`help` lists them). Owners only. */
   withId({ type: z.literal('command'), text: z.string().min(1).max(20_000) }),
+  /**
+   * A conversation, a page at a time: a task's (`job`) or any chat's (`session`). Without `before`
+   * or `after`, the newest `limit` items; `before` pages back; `after` brings only what's new.
+   */
+  withId({
+    type: z.literal('transcript'),
+    job: z.number().int().optional(),
+    session: z.string().max(64).optional(),
+    before: z.number().int().min(0).optional(),
+    after: z.number().int().min(-1).optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+  }),
+  /** What happened to a task, from the start: the notices about it. */
+  withId({ type: z.literal('timeline'), job: z.number().int() }),
+  /** The files a task changed; with `file`, that file's diff. */
+  withId({ type: z.literal('diff'), job: z.number().int(), file: z.string().max(4096).optional() }),
+  /**
+   * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
+   * reads a file; `query` searches file names.
+   */
+  withId({
+    type: z.literal('files'),
+    job: z.number().int().optional(),
+    folder: z.string().max(4096).optional(),
+    path: z.string().max(4096).optional(),
+    query: z.string().max(200).optional(),
+    read: z.boolean().optional(),
+  }),
 ])
 export type Request = z.infer<typeof Request>
 export type RequestType = Request['type']
@@ -298,6 +337,17 @@ export const Defaults = z.object({
 })
 export type Defaults = z.infer<typeof Defaults>
 
+/** A tool call starting or ending in the running task (not stored; the transcript has them all). */
+export const Activity = z.object({
+  type: z.literal('activity'),
+  job: z.number().int(),
+  at: z.number(),
+  phase: z.enum(['start', 'end']),
+  tool: z.string(),
+  detail: z.string(),
+})
+export type Activity = z.infer<typeof Activity>
+
 export const Snapshot = z.object({
   type: z.literal('snapshot'),
   seq: z.number().int(),
@@ -313,6 +363,8 @@ export const Snapshot = z.object({
   defaults: Defaults.optional(),
   /** Models offered for new tasks. */
   models: z.array(z.string()).optional(),
+  /** What this machine can do beyond the first version: `transcript`, `diff`… Apps hide the rest. */
+  features: z.array(z.string()).optional(),
 })
 export type Snapshot = z.infer<typeof Snapshot>
 
@@ -324,6 +376,100 @@ export const TaskDetail = z.object({
 })
 export type TaskDetail = z.infer<typeof TaskDetail>
 
+/** One entry of a conversation. `i` is its place in the whole conversation; it never changes. */
+export const TranscriptItem = z.discriminatedUnion('kind', [
+  /** What you (or a task's prompt) said. */
+  z.object({ kind: z.literal('you'), i: z.number().int(), at: z.number().nullable(), text: z.string() }),
+  /** What Claude said. */
+  z.object({ kind: z.literal('claude'), i: z.number().int(), at: z.number().nullable(), text: z.string() }),
+  /** A tool call: what it did in one line, and an excerpt of what came back. */
+  z.object({
+    kind: z.literal('tool'),
+    i: z.number().int(),
+    at: z.number().nullable(),
+    id: z.string(),
+    name: z.string(),
+    detail: z.string(),
+    result: z.string().nullable(),
+    error: z.boolean(),
+  }),
+  /** Something that happened to the conversation: compacted, interrupted, an API error. */
+  z.object({ kind: z.literal('note'), i: z.number().int(), at: z.number().nullable(), text: z.string() }),
+])
+export type TranscriptItem = z.infer<typeof TranscriptItem>
+
+/** The answer to a `transcript` request. */
+export const TranscriptPage = z.object({
+  session: z.string(),
+  items: z.array(TranscriptItem),
+  /** The first item's `i`; ask with `before` set to it for the page before. Null at the start. */
+  before: z.number().int().nullable(),
+  /** How many items the whole conversation has so far. */
+  total: z.number().int(),
+  usage: Usage,
+  /** Claude Code's own totals for the conversation, when it recorded them. */
+  cost: z.object({ usd: z.number(), linesAdded: z.number(), linesRemoved: z.number() }).nullable().optional(),
+  updatedAt: z.number(),
+})
+export type TranscriptPage = z.infer<typeof TranscriptPage>
+
+export const DiffFile = z.object({
+  path: z.string(),
+  /** A renamed file's old path. */
+  from: z.string().optional(),
+  status: z.enum(['added', 'modified', 'deleted', 'renamed']),
+  added: z.number().int().nullable(),
+  removed: z.number().int().nullable(),
+  binary: z.boolean(),
+})
+export type DiffFile = z.infer<typeof DiffFile>
+
+/** The answer to a `diff` request without `file`. */
+export const DiffSummary = z.object({
+  /** Where the task ran. */
+  dir: z.string(),
+  branch: z.string().nullable(),
+  /** `exact`: the task's own changes; `since-start`: everything since it started, yours too (older tasks). */
+  basis: z.enum(['exact', 'since-start', 'none']),
+  files: z.array(DiffFile),
+  truncated: z.boolean(),
+})
+export type DiffSummary = z.infer<typeof DiffSummary>
+
+/** The answer to a `diff` request with `file`: its unified diff. */
+export const FilePatch = z.object({ path: z.string(), patch: z.string(), binary: z.boolean(), truncated: z.boolean() })
+export type FilePatch = z.infer<typeof FilePatch>
+
+export const FileEntry = z.object({
+  name: z.string(),
+  /** Relative to the root. */
+  path: z.string(),
+  kind: z.enum(['file', 'dir']),
+  size: z.number().nullable(),
+})
+export type FileEntry = z.infer<typeof FileEntry>
+
+export const FileContent = z.object({
+  path: z.string(),
+  kind: z.enum(['text', 'image', 'binary']),
+  size: z.number(),
+  text: z.string().optional(),
+  /** Images: the bytes, base64. */
+  base64: z.string().optional(),
+  mime: z.string().optional(),
+  truncated: z.boolean(),
+})
+export type FileContent = z.infer<typeof FileContent>
+
+/** The answer to a `files` request: a folder's entries, search hits, or a file. */
+export const FilesResult = z.object({
+  root: z.string(),
+  path: z.string(),
+  entries: z.array(FileEntry).optional(),
+  file: FileContent.optional(),
+})
+export type FilesResult = z.infer<typeof FilesResult>
+
 /** Pairing only: the machine's decision. */
 export const PairResult = z.object({
   type: z.literal('pair.result'),
@@ -334,7 +480,7 @@ export const PairResult = z.object({
 })
 export type PairResult = z.infer<typeof PairResult>
 
-export const MachineMessage = z.discriminatedUnion('type', [Result, Event, State, Snapshot, PairResult])
+export const MachineMessage = z.discriminatedUnion('type', [Result, Event, State, Snapshot, PairResult, Activity])
 export type MachineMessage = z.infer<typeof MachineMessage>
 
 /** Pairing only: the app proves it knows the secret by sending this over the new session. */

@@ -136,6 +136,11 @@ const COLUMNS = {
   finishedAt: 'finished_at',
   lastEventAt: 'last_event_at',
   transcriptPath: 'transcript_path',
+  startTree: 'start_tree',
+  endTree: 'end_tree',
+  contextPct: 'context_pct',
+  costUsd: 'cost_usd',
+  usage: 'usage',
 } as const satisfies Record<keyof Job, string>
 
 const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved'])
@@ -148,8 +153,13 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['threads', 'work_dir', 'TEXT'],
   ['jobs', 'takeover_at', 'INTEGER'],
   ['jobs', 'took_from', 'TEXT'],
+  ['jobs', 'start_tree', 'TEXT'],
+  ['jobs', 'end_tree', 'TEXT'],
+  ['jobs', 'context_pct', 'REAL'],
+  ['jobs', 'cost_usd', 'REAL'],
+  ['jobs', 'usage', 'TEXT'],
 ]
-const JSON_FIELDS = new Set<keyof Job>(['launchSpec'])
+const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage'])
 
 type Row = Record<string, string | number | null>
 type SqlValue = string | number | null

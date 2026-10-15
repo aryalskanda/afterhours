@@ -112,6 +112,19 @@ export function roleLabel(role: Role): string {
   return { owner: 'Owner', operator: 'Operator', viewer: 'Viewer' }[role]
 }
 
+/** 1234 → "1.2k", 3400000 → "3.4M". */
+export function tokens(n: number): string {
+  if (n < 1000) return String(Math.round(n))
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, '')}k`
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+}
+
+/** 0.4213 → "$0.42"; under a cent, "<$0.01". */
+export function money(usd: number): string {
+  if (usd > 0 && usd < 0.01) return '<$0.01'
+  return `$${usd.toFixed(usd < 100 ? 2 : 0)}`
+}
+
 /** One line of text from a longer one. */
 export function oneLine(text: string, max = 120): string {
   const t = text.replace(/\s+/g, ' ').trim()
