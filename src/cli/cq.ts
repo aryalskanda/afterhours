@@ -7,6 +7,7 @@ import { CQ_HOME, findExecutable, loadConfig, paths, readToken, TMUX_SESSION, TM
 import type { LaunchSpec } from '../shared/types'
 import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
+import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
 import { setup } from './setup'
 import { telegramCommand } from './telegram'
 import { daemonUrl, restartAgent } from './util'
@@ -19,6 +20,10 @@ Getting started:
 Setup and service:
   cq telegram <token>  connect your Telegram bot (from @BotFather) and pair your account
   cq telegram off      stop using Telegram
+  cq pair              pair the ${BRAND.name} app with this machine (shows a QR code; --relay wss://… the first time)
+  cq devices           the devices paired with this machine; cq devices remove <name> cuts one off
+  cq remote            remote access settings: relay, name, allowed folders, what apps may do
+  cq audit             what apps did on this machine
   cq install           (re)install and start it at login
   cq restart           restart it (after granting Full Disk Access)
   cq update            update to the latest release
@@ -123,6 +128,18 @@ async function main(): Promise<void> {
       return update()
     case 'telegram':
       if (!(await telegramCommand(rest))) process.exitCode = 1
+      return
+    case 'pair':
+      if (!(await pairCommand(rest))) process.exitCode = 1
+      return
+    case 'devices':
+      if (!(await devicesCommand(rest))) process.exitCode = 1
+      return
+    case 'remote':
+      if (!(await remoteCommand(rest))) process.exitCode = 1
+      return
+    case 'audit':
+      if (!(await auditCommand(rest))) process.exitCode = 1
       return
     case 'doctor':
       return doctor()

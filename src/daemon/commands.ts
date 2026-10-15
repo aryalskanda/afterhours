@@ -19,9 +19,11 @@ export interface CommandContext {
   now: () => number
   /** Working directory of a `cq` CLI call; jobs queued from the CLI default to it. */
   cwd?: string
-  source: 'cli' | 'imessage'
+  source: 'cli' | 'imessage' | 'remote'
   /** Your conversations, for `chats`. */
   chats?: ChatSource
+  /** Checks a job before it's queued (remote access applies the machine's rules); a string refuses it. */
+  guard?: (spec: JobSpec) => string | null
 }
 
 const EFFORTS: Record<string, Effort> = {
@@ -209,6 +211,8 @@ function enqueue(text: string, ctx: CommandContext): string {
   if (!text) return 'Usage: q [options:] <prompt>. Reply help for the options.'
   const spec = buildSpec(text, ctx)
   if (typeof spec === 'string') return spec
+  const refusal = ctx.guard?.(spec)
+  if (refusal) return refusal
   const job = ctx.runner.enqueue(spec)
   ctx.store.kvSet('lastProject', spec.projectDir)
   const config = ctx.config()

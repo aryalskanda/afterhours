@@ -2,6 +2,14 @@
 
 As of October 15, 2026.
 
+> **Changed later the same day:** the product's shape is now in [architecture.md](architecture.md), and it replaces "The decision" and "Architecture" below:
+> - No Mac-only or iOS-only apps.
+> - The engine runs anywhere: macOS, Linux, Windows through WSL2, and cloud servers.
+> - One React Native app covers phones and desktops.
+> - The relay is open source and self-hostable.
+>
+> Pricing comes later. The business sections below stay as notes for then.
+
 ## The decision
 
 Build the Mac app and a phone app, but in this order, and keep today's engine (the TypeScript daemon) inside them instead of rewriting it:

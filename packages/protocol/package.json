@@ -1,0 +1,17 @@
+{
+  "name": "@afterhours/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "How Afterhours apps, machines and the relay talk: keys, Noise sessions, frames and messages",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "zod": "4.6.5"
+  }
+}

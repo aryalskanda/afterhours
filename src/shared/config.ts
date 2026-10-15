@@ -11,6 +11,8 @@ export const paths = {
   home: CQ_HOME,
   config: join(CQ_HOME, 'config.json'),
   token: join(CQ_HOME, 'token'),
+  /** This machine's key for remote access (apps and the relay know it by its public half). */
+  identity: join(CQ_HOME, 'identity.json'),
   db: join(CQ_HOME, 'state.db'),
   logs: join(CQ_HOME, 'logs'),
   log: join(CQ_HOME, 'logs', 'cqd.log'),
@@ -81,8 +83,26 @@ export interface Config {
   reopenInVsCode: boolean
   /** Hold a `caffeinate -i` assertion while jobs are pending. */
   keepAwake: boolean
+  /** Remote access from the Afterhours apps, through a relay. Set up with `cq pair`. */
+  remote: RemoteConfig
   claudePath?: string
   tmuxPath?: string
+}
+
+export interface RemoteConfig {
+  enabled: boolean
+  /** The relay's address, e.g. wss://relay.example.com/v1. */
+  relay: string | null
+  /** What the apps call this machine; empty means the computer's name. */
+  name: string | null
+  /** Folders apps may run tasks in, with their subfolders; empty means your home folder. */
+  allowedRoots: string[]
+  /** Whether apps may start tasks that skip every permission prompt (yolo / bypassPermissions). */
+  allowBypass: boolean
+  /** Whether apps may see the running task's terminal. */
+  allowScreens: boolean
+  /** Whether apps may type and press keys in a running task. */
+  allowTyping: boolean
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -111,6 +131,7 @@ export const DEFAULT_CONFIG: Config = {
   autoContinueChats: true,
   reopenInVsCode: true,
   keepAwake: true,
+  remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true },
 }
 
 export function ensureHome(): void {
@@ -139,6 +160,7 @@ export function loadConfig(): Config {
     telegram: { ...DEFAULT_CONFIG.telegram, ...raw.telegram },
     folders: { ...DEFAULT_CONFIG.folders, ...raw.folders, roots: [...(raw.folders?.roots ?? DEFAULT_CONFIG.folders.roots)] },
     models: [...(raw.models ?? DEFAULT_CONFIG.models)],
+    remote: { ...DEFAULT_CONFIG.remote, ...raw.remote, allowedRoots: [...(raw.remote?.allowedRoots ?? [])] },
   }
 }
 

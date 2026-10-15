@@ -79,20 +79,22 @@ export interface NotifierOptions {
 }
 
 export class Notifier {
-  private sinks: Sink[] = []
+  private sinks: { sink: Sink; unfiltered: boolean }[] = []
 
   constructor(private o: NotifierOptions) {}
 
-  addSink(sink: Sink): void {
-    this.sinks.push(sink)
+  /** `unfiltered`: gets every notice whatever the notify level (the apps choose what to show). */
+  addSink(sink: Sink, o: { unfiltered?: boolean } = {}): void {
+    this.sinks.push({ sink, unfiltered: o.unfiltered ?? false })
   }
 
   send(notice: Notice): void {
     const text = formatNotice(notice, this.o.aliases(), this.o.now())
     this.o.log(`notice ${notice.type}: ${text.replace(/\n/g, ' ⏎ ')}`)
     const level = this.o.level()
-    if (level === 'off' || (level === 'important' && !IMPORTANT.has(notice.type))) return
-    for (const sink of this.sinks) {
+    const filtered = level === 'off' || (level === 'important' && !IMPORTANT.has(notice.type))
+    for (const { sink, unfiltered } of this.sinks) {
+      if (filtered && !unfiltered) continue
       Promise.resolve()
         .then(() => sink(text, notice))
         .catch(err => this.o.log(`notify sink failed: ${err}`))

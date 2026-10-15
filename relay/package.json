@@ -1,0 +1,14 @@
+{
+  "name": "@afterhours/relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Forwards end-to-end encrypted frames between Afterhours apps and machines",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts"
+  },
+  "dependencies": {
+    "@afterhours/protocol": "workspace:*"
+  }
+}

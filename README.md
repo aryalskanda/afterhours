@@ -128,6 +128,32 @@ Your phone sees every chat: **💬 Chats** lists them all, and the same conversa
 - **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
 - **Remote Control**, Anthropic's own feature, lets you type into a live VS Code chat from the Claude app. In VS Code, run `/remote-control`, or turn on *Enable Remote Control for all sessions*. Afterhours works alongside it.
 
+## Remote access with the Afterhours apps (preview)
+
+The Telegram bot is being replaced by Afterhours apps for iPhone, Android, Mac, Windows and Linux. They talk to your machine end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports. That is also what will let a server in the cloud work like the Mac at home: running the engine on Linux is the next step. The design and the plan are in [docs/architecture.md](docs/architecture.md).
+
+The engine side works now; until the apps ship, a command-line app stands in for them:
+
+```sh
+# 1. A relay, anywhere both sides can reach (put TLS in front for wss://):
+docker build -f relay/Dockerfile -t afterhours-relay . && docker run -d -p 8787:8787 -v afterhours-relay:/data afterhours-relay
+
+# 2. On the machine: pair (shows a QR code and a link, valid once for 10 minutes)
+cq pair --relay wss://relay.example.com
+
+# 3. On another computer: pair with the link, then drive the machine
+bun scripts/remote-client.ts pair '<the link>'
+bun scripts/remote-client.ts queue <machine> ~/code/shop "Add a dark mode toggle"
+bun scripts/remote-client.ts watch
+```
+
+The machine decides what apps may do, and no app can change it:
+
+- `cq remote allow <folder>`: apps run tasks only in these folders (default: your home folder).
+- `cq remote bypass on|off`: tasks that skip permission prompts (off by default).
+- `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task.
+- `cq devices` lists paired devices; `cq devices remove <name>` cuts one off at once; `cq audit` shows what apps did.
+
 ## What happens to a task
 
 1. **Start.** For a new conversation on its own branch, Afterhours makes a git worktree under `<repo>/.claude/worktrees/` on a new branch `afterhours/<id>-<words-from-the-prompt>`. Outside a git repo, the task runs in the folder itself. Claude Code then starts with the task's model, effort and mode.
@@ -155,6 +181,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq setup` | Guided setup (safe to run again) |
 | `cq doctor` | Check Claude Code, tmux, the background service, Full Disk Access and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
+| `cq pair` · `cq devices` · `cq remote` · `cq audit` | Pair an Afterhours app · list or remove paired devices · remote access settings · what apps did |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq update` | Update (Homebrew installs: `brew upgrade afterhours`) |
 | `cq report` | Write a support file to your Desktop. It holds no prompts, code or tokens; read it before you send it. |
@@ -244,6 +271,7 @@ Next to it: `state.db` (queue and history), `folders.json` (the folder map), `lo
 - Afterhours runs entirely on your Mac and collects nothing.
 - Your prompts go to Anthropic through Claude Code, as they always would. They also go to Telegram, because bot chats aren't end-to-end encrypted: prompts, plans and Claude's summaries pass through Telegram's servers. The same goes for the titles and last prompts of your other chats when **💬 Chat…** lists them or one hits a usage limit; turn the latter off in `/settings`.
 - The background service listens only on `127.0.0.1` and requires a token.
+- Remote access is end-to-end encrypted (Noise, with keys from pairing). The relay passes on what it can't read or change; it sees which keys talk, when, and how much. Apps can only do what the machine's rules allow, and every action is in `cq audit`.
 - Afterhours writes into your other chats only to continue them after a usage limit (when Auto-continue is on), and closes a chat only when you take it over.
 - See [SECURITY.md](SECURITY.md) for the details and how to report a vulnerability.
 
@@ -264,6 +292,8 @@ bun install
 bun test                    # unit tests, including the Telegram bot against a fake Telegram
 bun run typecheck
 bun run compat              # end-to-end check against the real Claude Code (a few cents of Haiku)
+bun run e2e:remote          # remote access end to end: relay, daemon, app, real Claude Code (a few cents)
+bun run relay               # a relay on port 8787, for trying remote access locally (ws://127.0.0.1:8787)
 bun src/cli/cq.ts daemon    # run in the foreground (Ctrl-C to stop; tasks keep running in tmux)
 ```
 
@@ -285,6 +315,9 @@ Where things are:
 - `src/daemon/screens.ts`: the screens answered with keystrokes.
 - `src/daemon/commands.ts`: the text commands.
 - `src/telegram/`: the bot.
+- `packages/protocol/`: keys, Noise sessions, pairing and the messages apps and machines exchange (shared with the apps).
+- `relay/`: the relay server and its Docker image.
+- `src/daemon/remote/`: the machine's side of remote access: devices, rules, events, audit.
 - `src/cli/`: `cq` and `cq setup`.
 - `bin/cq-launcher.c`: the launcher that holds Full Disk Access.
 

@@ -26,6 +26,7 @@ import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
 import { Notifier } from './notify'
+import { Remote, type RemoteStatus } from './remote'
 import { Runner, type HookPayload } from './runner'
 import { deliverToInbox } from './inbox'
 import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
@@ -55,6 +56,7 @@ export interface Health {
   tmux: string
   imessage: BridgeStatus | { ok: false; error: string }
   telegram: TelegramStatus | { ok: false; error: string }
+  remote: RemoteStatus
   /** Whether this process may read Full-Disk-Access-protected files (and so ~/Documents without prompts). */
   fullDiskAccess: boolean
 }
@@ -154,7 +156,7 @@ export async function runDaemon(): Promise<void> {
     now: Date.now,
   })
 
-  const commandContext = (source: 'cli' | 'imessage', cwd?: string) => ({
+  const commandContext = (source: 'cli' | 'imessage' | 'remote', cwd?: string) => ({
     runner,
     store,
     config: getConfig,
@@ -174,6 +176,20 @@ export async function runDaemon(): Promise<void> {
     log,
   })
   folders.refreshIfStale()
+
+  const remote = new Remote({
+    store,
+    runner,
+    chats,
+    folders,
+    config: getConfig,
+    command: (text, guard) => runCommand(text, { ...commandContext('remote'), guard }),
+    version: VERSION,
+    log,
+    now: Date.now,
+  })
+  remote.apply()
+  notifier.addSink((text, notice) => remote.notice(text, notice), { unfiltered: true })
 
   let telegram: TelegramBridge | null = null
   const telegramKey = () => JSON.stringify([config.telegram.enabled, config.telegram.token])
@@ -236,6 +252,44 @@ export async function runDaemon(): Promise<void> {
     bridge = b
   }
 
+  /** What `cq pair`, `cq devices`, `cq remote` and `cq audit` ask the daemon. */
+  async function remoteApi(req: Request, url: URL): Promise<Response> {
+    const body = req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {}
+    if (url.pathname === '/api/remote' && req.method === 'GET') return Response.json(remote.status())
+    if (url.pathname === '/api/remote/pair' && req.method === 'POST') {
+      const role = body.role === 'viewer' || body.role === 'operator' ? body.role : 'owner'
+      const result = remote.openOffer({ role, autoApprove: body.yes === true, ttlMs: typeof body.ttlMs === 'number' ? body.ttlMs : undefined })
+      if (typeof result === 'string') return Response.json({ error: result }, { status: 409 })
+      return Response.json({ ...result, status: remote.status() })
+    }
+    const pair = /^\/api\/remote\/pair\/([A-Za-z0-9_-]{22})$/.exec(url.pathname)
+    if (pair) {
+      const view = req.method === 'POST' ? remote.decide(pair[1]!, body.approve === true) : remote.offer(pair[1]!)
+      return view ? Response.json(view) : Response.json({ error: 'no such pairing' }, { status: 404 })
+    }
+    if (url.pathname === '/api/remote/devices' && req.method === 'GET') {
+      return Response.json(remote.devices({ revoked: url.searchParams.get('all') === '1' }))
+    }
+    if (url.pathname === '/api/remote/devices/remove' && req.method === 'POST') {
+      const found = remote.findDevice(String(body.device ?? ''))
+      if (typeof found === 'string') return Response.json({ error: found }, { status: 404 })
+      remote.removeDevice(found.id, 'this machine')
+      return Response.json({ removed: found.name })
+    }
+    if (url.pathname === '/api/remote/devices/rename' && req.method === 'POST') {
+      const found = remote.findDevice(String(body.device ?? ''))
+      const name = String(body.name ?? '').trim()
+      if (typeof found === 'string') return Response.json({ error: found }, { status: 404 })
+      if (!name) return Response.json({ error: 'Give the new name.' }, { status: 400 })
+      remote.renameDevice(found.id, name)
+      return Response.json({ renamed: found.name, to: name })
+    }
+    if (url.pathname === '/api/remote/audit' && req.method === 'GET') {
+      return Response.json(remote.auditLog(Math.min(500, Number(url.searchParams.get('limit') ?? 50) || 50)))
+    }
+    return new Response('not found', { status: 404 })
+  }
+
   let server: ReturnType<typeof Bun.serve>
   try {
     server = Bun.serve({
@@ -254,6 +308,7 @@ export async function runDaemon(): Promise<void> {
             tmux: tmuxPath,
             imessage: bridge?.status() ?? { ok: false, error: 'iMessage is turned off in config.json' },
             telegram: telegram ? { ...telegram.status(), pairCode: null } : { ok: false, error: 'not set up (cq telegram <token>)' },
+            remote: remote.status(),
             fullDiskAccess: hasFullDiskAccess(),
           }
           return Response.json(health)
@@ -281,6 +336,7 @@ export async function runDaemon(): Promise<void> {
           const reply = await command(text, 'cli', body.cwd)
           return Response.json({ reply: reply ?? `Unknown command "${text.split(/\s+/)[0]}". Try: cq help` })
         }
+        if (url.pathname.startsWith('/api/remote')) return remoteApi(req, url)
         const launch = /^\/api\/jobs\/(\d+)\/launch$/.exec(url.pathname)
         if (launch && req.method === 'GET') {
           const spec = runner.launchSpec(Number(launch[1]))
@@ -313,6 +369,7 @@ export async function runDaemon(): Promise<void> {
         config = loadConfig()
         log('reloaded config.json')
         if (telegramKey() !== telegramStarted) startTelegram()
+        remote.apply()
       } catch (err) {
         log(`ignoring config.json change: ${err instanceof Error ? err.message : err}`)
       }
@@ -323,6 +380,7 @@ export async function runDaemon(): Promise<void> {
       watcher.check().catch(err => log(`watching other chats failed: ${err instanceof Error ? err.message : err}`))
     }
     await runner.tick()
+    remote.tick()
     keepAwake.set(config.keepAwake && runner.hasWork())
   }, 2000)
 
@@ -332,6 +390,7 @@ export async function runDaemon(): Promise<void> {
     keepAwake.set(false)
     bridge?.stop()
     telegram?.stop()
+    remote.stop()
     server.stop(true)
     store.close()
     process.exit(code)

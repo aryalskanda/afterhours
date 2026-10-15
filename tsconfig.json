@@ -15,5 +15,5 @@
     "noUncheckedIndexedAccess": true,
     "types": ["bun"]
   },
-  "include": ["src", "test", "scripts"]
+  "include": ["src", "test", "scripts", "packages/protocol", "relay"]
 }
