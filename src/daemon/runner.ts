@@ -8,7 +8,7 @@ import { duration, excerpt, modeLabel, oneLine } from './format'
 import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
 import { pickResetTime, windowsFromStatusline } from './limits'
-import { permissionDetail, type Notice, type Question } from './notify'
+import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
 import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
@@ -1177,18 +1177,23 @@ export function planFromScreen(screen: string): string | null {
 }
 
 /** Turns "1a 2b" style picks into the option labels Claude offered. Free text passes through. */
+/**
+ * "b" or "1a 1c 2b" (option letters, with question numbers when there are several; a
+ * multi-select question takes several) → what you picked, in words. Anything else is your own answer.
+ */
 export function expandAnswer(answer: string, questions: Question[]): string {
   const picks = answer.trim().split(/[\s,]+/)
   if (!picks.every(p => /^\d*[a-z]$/i.test(p))) return answer.trim()
-  const resolved: string[] = []
+  const answers: { picks: number[] }[] = []
   for (const pick of picks) {
     const m = /^(\d*)([a-z])$/i.exec(pick)!
-    const q = questions[m[1] ? Number(m[1]) - 1 : 0]
-    const option = q?.options?.[m[2]!.toLowerCase().charCodeAt(0) - 97]
-    if (!q || !option) return answer.trim()
-    resolved.push(`"${q.question}" → ${option.label}`)
+    const qi = m[1] ? Number(m[1]) - 1 : 0
+    const oi = m[2]!.toLowerCase().charCodeAt(0) - 97
+    if (!questions[qi]?.options?.[oi]) return answer.trim()
+    answers[qi] ??= { picks: [] }
+    if (!answers[qi]!.picks.includes(oi)) answers[qi]!.picks.push(oi)
   }
-  return resolved.join('; ')
+  return describeAnswers(questions, answers)
 }
 
 function summarizePayload(p: HookPayload): Record<string, unknown> {

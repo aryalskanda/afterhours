@@ -52,7 +52,8 @@ export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard
 export interface BotApi {
   getMe(): Promise<TgUser>
   getUpdates(offset: number, timeoutSec: number, signal?: AbortSignal): Promise<TgUpdate[]>
-  sendMessage(chatId: number, html: string, markup?: Markup): Promise<TgMessage>
+  /** `silent`: arrives without a sound or vibration (for news that needs nothing from you). */
+  sendMessage(chatId: number, html: string, markup?: Markup, o?: { silent?: boolean }): Promise<TgMessage>
   /** Sends text as a file, for answers too long for messages. */
   sendDocument(chatId: number, filename: string, content: string, caption?: string): Promise<TgMessage>
   editMessageText(chatId: number, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<void>
@@ -64,10 +65,17 @@ export class TelegramError extends Error {
   constructor(
     readonly method: string,
     readonly code: number,
-    description: string,
+    readonly description: string,
   ) {
     super(`telegram ${method}: ${code} ${description}`)
   }
+}
+
+/** Telegram refused the message's formatting, or its length: worth sending again as plain text. */
+export function refusedFormatting(err: unknown): boolean {
+  return /can't parse entities|unsupported start tag|can't find end tag|unclosed|message is too long|text is too long/i.test(
+    err instanceof Error ? err.message : String(err),
+  )
 }
 
 interface ApiResponse<T> {
@@ -119,12 +127,13 @@ export class TelegramApi implements BotApi {
     )
   }
 
-  sendMessage(chatId: number, html: string, markup?: Markup): Promise<TgMessage> {
+  sendMessage(chatId: number, html: string, markup?: Markup, o: { silent?: boolean } = {}): Promise<TgMessage> {
     return this.call('sendMessage', {
       chat_id: chatId,
       text: html,
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
+      ...(o.silent ? { disable_notification: true } : {}),
       ...(markup ? { reply_markup: markup } : {}),
     })
   }

@@ -91,7 +91,7 @@ The buttons under the text box:
 
 - **➕ New task**: pick the folder first, then send the prompt.
 - **📋 Queue**: every waiting task, with **⬆️ Run next** and **🗑 Remove**.
-- **📊 Status**: the current task, what it last did, your 5-hour and weekly usage, and **⏸ Pause** / **▶️ Resume**.
+- **📊 Status**: the current task and what it last did, anything waiting on you (with its **✅ Allow** / **❌ Deny** right there), what's next, your 5-hour and weekly usage as bars, and **⏸ Pause** / **▶️ Resume**.
 - **👀 Peek**: the running task's screen, with **⌨️ Type** (type into it) and **🔘 Keys** (press 1, 2, 3, Enter, Esc, arrows) for a screen Afterhours can't answer.
 - **💬 Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **✍️ Write here**: everything you type goes into that chat until you tap **⬅️ Leave chat**.
 
@@ -100,13 +100,20 @@ The buttons under the text box:
 | Message | Buttons |
 | --- | --- |
 | 🔐 Claude wants permission | **✅ Allow**, **❌ Deny**. Denied automatically after 15 minutes. |
-| ❓ Claude asks a question | One button per option, or **✍️ Type an answer**. After 15 minutes Claude decides itself. |
-| 📝 A plan for review | **✅ Approve**, **✏️ Ask for changes** |
+| ❓ Claude asks a question | One question at a time, every option written out in full. Tap one; where several apply, tick them and tap **✅ Done**; or **✍️ Type an answer**. **⬅️ Back** goes to the previous question. After 15 minutes Claude decides itself. |
+| 📝 A plan for review | The whole plan, formatted, then **✅ Approve**, **✏️ Ask for changes** |
 | ⏸ A task hit a usage limit | **▶️ Continue now** (try before the reset, e.g. after buying extra usage), **👀 Peek** |
 | ⚠️ / ❌ A task paused or failed | **▶️ Go**, **⏭ Skip**, **👀 Peek**, **⌨️ Type**, **🔘 Keys** |
 | ⚠️ A task's chat is open in VS Code | **🤝 Take over**, **🍴 Continue in a copy**, **⏭ Skip** |
 | ⏸ Your chat in VS Code hit a usage limit | **✖️ Don't continue**, **🤝 Continue here instead**, **✏️ Follow up…** |
-| ✅ A task is done | **➕ Follow up**: the next prompt for the same folder and conversation. A long final answer follows in full (a few messages, or a file). |
+| ✅ A task is done | Claude's final answer, formatted and in full (a few messages, or a file when it's very long), then **➕ Follow up**: the next prompt for the same folder and conversation. |
+
+Keeping it tidy:
+
+- Each task has one card. It's edited as the task goes on: started, plan approved (**📄 Full plan** shows it all), done. Its buttons go away when the task ends.
+- News that needs nothing from you arrives silently: started, plan approved, resumed, queue empty. Your phone only buzzes when something needs you or a task ends.
+- A request answered somewhere else (the terminal, another device) or timed out loses its buttons, with a line saying what happened.
+- Claude's Markdown shows as formatting (headings, bold, code, lists, tables), not as `##` and `**`.
 
 If Telegram can't be reached, messages wait on the Mac and arrive in order once it can.
 

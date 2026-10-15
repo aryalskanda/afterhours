@@ -1,24 +1,31 @@
 import { basename } from 'node:path'
 import { BRAND } from '../shared/brand'
-import type { Effort, ExecMode, Job } from '../shared/types'
+import type { Approval, Effort, ExecMode, Job, LimitState } from '../shared/types'
 import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration, modeLabel } from '../daemon/format'
 import { formatClock, windowLabel } from '../daemon/limits'
-import { resumedBy, type Notice, type Question } from '../daemon/notify'
+import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { InlineButton, InlineKeyboard, ReplyKeyboard } from './api'
+import { htmlToText, inlineMarkdown, markdownParts, markdownToPlain } from './markdown'
 import type { Draft } from './state'
 
 // Everything the bot shows, as pure functions: text in Telegram's HTML subset plus buttons.
 // Button data stays under Telegram's 64-byte limit:
 //   d:<draft>:<op>[:<arg>…]  a draft card    a:<code>:y|n|c  an approval
-//   o:<code>:<q>.<opt>|t     a question       j:<job>:<op>    a job       g:<op>  global
+//   o:<code>:<step>.<opt>|d|t|b  a question (pick, done, type, back)   j:<job>:<op>  a job   g:<op>  global
 //   w:<session>:c|f|x        one of your other chats (it hit a usage limit)
 //   c:l:<page> · c:o|w|r:<session> · c:x   your chats: a page, open one, write in it, its full reply, leave it
 
 export interface View {
   html: string
   keyboard?: InlineKeyboard
+  /** Arrives without a sound: news that needs nothing from you. */
+  silent?: boolean
+  /** More messages sent right after this one, in order (a long plan or answer). */
+  follow?: View[]
+  /** A file sent last, for text too long even for several messages. */
+  file?: { name: string; text: string; caption: string }
 }
 
 export function esc(text: string): string {
@@ -37,6 +44,64 @@ function oneLine(text: string, max: number): string {
 export function btn(text: string, data: string): InlineButton {
   if (Buffer.byteLength(data) > 64) throw new Error(`button data too long: ${data}`)
   return { text, callback_data: data }
+}
+
+/** About how many characters fit across a phone in one row of buttons. */
+export const ROW_COLUMNS = 34
+
+/** How wide text looks: emoji and East Asian characters take two columns. */
+export function labelWidth(text: string): number {
+  let width = 0
+  for (const ch of text) {
+    if (ch === '\u200d' || ch === '\ufe0f') continue
+    width += /\p{Extended_Pictographic}|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(ch) ? 2 : 1
+  }
+  return width
+}
+
+/** Cuts a label to what fits a full-width button (the full text belongs in the message). */
+export function fit(text: string, columns = ROW_COLUMNS - 2): string {
+  if (labelWidth(text) <= columns) return text
+  let out = ''
+  for (const ch of text) {
+    if (labelWidth(`${out}${ch}…`) > columns) break
+    out += ch
+  }
+  return `${out.trimEnd()}…`
+}
+
+/** Like `fit`, but keeps the end: for folder paths, where the last parts say the most. */
+export function fitEnd(text: string, columns = ROW_COLUMNS - 2): string {
+  if (labelWidth(text) <= columns) return text
+  const chars = [...text]
+  let out = ''
+  for (let i = chars.length - 1; i >= 0; i--) {
+    if (labelWidth(`…${chars[i]}${out}`) > columns) break
+    out = chars[i] + out
+  }
+  return `…${out.trimStart()}`
+}
+
+/**
+ * Buttons in rows, so none gets cut: Telegram gives every button in a row the same width, so a row
+ * takes as many as fit at the width of its widest label, up to `max`.
+ */
+export function layout(buttons: InlineButton[], max = 3): InlineKeyboard {
+  const rows: InlineKeyboard = []
+  let row: InlineButton[] = []
+  let widest = 0
+  for (const b of buttons) {
+    const width = labelWidth(b.text) + 2
+    if (row.length > 0 && (row.length >= max || Math.max(widest, width) * (row.length + 1) > ROW_COLUMNS)) {
+      rows.push(row)
+      row = []
+      widest = 0
+    }
+    row.push(b)
+    widest = Math.max(widest, width)
+  }
+  if (row.length > 0) rows.push(row)
+  return rows
 }
 
 function quote(text: string | null | undefined, max: number): string {
@@ -150,12 +215,6 @@ export function draftCard(d: Draft, ctx: UiContext): View {
 
 const PER_PAGE = 12
 
-function pairs<T>(items: T[]): T[][] {
-  const rows: T[][] = []
-  for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2))
-  return rows
-}
-
 export interface FolderPage {
   dir: string
   parent: string | null
@@ -173,19 +232,20 @@ export function folderView(d: Draft, f: FolderPage, ctx: UiContext): View {
     `📁 <b>${esc(ctx.label(f.dir))}</b>\n` +
     `<i>${f.children.length === 0 ? 'No subfolders.' : `${f.children.length} folders${pages > 1 ? ` · page ${page + 1} of ${pages}` : ''}. Tap › to open a folder, or one without › to pick it.`}</i>`
   const keyboard: InlineKeyboard = [
-    [btn(`✅ Use ${clip(basename(f.dir), 32)}`, `d:${id}:u:${dirId}`)],
+    [btn(fit(`✅ Use ${basename(f.dir)}`), `d:${id}:u:${dirId}`)],
     [
       ...(f.parent ? [btn('⬆️ Up', `d:${id}:b:${ctx.folderId(f.parent)}:0`)] : []),
       btn('⭐ Recent', `d:${id}:r`),
       btn('🔍 Search', `d:${id}:s`),
     ],
-    ...pairs(
+    ...layout(
       shown.map(c =>
         btn(
-          `${c.isRepo ? '📦 ' : ''}${clip(c.name, 28)}${c.hasChildren ? ' ›' : ''}`,
+          `${c.isRepo ? '📦 ' : ''}${fit(c.name, ROW_COLUMNS - 6)}${c.hasChildren ? ' ›' : ''}`,
           c.hasChildren ? `d:${id}:b:${ctx.folderId(c.path)}:0` : `d:${id}:u:${ctx.folderId(c.path)}`,
         ),
       ),
+      2,
     ),
   ]
   if (pages > 1) {
@@ -223,7 +283,7 @@ export function chatsView(d: Draft, folder: string, chats: Chat[], hasLast: bool
     html,
     keyboard: [
       top,
-      ...chats.map((c, i) => [btn(`${d.sessionId === c.sessionId ? '✓ ' : ''}${i + 1}. ${chatIcon(c)} ${clip(c.title, 40)}`, `d:${id}:t:${c.sessionId}`)]),
+      ...chats.map((c, i) => [btn(fit(`${d.sessionId === c.sessionId ? '✓ ' : ''}${i + 1}. ${chatIcon(c)} ${c.title}`), `d:${id}:t:${c.sessionId}`)]),
       [btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -249,7 +309,7 @@ export function recentChatsView(chats: Chat[], page: number, more: boolean, ctx:
   const nav = [...(page > 0 ? [btn('◀️ Newer', `c:l:${page - 1}`)] : []), ...(more ? [btn('Older ▶️', `c:l:${page + 1}`)] : [])]
   return {
     html,
-    keyboard: [...chats.map(c => [btn(`${chatIcon(c)} ${clip(c.title, 40)}`, `c:o:${c.sessionId}`)]), ...(nav.length > 0 ? [nav] : [])],
+    keyboard: [...chats.map((c, i) => [btn(fit(`${page * CHATS_PER_PAGE + i + 1}. ${chatIcon(c)} ${c.title}`), `c:o:${c.sessionId}`)]), ...(nav.length > 0 ? [nav] : [])],
   }
 }
 
@@ -261,7 +321,7 @@ export function chatView(c: Chat, ctx: NoticeContext, inside: boolean): View {
     `💬 <b>${esc(clip(c.title, 120))}</b>`,
     `📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}${state ? ` · ${esc(state)}` : ''} · ${duration(ctx.now - c.updatedAt)} ago`,
     c.lastPrompt ? `<b>You:</b>\n${quote(c.lastPrompt, 500)}` : '',
-    c.lastReply ? `<b>Claude:</b>\n${quote(c.lastReply, 1500)}` : '',
+    c.lastReply ? `<b>Claude:</b>\n${quote(markdownToPlain(c.lastReply), 1500)}` : '',
     inside ? "<i>You're in this chat: what you type goes here.</i>" : '',
   ]
     .filter(Boolean)
@@ -304,7 +364,7 @@ export function recentView(d: Draft, recent: string[], ctx: UiContext): View {
   return {
     html,
     keyboard: [
-      ...recent.map(path => [btn(`📁 ${clip(ctx.label(path), 48)}`, `d:${id}:u:${ctx.folderId(path)}`)]),
+      ...recent.map(path => [btn(`📁 ${fitEnd(ctx.label(path), ROW_COLUMNS - 5)}`, `d:${id}:u:${ctx.folderId(path)}`)]),
       [btn('📁 Browse', `d:${id}:f`), btn('🔍 Search', `d:${id}:s`), btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -326,7 +386,7 @@ export function searchView(d: Draft, query: string, hits: SearchHit[], ctx: UiCo
   return {
     html,
     keyboard: [
-      ...hits.map(h => [btn(`${h.isRepo ? '📦' : '📁'} ${clip(ctx.label(h.path), 48)}`, `d:${id}:u:${ctx.folderId(h.path)}`)]),
+      ...hits.map(h => [btn(`${h.isRepo ? '📦' : '📁'} ${fitEnd(ctx.label(h.path), ROW_COLUMNS - 5)}`, `d:${id}:u:${ctx.folderId(h.path)}`)]),
       [btn('🔍 Search again', `d:${id}:s`), btn('📁 Browse', `d:${id}:f`), btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -350,9 +410,7 @@ export function modeView(d: Draft): View {
 
 export function modelView(d: Draft, ctx: UiContext): View {
   const models = ctx.models.includes(d.model) ? ctx.models : [...ctx.models, d.model]
-  const buttons = models.map(m => btn(`${m === d.model ? '✓ ' : ''}${m}`, `d:${d.id}:m:${m}`))
-  const rows: InlineKeyboard = []
-  for (let i = 0; i < buttons.length; i += 3) rows.push(buttons.slice(i, i + 3))
+  const rows = layout(models.map(m => btn(`${m === d.model ? '✓ ' : ''}${m}`, `d:${d.id}:m:${m}`)))
   rows.push([btn('↩️ Back', `d:${d.id}:k`)])
   return { html: '🧠 <b>Model</b>', keyboard: rows }
 }
@@ -378,28 +436,125 @@ function jobHeader(job: Job, ctx: UiContext): string {
   return `${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}/${job.effort}`
 }
 
-function questionLines(questions: Question[]): string {
-  return questions
-    .map((q, qi) => {
-      const head = questions.length > 1 ? `${qi + 1}. ` : ''
-      const opts = (q.options ?? []).map((o, oi) => `   ${String.fromCharCode(97 + oi)}) ${esc(o.label)}${o.description ? ` · <i>${esc(clip(o.description, 120))}</i>` : ''}`)
-      return [`<b>${head}${esc(q.question)}</b>`, ...opts].join('\n')
-    })
-    .join('\n')
+/** Characters per message part: Telegram allows 4,096, and headers need room. */
+const PART = 3500
+/** Beyond this many parts, the text goes in a file instead. */
+const MAX_PARTS = 5
+
+/**
+ * Markdown (a plan, Claude's answer) shown under `head`: in the same message when it fits, else
+ * as numbered parts that arrive quietly, else the first parts and a file. `keyboard` goes on the
+ * last message, after the text.
+ */
+export function longView(
+  head: string,
+  md: string | null | undefined,
+  keyboard: InlineKeyboard | undefined,
+  file: { name: string; caption: string },
+  o: { silent?: boolean } = {},
+): View {
+  const text = (md ?? '').trim()
+  if (!text) return { html: head, keyboard, silent: o.silent }
+  const parts = markdownParts(text, PART)
+  if (parts.length === 1 && htmlToText(head).length + htmlToText(parts[0]!).length <= PART) {
+    return { html: `${head}\n\n${parts[0]}`, keyboard, silent: o.silent }
+  }
+  const truncated = parts.length > MAX_PARTS
+  const shown = truncated ? parts.slice(0, 2) : parts
+  const follow: View[] = shown.map((html, i) => ({ html: `<i>${truncated ? `Part ${i + 1}` : `Part ${i + 1} of ${parts.length}`}</i>\n${html}`, silent: true }))
+  if (truncated) {
+    follow.push({ html: `<i>The rest is in ${esc(file.name)} below (${text.length.toLocaleString('en-US')} characters in all).</i>`, silent: true })
+  }
+  follow.at(-1)!.keyboard = keyboard
+  return { html: head, silent: o.silent, follow, ...(truncated ? { file: { ...file, text } } : {}) }
 }
 
-/** Buttons for a question: one per option; with several questions, picks are collected first. */
-export function questionKeyboard(code: string, questions: Question[], picked: Map<number, number> = new Map()): InlineKeyboard {
-  const rows: InlineKeyboard = []
-  questions.forEach((q, qi) => {
-    const buttons = (q.options ?? []).map((o, oi) => {
-      const tag = questions.length > 1 ? `${qi + 1}${String.fromCharCode(97 + oi)}` : String.fromCharCode(97 + oi)
-      return btn(`${picked.get(qi) === oi ? '✓ ' : ''}${tag}) ${clip(o.label, 26)}`, `o:${code}:${qi}.${oi}`)
-    })
-    rows.push(...pairs(buttons))
+/** A job's whole plan, for 📄 Full plan. */
+export function planView(job: Job, ctx: UiContext): View {
+  return longView(`📄 <b>#${job.id} plan</b> · ${esc(ctx.label(job.projectDir))}`, job.planText ?? '(no plan)', undefined, { name: `plan-${job.id}.md`, caption: `#${job.id}'s plan` }, { silent: true })
+}
+
+/** What a task card keeps between edits. */
+export interface Card {
+  /** How the plan was approved, once it was. */
+  plan?: string
+}
+
+/** A task's card: sent when it starts, then edited as its plan is approved and when it ends. */
+export function taskCard(job: Job, card: Card, ctx: UiContext): View {
+  const ended = job.status === 'done' || job.status === 'failed' || job.status === 'cancelled'
+  const lines = [`▶️ <b>#${job.id} started</b> · ${jobHeader(job, ctx)}`, quote(job.prompt, 600)]
+  if (card.plan !== undefined) lines.push(`📝 Plan approved (${esc(card.plan)})${job.planText ? `\n${quote(markdownToPlain(job.planText), 500)}` : ''}`)
+  if (ended) {
+    const took = job.startedAt && job.finishedAt ? ` in ${duration(job.finishedAt - job.startedAt)}` : ''
+    lines.push(job.status === 'done' ? `✅ <b>Done</b>${took}` : job.status === 'failed' ? `❌ <b>Failed</b>${took}` : '✖️ <b>Cancelled</b>')
+  }
+  const plan = card.plan !== undefined && job.planText ? [btn('📄 Full plan', `j:${job.id}:plan`)] : []
+  const keyboard = ended ? (plan.length > 0 ? [plan] : undefined) : [[...plan, btn('👀 Peek', `j:${job.id}:peek`), btn('⏹ Stop', `j:${job.id}:stop`)]]
+  return { html: lines.filter(Boolean).join('\n'), keyboard, silent: true }
+}
+
+// --- Claude's questions ---------------------------------------------------------------------
+
+/** Where you are in answering a set of questions. */
+export interface QuestionState {
+  step: number
+  answers: (QuestionAnswer | undefined)[]
+  /** Options ticked so far on a multi-select question. */
+  ticked: number[]
+}
+
+export const newQuestionState = (): QuestionState => ({ step: 0, answers: [], ticked: [] })
+
+const letter = (i: number) => String.fromCharCode(65 + i)
+
+/** One question at a time: the question and every option in full, then a full-width button per option. */
+export function questionView(job: Job, code: string, questions: Question[], s: QuestionState, minutes: number): View {
+  const q = questions[s.step]!
+  const multi = q.multiSelect === true
+  const options = q.options ?? []
+  const picked = s.answers[s.step]
+  const head = [
+    `❓ <b>#${job.id} asks</b>`,
+    q.header ? esc(q.header) : '',
+    questions.length > 1 ? `${s.step + 1} of ${questions.length}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  const hint = multi ? 'Tick every one that applies, then ✅ Done.' : 'Tap one.'
+  const after = `<i>${hint} Or ✍️ type your own answer. If you don't answer within ${minutes}m, Claude decides itself.</i>`
+  const render = (descriptionMax: number) =>
+    [
+      head,
+      `<b>${inlineMarkdown(q.question)}</b>`,
+      ...options.map(o => `\n<b>${letter(options.indexOf(o))} · ${esc(o.label)}</b>${o.description ? `\n${inlineMarkdown(clip(o.description, descriptionMax))}` : ''}`),
+      '',
+      after,
+    ].join('\n')
+  // Everything in full, unless it can't fit in one message: then each description gets a fair share.
+  let html = render(10_000)
+  if (htmlToText(html).length > PART) {
+    const fixed = htmlToText(render(0)).length
+    html = render(Math.max(120, Math.floor((PART - fixed) / Math.max(1, options.length))))
+  }
+  const keyboard: InlineKeyboard = options.map((o, i) => {
+    const on = multi ? s.ticked.includes(i) : picked !== undefined && 'picks' in picked && picked.picks.includes(i)
+    const mark = multi ? (on ? '☑ ' : '☐ ') : on ? '✓ ' : ''
+    return [btn(fit(`${mark}${letter(i)} · ${o.label}`), `o:${code}:${s.step}.${i}`)]
   })
-  rows.push([btn('✍️ Type an answer', `o:${code}:t`)])
-  return rows
+  if (multi) keyboard.push([btn(s.ticked.length > 0 ? `✅ Done (${s.ticked.length} picked)` : '✅ Done', `o:${code}:${s.step}.d`)])
+  keyboard.push([btn('✍️ Type an answer', `o:${code}:${s.step}.t`), ...(s.step > 0 ? [btn('⬅️ Back', `o:${code}:${s.step}.b`)] : [])])
+  return { html, keyboard }
+}
+
+/** The question message once you've answered: every question with your answer, no buttons. */
+export function answeredView(job: Job, questions: Question[], answers: (QuestionAnswer | undefined)[]): View {
+  const lines = questions.map((q, i) => {
+    const a = answers[i]
+    const value = !a ? '<i>no answer</i>' : 'text' in a ? `“${esc(a.text)}”` : a.picks.map(p => esc(q.options?.[p]?.label ?? '?')).join(', ')
+    return `<b>${esc(q.question)}</b>\n→ ${value}`
+  })
+  return { html: `❓ <b>#${job.id} asked</b> · ✅ answered\n\n${lines.join('\n\n')}` }
 }
 
 export interface NoticeContext extends UiContext {
@@ -409,56 +564,59 @@ export interface NoticeContext extends UiContext {
 export function noticeView(n: Notice, ctx: NoticeContext): View {
   switch (n.type) {
     case 'started':
-      return {
-        html: `▶️ <b>#${n.job.id} started</b> · ${jobHeader(n.job, ctx)}\n${quote(n.job.prompt, 600)}`,
-        keyboard: [[btn('👀 Peek', `j:${n.job.id}:peek`), btn('⏹ Stop', `j:${n.job.id}:stop`)]],
-      }
+      return taskCard(n.job, {}, ctx)
     case 'plan_approved':
-      return { html: `📝 <b>#${n.job.id} plan approved</b> (${esc(n.choice)})\n${quote(n.job.planText, 2500)}` }
-    case 'plan_review':
+      // Shown on the task's card when there is one; this is for when there isn't.
       return {
-        html: `📝 <b>#${n.job.id} plan ready for your review</b> · ${esc(ctx.label(n.job.projectDir))}\n${quote(n.job.planText, 3000)}`,
-        keyboard: [[btn('✅ Approve', `a:${n.code}:y`), btn('✏️ Ask for changes', `a:${n.code}:c`)]],
+        html: `📝 <b>#${n.job.id} plan approved</b> (${esc(n.choice)})\n${quote(n.job.planText ? markdownToPlain(n.job.planText) : null, 500)}`,
+        keyboard: n.job.planText ? [[btn('📄 Full plan', `j:${n.job.id}:plan`)]] : undefined,
+        silent: true,
       }
+    case 'plan_review':
+      return longView(
+        `📝 <b>#${n.job.id} plan ready for your review</b> · ${esc(ctx.label(n.job.projectDir))}`,
+        n.job.planText,
+        [[btn('✅ Approve', `a:${n.code}:y`), btn('✏️ Ask for changes', `a:${n.code}:c`)]],
+        { name: `plan-${n.job.id}.md`, caption: `#${n.job.id}'s plan` },
+      )
     case 'permission':
       return {
         html:
           `🔐 <b>#${n.job.id} wants to use ${esc(n.tool)}</b> · ${esc(ctx.label(n.job.projectDir))}\n` +
-          `<pre>${esc(clip(n.detail, 1500))}</pre>\n<i>Denied automatically in ${n.minutes}m.</i>`,
+          `<pre>${esc(clip(n.detail, 3000))}</pre>\n<i>Denied automatically in ${n.minutes}m.</i>`,
         keyboard: [[btn('✅ Allow', `a:${n.code}:y`), btn('❌ Deny', `a:${n.code}:n`)]],
       }
     case 'question':
-      return {
-        html: `❓ <b>#${n.job.id} asks</b>\n${questionLines(n.questions)}\n<i>If you don't answer within ${n.minutes}m, Claude decides itself.</i>`,
-        keyboard: questionKeyboard(n.code, n.questions),
-      }
+      return questionView(n.job, n.code, n.questions, newQuestionState(), n.minutes)
     case 'trust':
       return {
         html: `🔐 <b>#${n.job.id}</b> is the first Claude Code run in <b>${esc(ctx.label(n.job.projectDir))}</b>.\nClaude asks whether to trust this folder.`,
         keyboard: [[btn('✅ Trust it', `a:${n.code}:y`), btn('❌ Cancel the job', `a:${n.code}:n`)]],
       }
     case 'limit': {
-      const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : "reset time unknown; retrying every 15 minutes"
+      const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : 'reset time unknown; retrying every 15 minutes'
       return {
         html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own`,
         keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), btn('👀 Peek', `j:${n.job.id}:peek`)]],
       }
     }
     case 'resumed':
-      return { html: `▶️ <b>#${n.job.id}</b> continued after the limit reset (${esc(resumedBy(n.how))})` }
+      return { html: `▶️ <b>#${n.job.id}</b> continued after the limit reset (${esc(resumedBy(n.how))})`, silent: true }
     case 'done': {
       const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? ctx.now) - n.job.startedAt)}` : ''
       const next = n.next ? `Next: #${n.next.id} · ${jobHeader(n.next, ctx)}` : 'Queue empty.'
-      return {
-        html:
-          `✅ <b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}\n` +
-          `${n.diff ? `<i>${esc(n.diff)}</i>\n` : ''}` +
-          `${n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code> · merge with <code>git merge ${esc(n.job.branch)}</code>\n` : ''}` +
-          (longReply(n.job.lastMessage)
-            ? `${quote(n.job.lastMessage, 600)}\n<i>Claude's full answer follows.</i>\n${next}`
-            : `${quote(n.job.lastMessage, 2000)}\n${next}`),
-        keyboard: [[btn('➕ Follow up', `j:${n.job.id}:fu`)]],
-      }
+      const head = [
+        `✅ <b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}`,
+        n.diff ? `<i>${esc(n.diff)}</i>` : '',
+        n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code> · merge with <code>git merge ${esc(n.job.branch)}</code>` : '',
+        `<i>${next}</i>`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+      return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`)]], {
+        name: `answer-${n.job.id}.md`,
+        caption: `#${n.job.id}: Claude's full answer`,
+      })
     }
     case 'held':
       return {
@@ -494,6 +652,7 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
     case 'took_over':
       return {
         html: `🤝 <b>#${n.job.id} took its chat over from ${esc(n.where)}</b> (closed it there). Reopen it there later to see everything it did.`,
+        silent: true,
       }
     case 'session_limit': {
       const sid = n.chat.sessionId
@@ -536,42 +695,105 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
         return {
           html: `▶️ <b>The usage limit reset:</b> I told your chat ${name} in ${esc(n.where)} to continue.`,
           keyboard: [[btn('🤝 Continue here instead', `w:${n.chat.sessionId}:c`)]],
+          silent: true,
         }
       }
       if (n.how === 'takeover') {
-        return { html: `🤝 <b>Your chat ${name} didn't restart</b> in ${esc(n.where)}, so #${n.jobId} continues it here (closing it there).` }
+        return { html: `🤝 <b>Your chat ${name} didn't restart</b> in ${esc(n.where)}, so #${n.jobId} continues it here (closing it there).`, silent: true }
       }
-      return { html: `▶️ <b>#${n.jobId} continues your chat ${name}</b> after the usage limit (it was closed in ${esc(n.where)}).` }
+      return { html: `▶️ <b>#${n.jobId} continues your chat ${name}</b> after the usage limit (it was closed in ${esc(n.where)}).`, silent: true }
     }
     case 'recovered':
       return {
         html: `🔁 <b>#${n.job.id}'s window was gone</b> (the Mac restarted?), so it continues where it left off.`,
         keyboard: [[btn('👀 Peek', `j:${n.job.id}:peek`), btn('⏹ Stop', `j:${n.job.id}:stop`)]],
+        silent: true,
       }
     case 'setup_warning':
       return { html: `⚠️ ${esc(n.message)}` }
     case 'empty':
-      return { html: '🏁 Queue empty.' }
+      return { html: '🏁 Queue empty.', silent: true }
   }
 }
 
-/** A final answer too long for the done message: it follows in full (more messages, or a file). */
-export function longReply(text: string | null | undefined): boolean {
-  return (text?.trim().length ?? 0) > 2000
+// --- 📊 Status ------------------------------------------------------------------------------
+
+export interface StatusInfo {
+  active: Job | null
+  /** The running task's last tool and when it ran. */
+  lastTool: { tool: string; at: number } | null
+  /** Requests waiting on you. */
+  approvals: Approval[]
+  queued: Job[]
+  paused: boolean
+  limits: LimitState
 }
 
-export function statusView(text: string, paused: boolean): View {
-  return {
-    html: `📊 <b>Status</b>\n${esc(text)}`,
-    keyboard: [
-      [
-        btn('🔄 Refresh', 'g:st'),
-        paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'),
-        btn('👀 Peek', 'g:peek'),
-      ],
-      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
-    ],
+function phaseText(job: Job): string {
+  if (job.status === 'held') return `paused: ${job.holdReason ?? 'needs you'}`
+  switch (job.phase) {
+    case 'launching':
+      return 'starting'
+    case 'planning':
+      return 'planning'
+    case 'limited':
+      return 'waiting for the limit reset'
+    case 'finishing':
+      return 'wrapping up'
+    default:
+      return 'working'
   }
+}
+
+function limitLine(name: string, w: { usedPct: number | null; resetsAt: number | null } | undefined, now: number): string {
+  if (!w || w.usedPct === null) return ''
+  const pct = Math.max(0, Math.min(100, Math.round(w.usedPct)))
+  const filled = Math.round(pct / 10)
+  const reset = w.resetsAt ? ` · resets ${esc(formatClock(w.resetsAt, now))}` : ''
+  return `<code>${name} ${'▓'.repeat(filled)}${'░'.repeat(10 - filled)}</code> ${pct}%${reset}`
+}
+
+const WAITING: Record<Approval['kind'], string> = {
+  permission: '🔐 a permission request',
+  question: '❓ a question',
+  review: '📝 its plan, for your review',
+  trust: '🔐 trusting its folder',
+}
+
+/** 📊 Status: what's running, what's waiting on you (with its buttons), what's next, the limits. */
+export function statusView(s: StatusInfo, ctx: NoticeContext): View {
+  const lines = ['📊 <b>Status</b>']
+  const a = s.active
+  if (a) {
+    const since = a.startedAt ? ` · ${duration(ctx.now - a.startedAt)}` : ''
+    lines.push(`▶️ <b>#${a.id}</b> · ${esc(ctx.label(a.projectDir))} · ${esc(phaseText(a))}${since}`, `“${esc(oneLine(a.prompt, 140))}”`)
+    if (s.lastTool) lines.push(`🔧 last: ${esc(s.lastTool.tool)}, ${duration(ctx.now - s.lastTool.at)} ago`)
+  } else {
+    lines.push(s.paused ? '⏸ Nothing running; the queue is paused.' : '💤 Nothing running.')
+  }
+  for (const ap of s.approvals) lines.push(`⏳ <b>Waiting on you</b> (#${ap.jobId}): ${WAITING[ap.kind]}`)
+  if (s.queued.length > 0) {
+    lines.push(`<b>Next</b>${s.queued.length > 3 ? ` (${s.queued.length} waiting)` : ''}:`)
+    for (const j of s.queued.slice(0, 3)) lines.push(`• #${j.id} ${esc(ctx.label(j.projectDir))}: “${esc(oneLine(j.prompt, 70))}”`)
+  }
+  const blocked = s.limits.blockedUntil && s.limits.blockedUntil > ctx.now ? `⏸ New tasks wait for the limit reset at ${esc(formatClock(s.limits.blockedUntil, ctx.now))}` : ''
+  const limits = [limitLine('5-hour', s.limits.fiveHour, ctx.now), limitLine('Weekly', s.limits.sevenDay, ctx.now), blocked].filter(Boolean)
+  if (limits.length > 0) lines.push('', ...limits)
+  if (s.paused && a) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
+
+  const keyboard: InlineKeyboard = []
+  for (const ap of s.approvals.slice(0, 3)) {
+    if (ap.kind === 'permission' || ap.kind === 'trust') {
+      keyboard.push([btn(ap.kind === 'trust' ? '✅ Trust the folder' : '✅ Allow', `a:${ap.code}:y`), btn(ap.kind === 'trust' ? '❌ Cancel the job' : '❌ Deny', `a:${ap.code}:n`)])
+    } else {
+      keyboard.push([btn(ap.kind === 'question' ? `❓ Answer #${ap.jobId}'s question` : `📝 Review #${ap.jobId}'s plan`, `a:${ap.code}:show`)])
+    }
+  }
+  keyboard.push(
+    [btn('🔄 Refresh', 'g:st'), s.paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'), btn('👀 Peek', 'g:peek')],
+    [btn('📋 Queue', 'g:q'), btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
+  )
+  return { html: lines.join('\n'), keyboard }
 }
 
 export function queueView(active: Job | null, queued: Job[], ctx: UiContext, paused: boolean): View {
@@ -632,7 +854,8 @@ export const HELP_HTML =
   '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +
   '💬 Chat… on a card continues any chat in that folder, including one open in VS Code: 🤝 Take over closes it there and continues it here.\n' +
   `${KEYS.queue} · ${KEYS.status} · ${KEYS.peek}\n\n` +
-  "I'll message you when a plan is ready, when Claude needs permission or has a question, when a usage limit pauses work, and when a job finishes. " +
+  "I'll message you when a plan is ready, when Claude needs permission or has a question (one question at a time, every option in full), when a usage limit pauses work, and when a job finishes. " +
+  'News that needs nothing from you arrives silently. ' +
   'When a chat in VS Code or a terminal hits a usage limit, I offer to continue it here after the reset.\n\n' +
   'Commands: /new /queue /status /peek /pause /resume /settings /cancel\n' +
   'Typing <code>q myapp plan opus max: …</code> still works too.'

@@ -1,15 +1,16 @@
 import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
-import type { Job, JobSpec } from '../shared/types'
+import type { Approval, Job, JobSpec } from '../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
-import { parseQueueText, runCommand, type CommandContext } from '../daemon/commands'
+import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { formatClock } from '../daemon/limits'
-import type { Notice, Question } from '../daemon/notify'
+import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
 import type { Store } from '../daemon/store'
-import type { BotApi, Markup, TgCallbackQuery, TgMessage, TgUpdate } from './api'
+import { refusedFormatting, type BotApi, type Markup, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
+import { htmlToText, telegramHtmlProblem } from './markdown'
 import { TelegramState, type Choices, type Draft } from './state'
 import * as ui from './ui'
 
@@ -32,7 +33,8 @@ export interface TelegramOptions {
 type Pending =
   | { kind: 'prompt'; draftId: number }
   | { kind: 'search'; draftId: number }
-  | { kind: 'answer'; code: string }
+  /** An answer you type: to one question of a set (`step`), or to all of them. */
+  | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
   | { kind: 'followup'; jobId: number }
   | { kind: 'say' }
@@ -80,27 +82,35 @@ const WORDS: Record<string, string> = {
 }
 
 const PENDING_TTL = 30 * 60_000
-/** Room for one message part once escaped (Telegram allows 4,096 characters). */
-const LONG_PART = 3500
-const LONG_PARTS = 3
-
-/** Splits text into parts of at most `max` characters, at paragraph, then line, then word breaks. */
-export function splitText(text: string, max: number): string[] {
-  const parts: string[] = []
-  let rest = text.trim()
-  while (rest.length > max) {
-    const window = rest.slice(0, max)
-    const cut = [window.lastIndexOf('\n\n'), window.lastIndexOf('\n'), window.lastIndexOf(' ')].find(i => i > max / 2) ?? max
-    parts.push(rest.slice(0, cut).trimEnd())
-    rest = rest.slice(cut).trimStart()
-  }
-  if (rest) parts.push(rest)
-  return parts
-}
 const MAX_PAIR_ATTEMPTS = 5
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** A message's text without formatting, within Telegram's limit: what's sent when formatting fails. */
+function plain(html: string): string {
+  return ui.esc(ui.clip(htmlToText(html), 4000))
+}
+
+/** The line added to a request's message once it was settled somewhere else. */
+function settledLine(a: Approval | null): string {
+  switch (a?.status) {
+    case 'allowed':
+      return '✅ Allowed elsewhere.'
+    case 'denied':
+      return '❌ Declined elsewhere.'
+    case 'answered':
+      return '✅ Answered elsewhere.'
+    case 'expired':
+      return "⏱ Expired: Claude was told you're away."
+    default:
+      return 'No longer waiting.'
+  }
+}
+
+function questionsOf(a: Approval): Question[] {
+  return ((a.payload as { questions?: Question[] } | null)?.questions ?? []) as Question[]
 }
 
 export class TelegramBridge {
@@ -114,8 +124,16 @@ export class TelegramBridge {
   private sent = new Map<number, string>()
   /** Messages showing the queue, refreshed after ⬆️/🗑 taps. */
   private queueMessages = new Set<number>()
-  /** Option picks for questions with several parts. */
-  private picks = new Map<string, Map<number, number>>()
+  /** Where you are in answering each set of Claude's questions, by request code. */
+  private questions = new Map<string, ui.QuestionState & { messageId: number }>()
+  /** Each running task's card (its "started" message), edited as the task goes on. */
+  private cards = new Map<number, { messageId: number; card: ui.Card }>()
+  /** The message holding each request's buttons, by code, to tidy up once it's settled anywhere. */
+  private requests = new Map<string, number>()
+  /** Messages showing 📊 Status or 👀 Peek, refreshed in place. */
+  private statusMessages = new Set<number>()
+  private peekMessages = new Set<number>()
+  private ticking = false
   private pairAttempts = new Map<number, number>()
 
   constructor(private o: TelegramOptions) {
@@ -205,71 +223,150 @@ export class TelegramBridge {
     if (this.sent.size > 300) this.sent.delete(this.sent.keys().next().value!)
   }
 
+  /** The HTML as given when Telegram will take it, else the same text without formatting. */
+  private checked(html: string): string {
+    const problem = telegramHtmlProblem(html)
+    if (!problem) return html
+    this.o.log(`telegram: a message had formatting Telegram would refuse (${problem}); sending it as plain text`)
+    return plain(html)
+  }
+
+  /** Sends a view and what follows it (more parts, a file). Returns the last message: where its buttons are. */
   private async send(chat: number, view: ui.View, markup?: Markup): Promise<TgMessage> {
-    const msg = await this.o.api.sendMessage(chat, view.html, view.keyboard ? { inline_keyboard: view.keyboard } : markup)
-    if (view.keyboard) this.remember(msg.message_id, view.html)
+    let msg = await this.sendOne(chat, view, markup)
+    for (const part of view.follow ?? []) msg = await this.sendOne(chat, part)
+    if (view.file) await this.o.api.sendDocument(chat, view.file.name, view.file.text, view.file.caption)
+    return msg
+  }
+
+  /** One message. If Telegram refuses its formatting or length, it goes again as plain text. */
+  private async sendOne(chat: number, view: ui.View, markup?: Markup): Promise<TgMessage> {
+    const reply = view.keyboard ? { inline_keyboard: view.keyboard } : markup
+    let html = this.checked(view.html)
+    let msg: TgMessage
+    try {
+      msg = await this.o.api.sendMessage(chat, html, reply, { silent: view.silent })
+    } catch (err) {
+      if (!refusedFormatting(err)) throw err
+      this.o.log(`telegram: ${errorText(err)}; sending it as plain text`)
+      html = plain(html)
+      msg = await this.o.api.sendMessage(chat, html, reply, { silent: view.silent })
+    }
+    if (view.keyboard) this.remember(msg.message_id, html)
     return msg
   }
 
   private async edit(chat: number, messageId: number, view: ui.View): Promise<void> {
-    await this.o.api.editMessageText(chat, messageId, view.html, view.keyboard)
-    this.remember(messageId, view.html)
+    let html = this.checked(view.html)
+    try {
+      await this.o.api.editMessageText(chat, messageId, html, view.keyboard)
+    } catch (err) {
+      if (!refusedFormatting(err)) throw err
+      html = plain(html)
+      await this.o.api.editMessageText(chat, messageId, html, view.keyboard)
+    }
+    this.remember(messageId, html)
   }
 
   private sendText(chat: number, text: string): Promise<TgMessage> {
     return this.send(chat, { html: ui.esc(text) })
   }
 
-  /**
-   * Sends text that may be long, all of it: as it is up to one message, split into a few messages
-   * up to about 10,500 characters, and as a Markdown file beyond that.
-   */
-  private async sendLong(chat: number, text: string, filename: string): Promise<void> {
-    const parts = splitText(text, LONG_PART)
-    if (parts.length <= LONG_PARTS) {
-      for (const [i, part] of parts.entries()) {
-        await this.send(chat, { html: `${parts.length > 1 ? `<i>(${i + 1}/${parts.length})</i>\n` : ''}${ui.esc(part)}` })
-      }
-      return
-    }
-    await this.o.api.sendDocument(chat, `${filename}.md`, text, `The full text (${text.length.toLocaleString('en-US')} characters)`)
-  }
-
   /** Adds a closing line to a message and removes its buttons. */
   private async settle(chat: number, message: TgMessage | undefined, line: string): Promise<void> {
-    if (!message) return
-    const html = this.sent.get(message.message_id) ?? ui.esc(message.text ?? '')
-    this.sent.delete(message.message_id)
-    await this.o.api.editMessageText(chat, message.message_id, `${html}\n\n<b>${ui.esc(line)}</b>`)
+    if (message) await this.settleMessage(chat, message.message_id, line, message.text)
+  }
+
+  private async settleMessage(chat: number, messageId: number, line: string, text?: string): Promise<void> {
+    const html = this.sent.get(messageId) ?? ui.esc(text ?? '')
+    this.sent.delete(messageId)
+    await this.o.api.editMessageText(chat, messageId, `${html}\n\n<b>${ui.esc(line)}</b>`)
+  }
+
+  /** Settles a request's buttons: on the message tapped, and on the one it was sent in. */
+  private async settleRequest(chat: number, code: string, line: string, tapped?: TgMessage): Promise<void> {
+    const sentIn = this.requests.get(code)
+    this.requests.delete(code)
+    this.questions.delete(code)
+    if (tapped) await this.settle(chat, tapped, line)
+    if (sentIn !== undefined && sentIn !== tapped?.message_id) await this.settleMessage(chat, sentIn, line).catch(() => {})
   }
 
   /** Called by the notifier for every notice. */
   async notify(notice: Notice): Promise<void> {
     const chat = this.owner
     if (chat === null || !this.running) return
-    if (!(await this.deliver(chat, ui.noticeView(notice, { ...this.uiContext(), now: this.o.now() })))) return
-    if (notice.type === 'done' && ui.longReply(notice.job.lastMessage)) {
-      await this.sendLong(chat, notice.job.lastMessage!, `reply-${notice.job.id}`).catch(err =>
-        this.o.log(`telegram: couldn't send #${notice.job.id}'s full answer: ${errorText(err)}`),
-      )
+    const ctx = this.noticeContext()
+    // A plan approved for you goes on the task's card rather than in a message of its own.
+    if (notice.type === 'plan_approved') {
+      const c = this.cards.get(notice.job.id)
+      if (c) {
+        c.card.plan = notice.choice
+        await this.edit(chat, c.messageId, ui.taskCard(notice.job, c.card, ctx)).catch(err =>
+          this.o.log(`telegram: couldn't update #${notice.job.id}'s card: ${errorText(err)}`),
+        )
+        return
+      }
+    }
+    const msg = await this.deliver(chat, ui.noticeView(notice, ctx))
+    if (!msg) return
+    if (notice.type === 'started') this.cards.set(notice.job.id, { messageId: msg.message_id, card: {} })
+    if (notice.type === 'permission' || notice.type === 'question' || notice.type === 'plan_review' || notice.type === 'trust') {
+      this.requests.set(notice.code, msg.message_id)
+      if (notice.type === 'question') this.questions.set(notice.code, { ...ui.newQuestionState(), messageId: msg.message_id })
     }
   }
 
   /**
    * Sends a notice, or keeps it to send later when Telegram can't be reached (and behind any already
-   * kept, so they arrive in order). Returns whether it went out now.
+   * kept, so they arrive in order). Returns the message with its buttons when all of it went out now.
    */
-  private async deliver(chat: number, view: ui.View): Promise<boolean> {
+  private async deliver(chat: number, view: ui.View): Promise<TgMessage | null> {
+    const parts = [view, ...(view.follow ?? [])]
+    let sent = 0
+    let last: TgMessage | null = null
     if (this.state.outbox().length === 0) {
       try {
-        await this.send(chat, view)
-        return true
+        for (; sent < parts.length; sent++) last = await this.sendOne(chat, parts[sent]!)
+        if (view.file) {
+          await this.o.api.sendDocument(chat, view.file.name, view.file.text, view.file.caption).catch(err =>
+            this.o.log(`telegram: couldn't send ${view.file!.name}: ${errorText(err)}`),
+          )
+        }
+        return last
       } catch (err) {
         this.o.log(`telegram: couldn't send a notice (${errorText(err)}); keeping it to send later`)
       }
     }
-    this.state.addOutbox(view.html, view.keyboard, this.o.now())
-    return false
+    for (const part of parts.slice(sent)) this.state.addOutbox(this.checked(part.html), part.keyboard, this.o.now())
+    return null
+  }
+
+  /**
+   * Tidies up after what happened elsewhere: requests answered from the terminal, an app or by
+   * timing out lose their buttons, and finished tasks' cards say how they ended. Every few seconds.
+   */
+  async tick(): Promise<void> {
+    const chat = this.owner
+    if (chat === null || !this.running || this.ticking) return
+    this.ticking = true
+    try {
+      for (const [code, messageId] of [...this.requests]) {
+        const a = this.o.store.getApproval(code)
+        if (a?.status === 'pending') continue
+        this.requests.delete(code)
+        this.questions.delete(code)
+        await this.settleMessage(chat, messageId, settledLine(a)).catch(err => this.o.log(`telegram: couldn't tidy request ${code}: ${errorText(err)}`))
+      }
+      for (const [jobId, c] of [...this.cards]) {
+        const job = this.o.store.getJob(jobId)
+        if (job && (job.status === 'queued' || job.status === 'running' || job.status === 'held')) continue
+        this.cards.delete(jobId)
+        if (job) await this.edit(chat, c.messageId, ui.taskCard(job, c.card, this.uiContext())).catch(err => this.o.log(`telegram: couldn't close #${jobId}'s card: ${errorText(err)}`))
+      }
+    } finally {
+      this.ticking = false
+    }
   }
 
   /** Sends what was kept while Telegram was unreachable, oldest first; drops what's a day old. */
@@ -449,12 +546,26 @@ export class TelegramBridge {
         this.setPending({ kind: 'search', draftId: d.id }) // typing again refines the search
         return
       }
-      case 'answer':
-        await this.sendText(chat, this.o.runner.answer(p.code, 'answer', text))
+      case 'answer': {
+        const state = this.questions.get(p.code)
+        const approval = this.o.store.getApproval(p.code)
+        const job = approval ? this.o.store.getJob(approval.jobId) : null
+        // One question of a set: that question gets your text, then the next one shows.
+        if (p.step !== undefined && state && job && approval?.status === 'pending' && state.step === p.step) {
+          await this.sendText(chat, await this.answerStep(chat, p.code, job, questionsOf(approval), state, { text }))
+          return
+        }
+        const reply = this.o.runner.answer(p.code, 'answer', text)
+        await this.settleRequest(chat, p.code, `✍️ Answered: “${ui.clip(text, 200)}”`)
+        await this.sendText(chat, reply)
         return
-      case 'changes':
-        await this.sendText(chat, this.o.runner.answer(p.code, 'deny', text))
+      }
+      case 'changes': {
+        const reply = this.o.runner.answer(p.code, 'deny', text)
+        await this.settleRequest(chat, p.code, '✏️ You asked for changes.')
+        await this.sendText(chat, reply)
         return
+      }
       case 'followup': {
         const job = this.o.store.getJob(p.jobId)
         if (!job?.sessionId) return this.newDraft(chat, text)
@@ -523,22 +634,42 @@ export class TelegramBridge {
     this.queueMessages.add(messageId)
   }
 
-  private async statusView(): Promise<ui.View> {
-    const text = (await runCommand('st', this.o.commandContext())) ?? ''
-    return ui.statusView(text, this.o.runner.paused)
+  private statusInfo(): ui.StatusInfo {
+    const active = this.o.store.active()
+    const info = active ? this.o.runner.runtimeInfo(active.id) : null
+    return {
+      active,
+      lastTool: info?.lastTool ? { tool: info.lastTool, at: info.lastActivity } : null,
+      approvals: this.o.store.pendingApprovals(),
+      queued: this.o.store.queued(),
+      paused: this.o.runner.paused,
+      limits: this.o.runner.limits(),
+    }
   }
 
+  /** 📊 Status; `messageId` refreshes one already shown. */
   private async showStatus(chat: number, messageId?: number): Promise<void> {
-    const view = await this.statusView()
+    const view = ui.statusView(this.statusInfo(), this.noticeContext())
     if (messageId) await this.edit(chat, messageId, view)
-    else await this.send(chat, view)
+    else messageId = (await this.send(chat, view)).message_id
+    this.statusMessages.add(messageId)
+    if (this.statusMessages.size > 50) this.statusMessages.delete(this.statusMessages.values().next().value!)
   }
 
   private async showPeek(chat: number, messageId?: number): Promise<void> {
     const s = await this.o.runner.screen(30)
     const view = ui.peekView(s?.jobId ?? null, s?.text ?? '')
     if (messageId) await this.edit(chat, messageId, view)
-    else await this.send(chat, view)
+    else messageId = (await this.send(chat, view)).message_id
+    this.peekMessages.add(messageId)
+    if (this.peekMessages.size > 50) this.peekMessages.delete(this.peekMessages.values().next().value!)
+  }
+
+  /** How long a request still waits for you, in minutes. */
+  private minutesLeft(a: Approval): number {
+    const t = this.o.config().timeouts
+    const seconds = a.kind === 'question' ? t.questionSec : a.kind === 'review' ? t.reviewSec : t.approvalSec
+    return Math.max(1, Math.round((a.createdAt + seconds * 1000 - this.o.now()) / 60_000))
   }
 
   private settingsView(): ui.View {
@@ -773,59 +904,122 @@ export class TelegramBridge {
 
   private async onApprovalButton(chat: number, message: TgMessage | undefined, code: string, op: string): Promise<string> {
     const approval = this.o.store.getApproval(code)
+    // From 📊 Status: the status refreshes rather than losing its buttons.
+    const status = message && this.statusMessages.has(message.message_id) ? message.message_id : null
     if (!approval || approval.status !== 'pending') {
       const line = approval ? `Already ${approval.status}.` : 'Already handled.'
-      await this.settle(chat, message, line)
+      if (status !== null) await this.showStatus(chat, status)
+      else await this.settle(chat, message, line)
       return line
     }
+    if (op === 'show') return this.showRequest(chat, approval)
     if (op === 'c') {
       this.setPending({ kind: 'changes', code })
       await this.sendText(chat, '✏️ What should Claude change in the plan? Send it as your next message.')
       return 'Waiting for your changes.'
     }
     const reply = this.o.runner.answer(code, op === 'y' ? 'allow' : 'deny', null)
-    await this.settle(chat, message, reply)
+    await this.settleRequest(chat, code, reply, status === null ? message : undefined)
+    if (status !== null) await this.showStatus(chat, status)
     return reply
+  }
+
+  /** A waiting question or plan, sent again (from 📊 Status); its buttons move to the new message. */
+  private async showRequest(chat: number, a: Approval): Promise<string> {
+    const job = this.o.store.getJob(a.jobId)
+    if (!job) return 'That task is gone.'
+    const before = this.requests.get(a.code)
+    let msg: TgMessage
+    if (a.kind === 'question') {
+      const state = this.questions.get(a.code) ?? { ...ui.newQuestionState(), messageId: 0 }
+      msg = await this.send(chat, ui.questionView(job, a.code, questionsOf(a), state, this.minutesLeft(a)))
+      this.questions.set(a.code, { ...state, messageId: msg.message_id })
+    } else if (a.kind === 'review') {
+      msg = await this.send(chat, ui.noticeView({ type: 'plan_review', job, code: a.code }, this.noticeContext()))
+    } else {
+      return 'Answer it with the buttons on the status.'
+    }
+    this.requests.set(a.code, msg.message_id)
+    if (before !== undefined) await this.settleMessage(chat, before, '↓ Moved further down.').catch(() => {})
+    return 'Sent again below.'
   }
 
   private async onQuestionButton(chat: number, message: TgMessage | undefined, code: string, arg: string): Promise<string> {
     const approval = this.o.store.getApproval(code)
-    if (!approval || approval.status !== 'pending') {
+    const job = approval ? this.o.store.getJob(approval.jobId) : null
+    if (!approval || approval.status !== 'pending' || !job) {
       const line = approval ? `Already ${approval.status}.` : 'Already handled.'
       await this.settle(chat, message, line)
       return line
     }
-    if (arg === 't') {
-      this.setPending({ kind: 'answer', code })
-      await this.sendText(chat, '✍️ Type your answer as your next message.')
-      return 'Waiting for your answer.'
+    const questions = questionsOf(approval)
+    const state = this.questions.get(code) ?? { ...ui.newQuestionState(), messageId: message?.message_id ?? 0 }
+    if (message) state.messageId = message.message_id
+    this.questions.set(code, state)
+    const [stepText, op] = arg.split('.') as [string, string | undefined]
+    // A tap on a screen that has moved on (or an old message): show where you are.
+    if (Number(stepText) !== state.step || op === undefined) {
+      await this.showQuestion(chat, job, approval, state)
+      return 'That question has moved on.'
     }
-    const questions = ((approval.payload as { questions?: Question[] } | null)?.questions ?? []) as Question[]
-    const [qi, oi] = arg.split('.').map(Number) as [number, number]
-    const picks = this.picks.get(code) ?? new Map<number, number>()
-    picks.set(qi, oi)
-    this.picks.set(code, picks)
-    if (picks.size < questions.length && message) {
-      const html = this.sent.get(message.message_id) ?? ui.esc(message.text ?? '')
-      await this.edit(chat, message.message_id, { html, keyboard: ui.questionKeyboard(code, questions, picks) })
-      return 'Got it. Now answer the other question.'
+    const q = questions[state.step]
+    if (!q) return 'That question is gone.'
+    switch (op) {
+      case 't':
+        this.setPending({ kind: 'answer', code, step: state.step })
+        await this.sendText(chat, `✍️ Type your answer to “${ui.clip(q.question, 200)}” as your next message.`)
+        return 'Waiting for your answer.'
+      case 'b': {
+        if (state.step > 0) state.step--
+        const earlier = state.answers[state.step]
+        state.ticked = earlier && 'picks' in earlier ? [...earlier.picks] : []
+        await this.showQuestion(chat, job, approval, state)
+        return 'Back.'
+      }
+      case 'd':
+        if (state.ticked.length === 0) return 'Tick at least one, or type your own answer.'
+        return this.answerStep(chat, code, job, questions, state, { picks: [...state.ticked].sort((a, b) => a - b) })
+      default: {
+        const option = Number(op)
+        const label = q.options?.[option]?.label
+        if (label === undefined) return 'That option is gone.'
+        if (!q.multiSelect) return this.answerStep(chat, code, job, questions, state, { picks: [option] })
+        const ticked = state.ticked.includes(option)
+        state.ticked = ticked ? state.ticked.filter(i => i !== option) : [...state.ticked, option]
+        await this.showQuestion(chat, job, approval, state)
+        return ticked ? `Unticked ${label}` : `Ticked ${label}`
+      }
     }
-    this.picks.delete(code)
-    const letter = (n: number) => String.fromCharCode(97 + n)
-    const answer =
-      questions.length <= 1
-        ? letter(oi)
-        : [...picks.entries()]
-            .sort(([a], [b]) => a - b)
-            .map(([q, o]) => `${q + 1}${letter(o)}`)
-            .join(' ')
-    const chosen = [...picks.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([q, o]) => questions[q]?.options?.[o]?.label ?? '?')
-      .join(', ')
-    const reply = this.o.runner.answer(code, 'answer', answer)
-    await this.settle(chat, message, `Answered: ${chosen}`)
+  }
+
+  /** Keeps the answer to the current question, then shows the next one, or sends them all to Claude. */
+  private async answerStep(
+    chat: number,
+    code: string,
+    job: Job,
+    questions: Question[],
+    state: ui.QuestionState & { messageId: number },
+    answer: QuestionAnswer,
+  ): Promise<string> {
+    state.answers[state.step] = answer
+    state.step++
+    if (state.step < questions.length) {
+      const next = state.answers[state.step]
+      state.ticked = next && 'picks' in next ? [...next.picks] : []
+      const approval = this.o.store.getApproval(code)
+      if (approval) await this.showQuestion(chat, job, approval, state)
+      return `Got it. Question ${state.step + 1} of ${questions.length}.`
+    }
+    this.questions.delete(code)
+    this.requests.delete(code)
+    const reply = this.o.runner.answer(code, 'answer', describeAnswers(questions, state.answers))
+    if (state.messageId) await this.edit(chat, state.messageId, ui.answeredView(job, questions, state.answers))
     return reply
+  }
+
+  private async showQuestion(chat: number, job: Job, approval: Approval, state: ui.QuestionState & { messageId: number }): Promise<void> {
+    if (!state.messageId) return
+    await this.edit(chat, state.messageId, ui.questionView(job, approval.code, questionsOf(approval), state, this.minutesLeft(approval)))
   }
 
   private async onJobButton(chat: number, message: TgMessage | undefined, id: number, op: string): Promise<string | undefined> {
@@ -862,6 +1056,10 @@ export class TelegramBridge {
       case 'rm':
         reply = await this.o.runner.remove(id)
         break
+      case 'plan':
+        if (!job.planText) return 'No plan yet.'
+        await this.send(chat, ui.planView(job, this.uiContext()))
+        return
       case 'fu':
         if (!job.sessionId) return 'That job has no conversation to continue.'
         this.setPending({ kind: 'followup', jobId: id })
@@ -932,7 +1130,13 @@ export class TelegramBridge {
         await this.send(chat, { html: ui.enteredChatHtml(c, this.noticeContext()) }, ui.CHAT_KEYBOARD)
         return `💬 ${ui.clip(c.title, 60)}`
       case 'r':
-        await this.sendLong(chat, c.lastReply ?? '(no reply yet)', `reply-${c.sessionId.slice(0, 8)}`)
+        await this.send(
+          chat,
+          ui.longView(`📜 <b>${ui.esc(ui.clip(c.title, 120))}</b> · Claude's last reply`, c.lastReply ?? '(no reply yet)', undefined, {
+            name: `reply-${c.sessionId.slice(0, 8)}.md`,
+            caption: "Claude's full reply",
+          }, { silent: true }),
+        )
         return
       default:
         return
@@ -1007,10 +1211,10 @@ export class TelegramBridge {
         await this.showStatus(chat, at)
         return 'Updated.'
       case 'q':
-        await this.showQueue(chat, at)
+        await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
         return 'Updated.'
       case 'peek':
-        await this.showPeek(chat, at)
+        await this.showPeek(chat, at && this.peekMessages.has(at) ? at : undefined)
         return 'Updated.'
       case 'pause':
         this.o.runner.setPaused(true)

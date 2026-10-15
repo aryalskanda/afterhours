@@ -16,6 +16,21 @@ export interface Question {
   multiSelect?: boolean
 }
 
+/** Your answer to one question: the options you picked (by position), or what you typed. */
+export type QuestionAnswer = { picks: number[] } | { text: string }
+
+/** Answers as Claude reads them: "question" → label, label; "question" → what you typed. Skips unanswered ones. */
+export function describeAnswers(questions: Question[], answers: (QuestionAnswer | undefined)[]): string {
+  return questions
+    .flatMap((q, i) => {
+      const a = answers[i]
+      if (!a) return []
+      const value = 'text' in a ? a.text : a.picks.map(p => q.options?.[p]?.label ?? '?').join(', ')
+      return [`"${q.question}" → ${value}`]
+    })
+    .join('; ')
+}
+
 export type Notice =
   | { type: 'started'; job: Job }
   | { type: 'plan_approved'; job: Job; choice: string }

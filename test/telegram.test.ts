@@ -8,7 +8,7 @@ import { Runner, windowName } from '../src/daemon/runner'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
-import type { BotApi, InlineKeyboard, Markup, TgMessage, TgUpdate, TgUser } from '../src/telegram/api'
+import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
 import { TelegramBridge } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
@@ -22,6 +22,7 @@ interface Sent {
   chat: number
   html: string
   markup?: Markup
+  silent?: boolean
 }
 
 class FakeApi implements BotApi {
@@ -38,10 +39,14 @@ class FakeApi implements BotApi {
   }
   /** Plays Telegram being unreachable. */
   down = false
-  async sendMessage(chat: number, html: string, markup?: Markup): Promise<TgMessage> {
+  /** Plays Telegram refusing a message's formatting (it returns why, or null to accept it). */
+  refuse: (html: string) => string | null = () => null
+  async sendMessage(chat: number, html: string, markup?: Markup, o?: { silent?: boolean }): Promise<TgMessage> {
     if (this.down) throw new Error('telegram sendMessage: 0 network is down')
+    const refused = this.refuse(html)
+    if (refused) throw new TelegramError('sendMessage', 400, `Bad Request: ${refused}`)
     const id = this.next++
-    this.sent.push({ id, chat, html, markup })
+    this.sent.push({ id, chat, html, markup, silent: o?.silent })
     return { message_id: id, chat: { id: chat, type: 'private' }, date: 0, text: html }
   }
   async editMessageText(chat: number, id: number, html: string, keyboard?: InlineKeyboard): Promise<void> {
@@ -358,9 +363,10 @@ describe('notifications with buttons', () => {
     })
     await Bun.sleep(0)
     const msg = h.api.last()
-    await h.tap(button(h.api.view(msg.id).keyboard, 'b) blue'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, 'B · blue'), msg.id)
     expect(await reply).toMatchObject({ hookSpecificOutput: { permissionDecisionReason: expect.stringContaining('"Which color?" → blue') } })
-    expect(h.api.view(msg.id).html).toContain('Answered: blue')
+    expect(h.api.view(msg.id).html).toContain('<b>Which color?</b>\n→ blue')
+    expect(h.api.view(msg.id).keyboard).toEqual([])
   })
 
   test('➕ Follow up continues the same conversation', async () => {
@@ -444,7 +450,8 @@ describe('your other chats (VS Code, a terminal)', () => {
     expect(view.html).toContain('Claude Code prompt queue optimizer</b> · open in VS Code · 1h 00m ago')
     expect(view.html).toContain('“Build the queue”')
     expect(view.html).toContain('Older chat')
-    await h.tap(button(view.keyboard, 'Claude Code prompt queue optimizer'), card)
+    // The button shows the start of the title; the message above has all of it.
+    await h.tap(button(view.keyboard, 'Claude Code prompt queue'), card)
     view = h.api.view(card)
     expect(view.html).toContain('💬 continues “Claude Code prompt queue optimizer” · 🟢 open in VS Code')
     expect(view.html).toContain('🤝 takes it over when it starts')
@@ -675,13 +682,16 @@ describe('every session from your phone', () => {
     const medium = Array.from({ length: 8 }, (_, i) => `Part ${i + 1}: ${para}`).join('\n\n')
     await h.bridge.notify({ type: 'done', job: { id: 9, projectDir: join(h.root, 'beta'), lastMessage: medium, startedAt: h.now(), finishedAt: h.now(), branch: null } as Job, diff: null, next: null })
     const sent = h.api.sent.slice(-3)
-    expect(sent[0]!.html).toContain("Claude's full answer follows.")
-    expect(sent[1]!.html).toContain('(1/2)')
-    expect(sent[2]!.html).toContain('(2/2)')
+    expect(sent[0]!.html).toStartWith('✅ <b>#9 done</b>')
+    expect(sent[1]!.html).toContain('Part 1 of 2')
+    expect(sent[2]!.html).toContain('Part 2 of 2')
     expect(sent[2]!.html).toContain('Part 8')
+    // The parts arrive quietly; Follow up comes after the whole answer.
+    expect(sent.map(m => m.silent)).toEqual([undefined, true, true])
+    expect(JSON.stringify(sent[2]!.markup)).toContain('Follow up')
     const huge = 'x'.repeat(20_000)
     await h.bridge.notify({ type: 'done', job: { id: 10, projectDir: join(h.root, 'beta'), lastMessage: huge, startedAt: h.now(), finishedAt: h.now(), branch: null } as Job, diff: null, next: null })
-    expect(h.api.documents).toEqual([{ chat: OWNER, filename: 'reply-10.md', content: huge }])
+    expect(h.api.documents).toEqual([{ chat: OWNER, filename: 'answer-10.md', content: huge }])
   })
 
   test('notices sent while Telegram is unreachable arrive later, in order', async () => {
@@ -695,5 +705,176 @@ describe('every session from your phone', () => {
     expect(h.api.sent.slice(before).map(m => m.html)).toEqual(['🏁 Queue empty.', '⚠️ Full Disk Access is missing'])
     await h.bridge.flushOutbox()
     expect(h.api.sent.length).toBe(before + 2)
+  })
+})
+
+describe('reading and answering on a phone', () => {
+  const longDescription = 'The Linux build runs inside WSL2 unchanged, so Windows works from day one; a native engine can come later without changing anything people already set up.'
+
+  test("Claude's questions come one at a time, in full; multi-select ticks; a typed answer goes to its own question", async () => {
+    const h = await paired()
+    const job = await running(h)
+    const reply = h.runner.onHook('PreToolUse', job.id, {
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          { question: 'How should the engine run on Windows?', header: 'Windows', options: [{ label: 'Native Windows now' }, { label: 'WSL2 first (Recommended)', description: longDescription }] },
+          { question: 'Which platforms first?', multiSelect: true, options: [{ label: 'iPhone' }, { label: 'Android' }, { label: 'Desktop' }] },
+          { question: 'What should the relay be called?', options: [{ label: 'relay' }, { label: 'bridge' }] },
+        ],
+      },
+    })
+    await Bun.sleep(0)
+    const msg = h.api.last()
+    let view = h.api.view(msg.id)
+    expect(view.html).toContain('#' + job.id + ' asks</b> · Windows · 1 of 3')
+    expect(view.html).toContain(longDescription) // in full, not cut at 120 characters
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['A · Native Windows now'], ['B · WSL2 first (Recommended)'], ['✍️ Type an answer']])
+
+    await h.tap(button(view.keyboard, 'B · WSL2'), msg.id)
+    view = h.api.view(msg.id)
+    expect(view.html).toContain('2 of 3')
+    expect(view.keyboard.map(r => r[0]!.text).slice(0, 4)).toEqual(['☐ A · iPhone', '☐ B · Android', '☐ C · Desktop', '✅ Done'])
+
+    // A tap on the first question's old button changes nothing.
+    await h.tap(`o:${h.store.pendingApprovals()[0]!.code}:0.0`, msg.id)
+    expect(h.api.answers.at(-1)!.text).toBe('That question has moved on.')
+
+    await h.tap(button(view.keyboard, 'A · iPhone'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, 'C · Desktop'), msg.id)
+    view = h.api.view(msg.id)
+    expect(view.keyboard.map(r => r[0]!.text).slice(0, 4)).toEqual(['☑ A · iPhone', '☐ B · Android', '☑ C · Desktop', '✅ Done (2 picked)'])
+
+    // Back and forward again keeps what was picked.
+    await h.tap(button(view.keyboard, '⬅️ Back'), msg.id)
+    expect(h.api.view(msg.id).keyboard[1]![0]!.text).toBe('✓ B · WSL2 first (Recommended)')
+    await h.tap(button(h.api.view(msg.id).keyboard, 'B · WSL2'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, 'A · iPhone'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, 'C · Desktop'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, '✅ Done'), msg.id)
+    expect(h.api.view(msg.id).html).toContain('3 of 3')
+
+    await h.tap(button(h.api.view(msg.id).keyboard, '✍️ Type an answer'), msg.id)
+    expect(h.api.last().html).toContain('What should the relay be called?')
+    await h.say('the hub')
+    expect(await reply).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason:
+          'The user is away from the keyboard and answered from their phone: ' +
+          '"How should the engine run on Windows?" → WSL2 first (Recommended); "Which platforms first?" → iPhone, Desktop; "What should the relay be called?" → the hub',
+      },
+    })
+    view = h.api.view(msg.id)
+    expect(view.html).toContain('✅ answered')
+    expect(view.html).toContain('<b>Which platforms first?</b>\n→ iPhone, Desktop')
+    expect(view.html).toContain('→ “the hub”')
+    expect(view.keyboard).toEqual([])
+  })
+
+  test('a long plan to review arrives whole, rendered, with Approve after the last part', async () => {
+    const h = await paired()
+    const job = await running(h)
+    const section = (n: number) => `## Step ${n}\n\n${'- **Do** the `thing` carefully and check it twice.\n'.repeat(20)}`
+    const plan = Array.from({ length: 8 }, (_, i) => section(i + 1)).join('\n')
+    expect(plan.length).toBeGreaterThan(8000)
+    h.store.updateJob(job.id, { planText: plan })
+    h.store.addApproval('rvwab', job.id, 'review', null, h.now())
+    const before = h.api.sent.length
+    await h.bridge.notify({ type: 'plan_review', job: h.store.getJob(job.id)!, code: 'rvwab' })
+    const sent = h.api.sent.slice(before)
+    expect(sent.length).toBeGreaterThan(2)
+    expect(sent[0]!.html).toContain('plan ready for your review')
+    const all = sent.map(m => m.html).join('\n')
+    for (let n = 1; n <= 8; n++) expect(all).toContain(`<b>Step ${n}</b>`)
+    expect(all).toContain('• <b>Do</b> the <code>thing</code>')
+    expect(all).not.toContain('##')
+    // Only the last part has the buttons.
+    expect(sent.slice(0, -1).every(m => !m.markup)).toBe(true)
+    const last = sent.at(-1)!
+    await h.tap(button(h.api.view(last.id).keyboard, '✅ Approve'), last.id)
+    expect(h.store.getApproval('rvwab')!.status).toBe('allowed')
+  })
+
+  test("news that needs nothing from you is silent, and a task's card follows it to the end", async () => {
+    const h = await paired()
+    const job = await running(h)
+    await Bun.sleep(0)
+    const card = h.api.sent.find(m => m.html.includes(`#${job.id} started`))!
+    expect(card.silent).toBe(true)
+    const before = h.api.sent.length
+    h.store.updateJob(job.id, { planText: '1. Do it\n2. Check it' })
+    await h.bridge.notify({ type: 'plan_approved', job: h.store.getJob(job.id)!, choice: 'auto mode' })
+    // The plan goes on the card instead of a message of its own.
+    expect(h.api.sent.length).toBe(before)
+    let view = h.api.view(card.id)
+    expect(view.html).toContain('📝 Plan approved (auto mode)')
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan', '👀 Peek', '⏹ Stop'])
+
+    await h.tap(button(view.keyboard, '📄 Full plan'), card.id)
+    expect(h.api.last().html).toContain('1. Do it')
+
+    h.store.updateJob(job.id, { status: 'done', finishedAt: h.now() + 60_000, startedAt: h.now() })
+    await h.bridge.tick()
+    view = h.api.view(card.id)
+    expect(view.html).toContain('✅ <b>Done</b> in 1m')
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan'])
+  })
+
+  test("a request answered elsewhere or timed out loses its buttons", async () => {
+    const h = await paired()
+    const job = await running(h)
+    void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
+    await Bun.sleep(0)
+    const msg = h.api.last()
+    expect(h.api.view(msg.id).keyboard.length).toBeGreaterThan(0)
+    const code = h.store.pendingApprovals()[0]!.code
+    h.store.resolveApproval(code, 'expired', null, h.now())
+    await h.bridge.tick()
+    const view = h.api.view(msg.id)
+    expect(view.html).toContain("⏱ Expired: Claude was told you're away.")
+    expect(view.keyboard).toEqual([])
+  })
+
+  test('📊 Status shows what waits on you, with its buttons, and the limits', async () => {
+    const h = await paired()
+    const job = await running(h)
+    const decision = h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
+    await Bun.sleep(0)
+    const notice = h.api.last()
+    h.store.kvSet('limits', { fiveHour: { usedPct: 62, resetsAt: h.now() + 3_600_000 } })
+    await h.say(KEYS.status)
+    const status = h.api.last()
+    let view = h.api.view(status.id)
+    expect(view.html).toContain(`▶️ <b>#${job.id}</b>`)
+    expect(view.html).toContain('⏳ <b>Waiting on you</b>')
+    expect(view.html).toContain('▓▓▓▓▓▓░░░░</code> 62%')
+    await h.tap(button(view.keyboard, '✅ Allow'), status.id)
+    expect(await decision).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
+    // The status refreshes in place; the request's own message is settled.
+    view = h.api.view(status.id)
+    expect(view.html).not.toContain('Waiting on you')
+    expect(view.keyboard.flat().some(b => b.text === '🔄 Refresh')).toBe(true)
+    expect(h.api.view(notice.id).keyboard).toEqual([])
+    expect(h.api.view(notice.id).html).toContain('Approved')
+  })
+
+  test('formatting Telegram refuses goes out as plain text instead of getting lost', async () => {
+    const h = await paired()
+    h.api.refuse = html => (html.includes('<b>') ? "can't parse entities: unsupported start tag" : null)
+    await h.bridge.notify({ type: 'setup_warning', message: 'plain is fine' })
+    await h.bridge.notify({ type: 'limit', job: { id: 3, projectDir: join(h.root, 'beta') } as Job, at: null })
+    const sent = h.api.last()
+    expect(sent.html).not.toContain('<b>')
+    expect(sent.html).toContain('#3 hit the')
+  })
+
+  test('long folder and chat names get their own rows instead of being cut', async () => {
+    const { layout, labelWidth, ROW_COLUMNS, fit } = await import('../src/telegram/ui')
+    const b = (text: string) => ({ text, callback_data: text })
+    const rows = layout([b('api'), b('web'), b('docs'), b('a-very-long-folder-name-indeed'), b('x')], 2)
+    expect(rows.map(r => r.map(x => x.text))).toEqual([['api', 'web'], ['docs'], ['a-very-long-folder-name-indeed'], ['x']])
+    for (const row of rows) expect(Math.max(...row.map(x => labelWidth(x.text) + 2)) * row.length).toBeLessThanOrEqual(ROW_COLUMNS)
+    expect(labelWidth('😀a')).toBe(3)
+    expect(labelWidth(fit('x'.repeat(100)))).toBeLessThanOrEqual(ROW_COLUMNS - 2)
   })
 })

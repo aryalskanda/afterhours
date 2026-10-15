@@ -381,6 +381,8 @@ export async function runDaemon(): Promise<void> {
     }
     await runner.tick()
     remote.tick()
+    // Not awaited: Telegram being slow must never hold up the queue.
+    telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
     keepAwake.set(config.keepAwake && runner.hasWork())
   }, 2000)
 
