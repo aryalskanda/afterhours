@@ -12,7 +12,7 @@ export interface DesktopBridge {
     test: boolean
   }
   secrets: { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void> }
-  /** A system notification; clicking it opens the window on `route`. */
+  /** A system notification (when the window isn't in front); clicking it opens the window on `route`. */
   notify(n: { title: string; body: string; route: string }): void
   /** The tray's and the dock's count. */
   setNeedsYou(count: number): void

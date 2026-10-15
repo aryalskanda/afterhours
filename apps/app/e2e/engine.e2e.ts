@@ -83,14 +83,14 @@ try {
   await check('the machine’s own rules show as such', async () => {
     // The machine lists its folders with links followed (macOS's temp folder is one).
     await see(realpathSync(projects))
-    await see('Tasks from apps can’t skip permission prompts.')
-    await see('Nothing is running.')
+    await see('Skip permission prompts')
+    await see('Rules for apps')
   })
 
   await check('a new task starts from the machine’s defaults, and finds its folders', async () => {
     await tap('machine-new')
-    await see('Edits go ahead; anything else asks you first.')
-    await see('Claude starts working right away.')
+    await see('File edits go ahead; everything else asks you first.')
+    await see('Claude starts on the work right away.')
     const picked = await page.evaluate(() =>
       ['new-model-haiku', 'new-effort-low'].map(id => {
         const el = document.querySelector(`[data-testid="${id}"]`)
@@ -131,7 +131,7 @@ try {
   await check('removed on the machine (cq devices remove), the app says so', async () => {
     await local('/api/remote/devices/remove', { device: 'E2E browser' })
     await page.goto(base)
-    await see('Removed: pair again', 20_000)
+    await see('Removed this device', 20_000)
     await shot('05-removed')
   })
 

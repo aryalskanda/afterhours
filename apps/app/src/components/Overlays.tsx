@@ -1,17 +1,17 @@
-// Over every screen: a banner when something new needs you, and the lock (when it's on).
+// Over every screen: a banner when something new needs you, system notifications when the app
+// isn't in front, and the lock (when it's on).
 
 import * as Haptics from 'expo-haptics'
 import * as LocalAuthentication from 'expo-local-authentication'
 import { router, type Href } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
-import { AppState, Platform, Pressable, Text, View } from 'react-native'
+import { AppState, Image, Platform, Pressable, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { hub, useHub } from '../app-state'
 import { desktop } from '../desktop'
-import { radius, space, useColors } from '../theme'
 import { withoutEmoji } from '../lib/format'
-import { Icon, NOTICE_ICON } from './icons'
-import { Button, Soft, Title } from './ui'
+import { useTheme } from '../theme'
+import { Button, StatusDot, Txt } from './ui'
 
 /** Notices that need an answer: a click goes to Needs you. Others go to their machine. */
 const NEEDS_ANSWER = ['permission', 'question', 'plan_review', 'trust']
@@ -21,8 +21,9 @@ function routeFor(a: { type: string; machine: string }): string {
 }
 
 /**
- * Outside the app's window: a system notification. On the desktop when the window isn't in front;
- * in a browser when the tab is in the background and you turned them on.
+ * Outside the app's window: a system notification. On the desktop, the app decides (it knows
+ * whether its window is in front); in a browser, when the tab is in the background and you turned
+ * them on.
  */
 export function SystemAlerts() {
   const { attention, prefs } = useHub()
@@ -33,7 +34,7 @@ export function SystemAlerts() {
     const route = routeFor(attention)
     const body = withoutEmoji(attention.text.split('\n')[0] ?? '')
     if (desktop) {
-      if (!document.hasFocus()) desktop.notify({ title: attention.machineName, body, route })
+      desktop.notify({ title: attention.machineName, body, route })
       return
     }
     if (Platform.OS !== 'web' || !prefs.browserNotifications || typeof Notification === 'undefined') return
@@ -48,9 +49,10 @@ export function SystemAlerts() {
   return null
 }
 
+/** Something new while the app is open: a banner at the top, like the system's own. */
 export function AttentionBanner() {
   const { attention } = useHub()
-  const c = useColors()
+  const { c, t, wide } = useTheme()
   const insets = useSafeAreaInsets()
   useEffect(() => {
     if (!attention) return
@@ -59,6 +61,7 @@ export function AttentionBanner() {
     return () => clearTimeout(timer)
   }, [attention])
   if (!attention) return null
+  const needs = NEEDS_ANSWER.includes(attention.type)
   return (
     <Pressable
       testID="attention"
@@ -66,15 +69,32 @@ export function AttentionBanner() {
         hub.dismissAttention(attention.id)
         router.push(routeFor(attention) as Href)
       }}
-      style={{ position: 'absolute', top: insets.top + space.s, left: space.m, right: space.m, alignItems: 'center' }}
+      style={{ position: 'absolute', top: insets.top + 8, left: 10, right: 10, alignItems: wide ? 'flex-end' : 'center' }}
     >
-      <View style={{ width: '100%', maxWidth: 560, backgroundColor: c.card, borderColor: c.accent, borderWidth: 1, borderRadius: radius.l, padding: space.m, gap: 2, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
-        <Soft>{attention.machineName}</Soft>
-        <View style={{ flexDirection: 'row', gap: space.s, alignItems: 'flex-start' }}>
-          <View style={{ paddingTop: 1 }}>
-            <Icon name={NOTICE_ICON[attention.type as keyof typeof NOTICE_ICON] ?? 'notifications'} color={c.accent} />
-          </View>
-          <Text numberOfLines={3} style={{ color: c.ink, fontWeight: '600', fontSize: 15, flex: 1 }}>
+      <View
+        style={{
+          width: '100%',
+          maxWidth: wide ? 360 : 520,
+          backgroundColor: c.group,
+          borderRadius: wide ? 10 : 16,
+          paddingHorizontal: 14,
+          paddingVertical: 11,
+          flexDirection: 'row',
+          gap: 10,
+          alignItems: 'center',
+          shadowColor: c.shadow,
+          shadowOpacity: 0.16,
+          shadowRadius: 18,
+          shadowOffset: { width: 0, height: 6 },
+          elevation: 8,
+        }}
+      >
+        {needs ? <StatusDot color={c.accent} /> : null}
+        <View style={{ flex: 1, gap: 1 }}>
+          <Txt v="footnote" tone="soft" lines={1}>
+            {attention.machineName}
+          </Txt>
+          <Text numberOfLines={2} style={[t.subhead, { color: c.ink, fontWeight: '600' }]}>
             {withoutEmoji(attention.text.split('\n')[0] ?? '')}
           </Text>
         </View>
@@ -86,7 +106,7 @@ export function AttentionBanner() {
 /** With "Lock the app" on: Face ID or a fingerprint when it opens, and after a minute away. */
 export function LockGate() {
   const { prefs, ready } = useHub()
-  const c = useColors()
+  const { c } = useTheme()
   const [locked, setLocked] = useState(false)
   const awayAt = useRef<number | null>(null)
   const enabled = ready && prefs.lockApp && Platform.OS !== 'web'
@@ -114,9 +134,9 @@ export function LockGate() {
 
   if (!enabled || !locked) return null
   return (
-    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.bg, alignItems: 'center', justifyContent: 'center', gap: space.l, padding: space.xl }}>
-      <Title>Afterhours is locked</Title>
-      <Soft style={{ textAlign: 'center' }}>Unlock to see your machines and answer them.</Soft>
+    <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: c.page, alignItems: 'center', justifyContent: 'center', gap: 18, padding: 32 }}>
+      <Image source={require('../../assets/icon.png')} style={{ width: 64, height: 64, borderRadius: 15 }} />
+      <Txt v="headline">Locked</Txt>
       <Button title="Unlock" onPress={unlock} />
     </View>
   )

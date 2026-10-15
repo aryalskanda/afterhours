@@ -1,15 +1,13 @@
 // A link to a screen this version of the app doesn't have.
 
 import { router, Stack } from 'expo-router'
-import { Button, Empty, Screen } from '../src/components/ui'
+import { Button, EmptyState, Page } from '../src/components/ui'
 
 export default function NotFound() {
   return (
-    <Screen>
+    <Page sheet>
       <Stack.Screen options={{ title: 'Not found' }} />
-      <Empty title="Nothing here" text="That link points to a screen this version of the app doesn’t have.">
-        <Button title="Back to machines" onPress={() => router.replace('/')} />
-      </Empty>
-    </Screen>
+      <EmptyState title="Nothing here" text="That link leads to a screen this version of the app doesn’t have." action={<Button kind="tinted" title="Machines" onPress={() => router.replace('/')} />} />
+    </Page>
   )
 }

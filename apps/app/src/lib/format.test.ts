@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { basename, clock, duration, modeLabel, shortPath, withoutEmoji } from './format'
+import { basename, clock, duration, effortLabel, modelLabel, permissionsLabel, phaseLabel, planLabel, roleLabel, shortPath, withoutEmoji } from './format'
 
 describe('notices without their emoji', () => {
   test('the emoji the machine starts a sentence with goes', () => {
@@ -39,9 +39,17 @@ describe('times and labels', () => {
   })
 
   test('how a task runs', () => {
-    expect(modeLabel({ plan: true, review: false, mode: 'auto' })).toBe('plan → auto')
-    expect(modeLabel({ plan: true, review: true, mode: 'acceptEdits' })).toBe('review → accept edits')
-    expect(modeLabel({ plan: false, review: false, mode: 'bypassPermissions' })).toBe('yolo')
-    expect(modeLabel({ plan: false, review: false, mode: 'plan' })).toBe('ask')
+    expect(planLabel({ plan: true, review: false, mode: 'auto' })).toBe('Approved for you')
+    expect(planLabel({ plan: true, review: true, mode: 'acceptEdits' })).toBe('You approve it')
+    expect(planLabel({ plan: false, review: false, mode: 'auto' })).toBe('None')
+    expect(planLabel({ plan: true, review: false, mode: 'plan' })).toBe('None')
+    expect(permissionsLabel('bypassPermissions')).toBe('No prompts')
+    expect(permissionsLabel('plan')).toBe('Read only')
+    expect(phaseLabel({ status: 'running', phase: 'limited', holdReason: null })).toBe('Waiting for the limit')
+    expect(phaseLabel({ status: 'held', phase: null, holdReason: 'stopped by you' })).toBe('Paused')
+    expect(roleLabel('operator')).toBe('Operator')
+    expect(modelLabel('opus')).toBe('Opus')
+    expect(modelLabel('claude-opus-5-5')).toBe('claude-opus-5-5')
+    expect(effortLabel('xhigh')).toBe('X-high')
   })
 })

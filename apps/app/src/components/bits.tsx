@@ -1,120 +1,130 @@
-// Pieces several screens share: a machine's card, a task's row, a usage-limit bar, a terminal.
+// Rows several screens share: a machine, a task, a usage limit; and the running task's terminal.
 
 import type { JobInfo } from '@afterhours/protocol'
+import Ionicons from '@expo/vector-icons/Ionicons'
 import { router } from 'expo-router'
 import { useRef } from 'react'
 import { ScrollView, Text, View } from 'react-native'
 import { useNow } from '../app-state'
-import { basename, clock, duration, modeLabel, oneLine, phaseLabel, statusLabel } from '../lib/format'
+import { basename, clock, duration, oneLine, phaseLabel } from '../lib/format'
 import type { MachineState } from '../lib/state'
-import { mono, radius, space, type as T, useColors } from '../theme'
-import { Icon, STATUS_ICON } from './icons'
-import { Card, Dot, Label, Pill, Row, Soft, Title } from './ui'
+import { mono, tabular, useTheme, type Colors } from '../theme'
+import { Badge, Row, StatusDot, Txt } from './ui'
 
-export function statusColor(m: MachineState, c: ReturnType<typeof useColors>): string {
-  return m.status === 'connected' ? c.ok : m.status === 'refused' ? c.danger : m.status === 'connecting' ? c.accent : c.faint
+export function statusColor(m: MachineState, c: Colors): string {
+  return m.status === 'connected' ? c.okDot : m.status === 'refused' ? c.danger : c.faint
 }
 
-export function MachineCard(props: { machine: MachineState }) {
+/** A machine in a list: its state, what it's doing, and how many things wait on you there. */
+export function MachineRow(props: { machine: MachineState }) {
   const m = props.machine
-  const c = useColors()
+  const { c } = useTheme()
   const now = useNow(15_000)
-  const waiting = m.approvals.length
   const a = m.active
+  const waiting = m.approvals.length
+  let line: string
+  if (m.status === 'refused') line = 'Removed this device'
+  else if (m.status === 'offline') line = 'Offline'
+  else if (!m.synced) line = 'Connecting…'
+  else if (a) line = `${phaseLabel(a)}${a.startedAt ? ` · ${duration(now - a.startedAt)}` : ''}`
+  else line = [m.paused ? 'Paused' : 'Idle', m.queued.length ? `${m.queued.length} queued` : ''].filter(Boolean).join(' · ')
   return (
-    <Card onPress={() => router.push(`/machine/${m.id}`)} testID={`machine-${m.name}`}>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <Row>
-          <Dot color={statusColor(m, c)} />
-          <Title numberOfLines={1}>{m.name}</Title>
-        </Row>
-        {waiting > 0 ? <Pill tone="accent" text={`${waiting} need${waiting === 1 ? 's' : ''} you`} /> : <Soft>{statusLabel(m.status, m.statusDetail)}</Soft>}
-      </Row>
-      {m.status === 'refused' ? (
-        <Soft>This device was removed there. Pair it again to come back.</Soft>
-      ) : a ? (
-        <View style={{ gap: 2 }}>
-          <Row style={{ alignItems: 'flex-start' }}>
-            <View style={{ paddingTop: 2 }}>
-              <Icon name={STATUS_ICON[a.status]} color={c.accent} />
-            </View>
-            <Label numberOfLines={2} style={{ flex: 1 }}>
-              #{a.id} {oneLine(a.prompt, 140)}
-            </Label>
-          </Row>
-          <Soft>
-            {phaseLabel(a)}
-            {a.startedAt ? ` · ${duration(now - a.startedAt)}` : ''} · {basename(a.folder)}
-          </Soft>
+    <Row
+      testID={`machine-${m.name}`}
+      onPress={() => router.push({ pathname: '/machine/[id]', params: { id: m.id } })}
+      leading={<StatusDot color={statusColor(m, c)} pulse={m.status === 'connected' && a?.status === 'running'} />}
+      title={m.name}
+      bold
+      subtitle={
+        <View style={{ gap: 1 }}>
+          {a && m.status === 'connected' ? (
+            <Txt v="subhead" tone="soft" lines={1}>
+              <Txt v="subhead" tone="faint" mono>
+                #{a.id}
+              </Txt>{' '}
+              {oneLine(a.prompt, 90)}
+            </Txt>
+          ) : null}
+          <Txt v="footnote" tone="soft" num>
+            {line}
+          </Txt>
         </View>
-      ) : (
-        <Soft>{m.synced ? (m.paused ? 'Paused: nothing new starts.' : 'Nothing running.') : 'Waiting for the machine…'}</Soft>
-      )}
-      {m.queued.length > 0 ? <Soft>{m.queued.length} waiting in the queue</Soft> : null}
-      <LimitBar label="5-hour" window={m.limits.fiveHour} />
-    </Card>
+      }
+      trailing={waiting > 0 ? <Badge count={waiting} testID={`waiting-${m.name}`} /> : undefined}
+      chevron
+    />
   )
 }
 
-/** A task in a list; `actions` go under it, inside its card. */
-export function JobRow(props: { machine: string; job: JobInfo; actions?: React.ReactNode }) {
+/** A task in a list: done, failed, running or waiting, what it was asked, where and when. */
+export function TaskRow(props: { machine: string; job: JobInfo; position?: number }) {
   const j = props.job
-  const c = useColors()
+  const { c, wide } = useTheme()
   const now = useNow(30_000)
-  const tone = { queued: c.soft, running: c.accent, held: c.accent, done: c.ok, failed: c.danger, cancelled: c.faint }[j.status]
-  const when = j.finishedAt ? clock(j.finishedAt, now) : j.startedAt ? `started ${clock(j.startedAt, now)}` : `queued ${clock(j.createdAt, now)}`
+  const size = wide ? 14 : 16
+  const mark =
+    j.status === 'running' ? (
+      <StatusDot color={c.okDot} pulse />
+    ) : j.status === 'queued' ? (
+      <Txt v="footnote" tone="faint" num style={{ width: size, textAlign: 'center' }}>
+        {props.position ?? ''}
+      </Txt>
+    ) : (
+      <Ionicons
+        size={size}
+        name={({ held: 'pause', done: 'checkmark', failed: 'close', cancelled: 'remove' } as const)[j.status as 'held' | 'done' | 'failed' | 'cancelled']}
+        color={{ held: c.accent, done: c.ok, failed: c.danger, cancelled: c.faint }[j.status as 'held' | 'done' | 'failed' | 'cancelled']}
+      />
+    )
+  const when = j.finishedAt ? clock(j.finishedAt, now) : j.startedAt ? duration(now - j.startedAt) : clock(j.createdAt, now)
   return (
-    <Card onPress={() => router.push(`/machine/${props.machine}/task/${j.id}`)} testID={`job-${j.id}`}>
-      <Row style={{ alignItems: 'flex-start' }}>
-        <View style={{ paddingTop: 1 }}>
-          <Icon name={STATUS_ICON[j.status]} color={tone} size={19} />
-        </View>
-        <View style={{ flex: 1, gap: 2 }}>
-          <Label numberOfLines={2}>
-            #{j.id} {oneLine(j.prompt, 160)}
-          </Label>
-          <Soft numberOfLines={1}>
-            {basename(j.folder)} · {modeLabel(j)} · {j.model}/{j.effort} · {when}
-          </Soft>
-        </View>
-      </Row>
-      {props.actions}
-    </Card>
+    <Row
+      testID={`job-${j.id}`}
+      onPress={() => router.push({ pathname: '/machine/[id]/task/[job]', params: { id: props.machine, job: String(j.id) } })}
+      leading={<View style={{ width: size, alignItems: 'center' }}>{mark}</View>}
+      title={oneLine(j.prompt, 160)}
+      titleLines={2}
+      subtitle={
+        <Txt v="footnote" tone="soft" num lines={1}>
+          <Txt v="footnote" tone="soft" mono>
+            #{j.id}
+          </Txt>
+          {` · ${basename(j.folder)} · ${when}`}
+        </Txt>
+      }
+      chevron
+    />
   )
 }
 
-export function LimitBar(props: { label: string; window?: { usedPct: number | null; resetsAt: number | null } }) {
-  const c = useColors()
+/** A usage limit: how much is used, a thin bar, and when it resets. */
+export function LimitRow(props: { label: string; window?: { usedPct: number | null; resetsAt: number | null } }) {
+  const { c, t } = useTheme()
   const now = useNow(60_000)
   const w = props.window
   if (!w || w.usedPct === null) return null
   const pct = Math.max(0, Math.min(100, Math.round(w.usedPct)))
-  const color = pct >= 90 ? c.danger : pct >= 70 ? c.accent : c.ok
+  const color = pct >= 90 ? c.danger : pct >= 70 ? c.accent : c.okDot
   return (
-    <View style={{ gap: 4 }}>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <Soft>
-          {props.label} limit · {pct}%
-        </Soft>
-        {w.resetsAt ? <Soft>resets {clock(w.resetsAt, now)}</Soft> : null}
-      </Row>
-      <View style={{ height: 6, backgroundColor: c.raised, borderRadius: radius.pill, overflow: 'hidden' }}>
-        <View style={{ width: `${pct}%`, height: '100%', backgroundColor: color }} />
+    <Row title={props.label} value={`${pct}%`}>
+      <View style={{ height: 3, backgroundColor: c.fill, borderRadius: 2, overflow: 'hidden', marginTop: 6 }}>
+        <View style={{ width: `${pct}%`, height: '100%', backgroundColor: color, borderRadius: 2 }} />
       </View>
-    </View>
+      {w.resetsAt ? <Text style={[t.footnote, tabular, { color: c.soft, marginTop: 4 }]}>Resets {clock(w.resetsAt, now)}</Text> : null}
+    </Row>
   )
 }
 
 /** A terminal's text, newest lines in view; it stays where you scrolled to if you scrolled up. */
 export function Terminal(props: { text: string; testID?: string; height?: number }) {
-  const c = useColors()
+  const { c, m, wide } = useTheme()
   const ref = useRef<ScrollView>(null)
   const atEnd = useRef(true)
   return (
     <ScrollView
       ref={ref}
       nestedScrollEnabled
-      style={{ backgroundColor: c.terminal, borderRadius: radius.m, maxHeight: props.height ?? 440 }}
+      style={{ backgroundColor: c.terminal, borderRadius: m.radius, maxHeight: props.height ?? 460 }}
       onContentSizeChange={() => {
         if (atEnd.current) ref.current?.scrollToEnd({ animated: false })
       }}
@@ -125,19 +135,18 @@ export function Terminal(props: { text: string; testID?: string; height?: number
       scrollEventThrottle={100}
       testID={props.testID}
     >
-      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={{ padding: space.m }}>
-        <Text selectable style={{ fontFamily: mono, fontSize: 12, lineHeight: 17, color: c.terminalInk }}>
-          {props.text || '(blank screen)'}
+      <ScrollView horizontal nestedScrollEnabled contentContainerStyle={{ padding: m.rowX }}>
+        <Text selectable style={{ fontFamily: mono, fontSize: wide ? 12 : 12.5, lineHeight: wide ? 17 : 18, color: c.terminalInk }}>
+          {props.text || ' '}
         </Text>
       </ScrollView>
     </ScrollView>
   )
 }
 
-/** A small "in 12m" for when a request is settled without you. */
-export function Countdown(props: { at?: number; verb: string }) {
-  const now = useNow(15_000)
-  if (!props.at) return null
-  const left = props.at - now
-  return <Soft style={T.tiny}>{left > 0 ? `${props.verb} in ${duration(left)}` : `${props.verb} any moment`}</Soft>
+/** "Denied in 13m": when a request is settled without you. */
+export function countdown(at: number | undefined, now: number, verb: string): string | null {
+  if (!at) return null
+  const left = at - now
+  return left > 0 ? `${verb} in ${duration(left)}` : `${verb} any moment`
 }

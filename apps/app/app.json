@@ -7,7 +7,7 @@
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "backgroundColor": "#faf8f4",
+    "backgroundColor": "#f2f2f7",
     "ios": {
       "bundleIdentifier": "dev.afterhours.app",
       "supportsTablet": true,
@@ -30,7 +30,7 @@
       "expo-font",
       ["expo-camera", { "cameraPermission": "Afterhours uses the camera to scan the pairing code your computer shows.", "recordAudioAndroid": false }],
       ["expo-local-authentication", { "faceIDPermission": "Afterhours can ask for Face ID before it allows a task to do something." }],
-      ["expo-splash-screen", { "image": "./assets/splash-icon.png", "imageWidth": 160, "backgroundColor": "#faf8f4", "dark": { "backgroundColor": "#0e1320" } }]
+      ["expo-splash-screen", { "image": "./assets/splash-icon.png", "imageWidth": 160, "backgroundColor": "#f2f2f7", "dark": { "backgroundColor": "#0e1320" } }]
     ],
     "experiments": { "typedRoutes": true }
   }

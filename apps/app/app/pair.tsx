@@ -4,20 +4,21 @@
 import { parsePairingLink, type Paired, type Role } from '@afterhours/protocol'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 import * as Clipboard from 'expo-clipboard'
-import { router, useLocalSearchParams } from 'expo-router'
+import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import { Linking, Platform, View } from 'react-native'
 import { hub, useHub } from '../src/app-state'
+import { Block, Button, Group, HStack, Note, Page, Row, Spinner, TextArea, Txt } from '../src/components/ui'
 import { pairingLinkFrom } from '../src/lib/links'
-import { Button, Card, Field, Outcome, Row, Screen, Soft, Spinner, Title } from '../src/components/ui'
-import { radius } from '../src/theme'
+import { HeaderButton } from '../src/navigation'
+import { useTheme } from '../src/theme'
 
 type Phase = { kind: 'idle' } | { kind: 'waiting'; name: string } | { kind: 'paired'; paired: Paired } | { kind: 'failed'; text: string }
 
 const ROLE: Record<Role, string> = {
-  owner: 'an owner there: it can do everything, including adding and removing devices',
-  operator: 'an operator there: it can start tasks and answer them',
-  viewer: 'a viewer there: it can look, but not act',
+  owner: 'As an owner, this device can do everything there, including adding and removing devices.',
+  operator: 'As an operator, this device can start tasks and answer them.',
+  viewer: 'As a viewer, this device can look but not act.',
 }
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err))
@@ -26,6 +27,7 @@ export default function Pair() {
   const params = useLocalSearchParams()
   const fromLink = pairingLinkFrom(params)
   const { ready } = useHub()
+  const { m } = useTheme()
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [text, setText] = useState('')
   const [permission, requestPermission] = useCameraPermissions()
@@ -57,53 +59,53 @@ export default function Pair() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, fromLink])
 
+  const header = <Stack.Screen options={{ headerLeft: Platform.OS === 'web' ? undefined : () => <HeaderButton title="Cancel" onPress={() => router.back()} /> }} />
+
   if (phase.kind === 'waiting') {
     return (
-      <Screen testID="pair">
-        <Card accent testID="pair-waiting">
-          <Row>
-            <Spinner />
-            <Title>Waiting for {phase.name}…</Title>
-          </Row>
-          <Soft>Where cq pair is running on {phase.name}, say yes to this device.</Soft>
-        </Card>
-      </Screen>
+      <Page sheet testID="pair">
+        {header}
+        <Group testID="pair-waiting" footer="Say yes where cq pair is running.">
+          <Row leading={<Spinner />} title={`Waiting for ${phase.name}…`} />
+        </Group>
+      </Page>
     )
   }
 
   if (phase.kind === 'paired') {
     const { machine, role } = phase.paired
     return (
-      <Screen testID="pair">
-        <Card accent testID="pair-done">
-          <Title>Paired with {machine.name}</Title>
-          <Soft>This device is {ROLE[role]}.</Soft>
-          <Button
-            title={`Open ${machine.name}`}
-            testID="pair-open"
-            onPress={() => {
-              if (router.canGoBack()) router.back()
-              router.push({ pathname: '/machine/[id]', params: { id: machine.id } })
-            }}
-          />
-        </Card>
-      </Screen>
+      <Page sheet testID="pair">
+        <Group testID="pair-done" footer={ROLE[role]}>
+          <Block>
+            <Txt v="headline">Paired with {machine.name}</Txt>
+          </Block>
+        </Group>
+        <Button
+          title={`Open ${machine.name}`}
+          testID="pair-open"
+          onPress={() => {
+            if (router.canGoBack()) router.back()
+            router.push({ pathname: '/machine/[id]', params: { id: machine.id } })
+          }}
+        />
+      </Page>
     )
   }
 
   const scanning = Platform.OS !== 'web'
   return (
-    <Screen testID="pair">
+    <Page sheet testID="pair">
+      {header}
       {phase.kind === 'failed' ? (
-        <Card testID="pair-failed">
-          <Outcome ok={false} text={phase.text} />
-        </Card>
+        <View testID="pair-failed">
+          <Note ok={false} text={phase.text} />
+        </View>
       ) : null}
       {scanning ? (
-        <Card>
-          <Title>Scan the code</Title>
+        <Group header="Scan the code cq pair shows">
           {permission?.granted ? (
-            <View style={{ height: 300, borderRadius: radius.m, overflow: 'hidden' }}>
+            <View style={{ height: 300, borderRadius: m.radius, overflow: 'hidden' }}>
               <CameraView
                 style={{ flex: 1 }}
                 facing="back"
@@ -117,48 +119,45 @@ export default function Pair() {
               />
             </View>
           ) : (
-            <>
-              <Soft>The camera reads the QR code cq pair shows on the computer.</Soft>
-              <Button
-                title={permission?.canAskAgain === false ? 'Allow the camera in Settings' : 'Use the camera'}
-                onPress={async () => {
-                  if (permission?.canAskAgain === false) await Linking.openSettings()
-                  else await requestPermission()
-                }}
-              />
-            </>
+            <Row
+              title={permission?.canAskAgain === false ? 'Allow the camera in Settings' : 'Use the camera'}
+              tone="accent"
+              onPress={async () => {
+                if (permission?.canAskAgain === false) await Linking.openSettings()
+                else await requestPermission()
+              }}
+            />
           )}
-        </Card>
+        </Group>
       ) : null}
-      <Card>
-        <Title>{scanning ? 'Or paste the link' : 'Paste the link'}</Title>
-        <Soft>Run cq pair on the computer. It shows a link that starts with afterhours://pair.</Soft>
-        <Field placeholder="afterhours://pair?…" value={text} onChangeText={setText} autoCapitalize="none" autoCorrect={false} multiline testID="pair-link" style={{ minHeight: 90 }} />
-        <Row>
-          <Button
-            flex
-            kind="secondary"
-            title="Paste"
-            onPress={async () => {
-              try {
-                setText(await Clipboard.getStringAsync())
-              } catch {
-                setPhase({ kind: 'failed', text: 'This browser didn’t let the app read the clipboard. Paste into the box instead.' })
-              }
-            }}
-          />
-          <Button
-            flex
-            title="Pair"
-            disabled={!text.trim()}
-            onPress={() => {
-              lastScan.current = null
-              return start(text)
-            }}
-            testID="pair-go"
-          />
-        </Row>
-      </Card>
-    </Screen>
+      <Group header={scanning ? 'Or paste its link' : 'Paste the link cq pair shows'}>
+        <TextArea placeholder="afterhours://pair?…" value={text} onChangeText={setText} autoCapitalize="none" autoCorrect={false} minHeight={88} testID="pair-link" />
+        <Block>
+          <HStack>
+            <Button
+              flex
+              title="Pair"
+              disabled={!text.trim()}
+              onPress={() => {
+                lastScan.current = null
+                return start(text)
+              }}
+              testID="pair-go"
+            />
+            <Button
+              kind="plain"
+              title="Paste"
+              onPress={async () => {
+                try {
+                  setText(await Clipboard.getStringAsync())
+                } catch {
+                  setPhase({ kind: 'failed', text: 'The browser didn’t allow reading the clipboard. Paste into the box instead.' })
+                }
+              }}
+            />
+          </HStack>
+        </Block>
+      </Group>
+    </Page>
   )
 }

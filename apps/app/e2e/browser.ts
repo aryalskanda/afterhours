@@ -35,6 +35,8 @@ export interface Driver {
   /** Text on the page (case aside: section titles are uppercased by their style). */
   see(text: string, timeout?: number): Promise<void>
   gone(id: string, timeout?: number): Promise<void>
+  /** The header's back button, as a person would go back (the web's history differs with tabs). */
+  back(): Promise<void>
   shot(name: string): Promise<void>
   check(name: string, run: () => Promise<void>): Promise<void>
   failed(): boolean
@@ -111,6 +113,17 @@ export function attach(browser: Browser, page: Page, out: string): Driver {
     async gone(id, timeout = 10_000) {
       await page.waitForFunction((s: string) => ![...document.querySelectorAll(s)].some(el => el.getClientRects().length > 0), { timeout, polling: 100 }, sel(id))
     },
+    async back() {
+      const handle = await page
+        .waitForFunction(
+          () => [...document.querySelectorAll('[aria-label$=", back"], [aria-label="Go back"], [data-testid="header-back"]')].find(el => el.getClientRects().length > 0) ?? false,
+          { timeout: 10_000, polling: 100 },
+        )
+        .catch(() => {
+          throw new Error('no back button')
+        })
+      await (handle.asElement() as ElementHandle<Element>).click()
+    },
     async shot(name) {
       await page.screenshot({ path: join(out, `${name}.png`) })
     },
@@ -123,6 +136,9 @@ export function attach(browser: Browser, page: Page, out: string): Driver {
       } catch (err) {
         failed = true
         console.log(`✗ ${step}. ${name}: ${err instanceof Error ? err.message : err}`)
+        const recent = d.errors().slice(-5)
+        if (recent.length > 0) console.log(`  page errors:\n    ${recent.map(e => e.slice(0, 400)).join('\n    ')}`)
+        console.log(`  at ${page.url()}`)
         await page.screenshot({ path: join(out, `failed-${step}.png`) }).catch(() => {})
         throw err
       }

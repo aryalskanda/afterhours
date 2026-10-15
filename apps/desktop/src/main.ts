@@ -114,7 +114,7 @@ function createWindow(hidden: boolean): BrowserWindow {
     minHeight: 520,
     show: false,
     title: 'Afterhours',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e1320' : '#faf8f4',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e1320' : '#f2f2f7',
     icon: isMac ? undefined : asset('icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
@@ -193,7 +193,7 @@ function stillRunningHint(): void {
   }
   if (state.trayHint) return
   writeFileSync(file, JSON.stringify({ ...state, trayHint: true }))
-  notify({ title: 'Afterhours is still running', body: 'It keeps hearing from your machines from the tray. Quit it from there.', route: '/' })
+  notify({ title: 'Afterhours is still running', body: 'It keeps hearing from your machines from the tray. Quit it from there.', route: '/' }, true)
 }
 
 // --- tray, badge, notifications, login item -------------------------------------------------
@@ -237,7 +237,9 @@ function setNeedsYou(count: number): void {
   updateTray()
 }
 
-function notify(n: Notice): void {
+/** A system notification, unless the window is in front (the page shows its own banner then). */
+function notify(n: Notice, always = false): void {
+  if (!always && win && !win.isDestroyed() && win.isVisible() && win.isFocused()) return
   if (TEST) {
     recorded.notifications.push(n)
     return

@@ -1,27 +1,28 @@
-// Claude's Markdown, drawn with the app's own components (headings, emphasis, code, lists,
-// quotes, rules; tables as one entry per row, which reads better on a phone).
+// Claude's Markdown, drawn with the app's own type: headings, emphasis, code, lists, quotes and
+// rules. Tables become one entry per row, which reads better on a phone than a squeezed grid.
 
 import { useMemo } from 'react'
-import { Linking, ScrollView, Text, View } from 'react-native'
+import { Linking, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { parse, type Span } from '../lib/markdown'
-import { mono, radius, space, useColors } from '../theme'
+import { mono, useTheme } from '../theme'
 
-function Spans(props: { spans: Span[]; size?: number; bold?: boolean }) {
-  const c = useColors()
+function Spans(props: { spans: Span[]; heading?: 1 | 2 | 3; soft?: boolean }) {
+  const { c, t } = useTheme()
+  const base = props.heading === 1 ? t.title : props.heading ? t.headline : t.body
   return (
-    <Text selectable style={{ color: c.ink, fontSize: props.size ?? 15, lineHeight: (props.size ?? 15) * 1.45, fontWeight: props.bold ? '700' : '400' }}>
+    <Text selectable style={[base, { color: props.soft ? c.soft : c.ink }]}>
       {props.spans.map((s, i) => (
         <Text
           key={i}
           onPress={s.href ? () => void Linking.openURL(s.href!) : undefined}
           style={{
-            fontWeight: s.bold || props.bold ? '700' : undefined,
+            fontWeight: s.bold ? '600' : undefined,
             fontStyle: s.italic ? 'italic' : undefined,
             textDecorationLine: s.strike ? 'line-through' : s.href ? 'underline' : undefined,
             color: s.href ? c.accent : undefined,
             fontFamily: s.code ? mono : undefined,
-            backgroundColor: s.code ? c.code : undefined,
-            fontSize: s.code ? (props.size ?? 15) - 1 : undefined,
+            fontSize: s.code ? (base.fontSize ?? 15) - 2 : undefined,
+            backgroundColor: s.code ? c.fill : undefined,
           }}
         >
           {s.text}
@@ -32,24 +33,24 @@ function Spans(props: { spans: Span[]; size?: number; bold?: boolean }) {
 }
 
 export function Markdown(props: { text: string }) {
-  const c = useColors()
+  const { c, t, wide } = useTheme()
   const blocks = useMemo(() => parse(props.text), [props.text])
   return (
-    <View style={{ gap: space.s }}>
+    <View style={{ gap: wide ? 8 : 10 }}>
       {blocks.map((b, i) => {
         switch (b.kind) {
           case 'heading':
             return (
-              <View key={i} style={{ marginTop: i === 0 ? 0 : space.xs }}>
-                <Spans spans={b.spans} size={b.level <= 1 ? 20 : b.level === 2 ? 18 : 16} bold />
+              <View key={i} style={{ marginTop: i === 0 ? 0 : 6 }}>
+                <Spans spans={b.spans} heading={b.level <= 1 ? 1 : b.level === 2 ? 2 : 3} />
               </View>
             )
           case 'paragraph':
             return <Spans key={i} spans={b.spans} />
           case 'item':
             return (
-              <View key={i} style={{ flexDirection: 'row', paddingLeft: b.depth * 16, gap: space.s }}>
-                <Text style={{ color: c.soft, fontSize: 15, lineHeight: 21, minWidth: 16 }}>{b.marker}</Text>
+              <View key={i} style={{ flexDirection: 'row', paddingLeft: b.depth * 18, gap: 8 }}>
+                <Text style={[t.body, { color: c.soft, minWidth: 14 }]}>{b.marker === '•' || b.marker === '-' || b.marker === '*' ? '•' : b.marker}</Text>
                 <View style={{ flex: 1 }}>
                   <Spans spans={b.spans} />
                 </View>
@@ -57,30 +58,32 @@ export function Markdown(props: { text: string }) {
             )
           case 'code':
             return (
-              <ScrollView key={i} horizontal style={{ backgroundColor: c.code, borderRadius: radius.s }} contentContainerStyle={{ padding: space.m }}>
-                <Text selectable style={{ fontFamily: mono, fontSize: 13, lineHeight: 18, color: c.ink }}>
+              <ScrollView key={i} horizontal style={{ backgroundColor: c.fill, borderRadius: wide ? 6 : 8 }} contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}>
+                <Text selectable style={{ fontFamily: mono, fontSize: t.subhead.fontSize, lineHeight: t.subhead.lineHeight, color: c.ink }}>
                   {b.text}
                 </Text>
               </ScrollView>
             )
           case 'quote':
             return (
-              <View key={i} style={{ borderLeftWidth: 3, borderLeftColor: c.line, paddingLeft: space.m }}>
-                <Spans spans={b.spans} />
+              <View key={i} style={{ borderLeftWidth: 2, borderLeftColor: c.line, paddingLeft: 10 }}>
+                <Spans spans={b.spans} soft />
               </View>
             )
           case 'rule':
-            return <View key={i} style={{ height: 1, backgroundColor: c.line, marginVertical: space.xs }} />
+            return <View key={i} style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.line, marginVertical: 4 }} />
           case 'table':
             return (
-              <View key={i} style={{ gap: space.s }}>
+              <View key={i}>
                 {b.rows.map((row, r) => (
-                  <View key={r} style={{ borderWidth: 1, borderColor: c.line, borderRadius: radius.s, padding: space.m, gap: 4 }}>
-                    <Spans spans={row[0] ?? []} bold />
+                  <View key={r} style={{ paddingVertical: 6, gap: 1, borderTopWidth: r === 0 ? 0 : StyleSheet.hairlineWidth, borderTopColor: c.line }}>
+                    <Text selectable style={[t.body, { color: c.ink, fontWeight: '600' }]}>
+                      {(row[0] ?? []).map(s => s.text).join('')}
+                    </Text>
                     {row.slice(1).map((cell, k) =>
                       cell.length > 0 ? (
-                        <Text key={k} style={{ color: c.soft, fontSize: 14 }}>
-                          {(b.header[k + 1] ?? []).map(s => s.text).join('')}: <Spans spans={cell} size={14} />
+                        <Text key={k} selectable style={[t.subhead, { color: c.soft }]}>
+                          {(b.header[k + 1] ?? []).map(s => s.text).join('')}: <Text style={{ color: c.ink }}>{cell.map(s => s.text).join('')}</Text>
                         </Text>
                       ) : null,
                     )}

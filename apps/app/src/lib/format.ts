@@ -1,6 +1,6 @@
 // Times, durations and labels, worded the way the bot words them.
 
-import type { JobInfo, MachineStatus } from '@afterhours/protocol'
+import type { Effort, JobInfo, MachineStatus, Role } from '@afterhours/protocol'
 
 export function duration(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -47,26 +47,42 @@ export function shortPath(path: string, max = 40): string {
   return `…${slash >= 0 ? tail.slice(slash) : tail}`
 }
 
-export function modeLabel(j: Pick<JobInfo, 'plan' | 'review' | 'mode'>): string {
-  const mode = { auto: 'auto', acceptEdits: 'accept edits', bypassPermissions: 'yolo', plan: 'ask' }[j.mode]
-  if (j.mode === 'plan') return 'ask'
-  return j.plan ? `${j.review ? 'review' : 'plan'} → ${mode}` : mode
+/** How a task plans: the plan approved for you, approved by you, or no plan. */
+export function planLabel(j: Pick<JobInfo, 'plan' | 'review' | 'mode'>): string {
+  if (j.mode === 'plan' || !j.plan) return 'None'
+  return j.review ? 'You approve it' : 'Approved for you'
 }
 
+/** What a task may do without asking. */
+export function permissionsLabel(mode: JobInfo['mode']): string {
+  return { auto: 'Auto', acceptEdits: 'Accept edits', bypassPermissions: 'No prompts', plan: 'Read only' }[mode]
+}
+
+/** A task's state, in a word or three. */
 export function phaseLabel(j: Pick<JobInfo, 'status' | 'phase' | 'holdReason'>): string {
-  if (j.status === 'held') return `paused: ${j.holdReason ?? 'needs you'}`
-  if (j.status !== 'running') return j.status
+  switch (j.status) {
+    case 'held':
+      return 'Paused'
+    case 'queued':
+      return 'Queued'
+    case 'done':
+      return 'Done'
+    case 'failed':
+      return 'Failed'
+    case 'cancelled':
+      return 'Cancelled'
+  }
   switch (j.phase) {
     case 'launching':
-      return 'starting'
+      return 'Starting'
     case 'planning':
-      return 'planning'
+      return 'Planning'
     case 'limited':
-      return 'waiting for the limit reset'
+      return 'Waiting for the limit'
     case 'finishing':
-      return 'wrapping up'
+      return 'Finishing'
     default:
-      return 'working'
+      return 'Working'
   }
 }
 
@@ -79,8 +95,21 @@ export function statusLabel(status: MachineStatus, detail?: string): string {
     case 'offline':
       return 'Offline'
     case 'refused':
-      return detail === 'not-paired' || !detail ? 'Removed: pair again' : `Refused: ${detail}`
+      return detail === 'not-paired' || !detail ? 'Removed this device' : `Refused (${detail})`
   }
+}
+
+/** Claude's aliases as Anthropic writes them (Opus); a full model name stays as it is. */
+export function modelLabel(model: string): string {
+  return /^[a-z]+$/.test(model) ? model[0]!.toUpperCase() + model.slice(1) : model
+}
+
+export function effortLabel(effort: Effort): string {
+  return { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-high', max: 'Max' }[effort]
+}
+
+export function roleLabel(role: Role): string {
+  return { owner: 'Owner', operator: 'Operator', viewer: 'Viewer' }[role]
 }
 
 /** One line of text from a longer one. */

@@ -5,12 +5,13 @@ import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type Href } from
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
-import { AppState, useColorScheme } from 'react-native'
+import { AppState } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { hub, useHub } from '../src/app-state'
 import { AttentionBanner, LockGate, SystemAlerts } from '../src/components/Overlays'
 import { desktop } from '../src/desktop'
-import { palette } from '../src/theme'
+import { useStackOptions } from '../src/navigation'
+import { useTheme } from '../src/theme'
 
 void SplashScreen.preventAutoHideAsync().catch(() => {})
 
@@ -18,8 +19,8 @@ void SplashScreen.preventAutoHideAsync().catch(() => {})
 export const unstable_settings = { initialRouteName: '(tabs)' }
 
 export default function Root() {
-  const dark = useColorScheme() === 'dark'
-  const c = dark ? palette.dark : palette.light
+  const { c, dark, wide } = useTheme()
+  const stack = useStackOptions()
   const { ready } = useHub()
 
   useEffect(() => {
@@ -54,23 +55,15 @@ export default function Root() {
   }, [])
 
   const base = dark ? DarkTheme : DefaultTheme
-  const theme = { ...base, colors: { ...base.colors, primary: c.accent, background: c.bg, card: c.card, text: c.ink, border: c.line, notification: c.accent } }
+  const theme = { ...base, colors: { ...base.colors, primary: c.accent, background: c.page, card: c.page, text: c.ink, border: c.line, notification: c.accent } }
 
   return (
     <SafeAreaProvider>
       <ThemeProvider value={theme}>
-        <Stack
-          screenOptions={{
-            headerTintColor: c.accent,
-            headerTitleStyle: { color: c.ink },
-            headerStyle: { backgroundColor: c.card },
-            contentStyle: { backgroundColor: c.bg },
-            headerBackButtonDisplayMode: 'minimal',
-          }}
-        >
+        <Stack screenOptions={stack}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false, title: 'Machines' }} />
-          <Stack.Screen name="pair" options={{ presentation: 'modal', title: 'Pair a machine' }} />
-          <Stack.Screen name="new" options={{ presentation: 'modal', title: 'New task' }} />
+          <Stack.Screen name="pair" options={{ presentation: 'modal', title: 'Pair a machine', headerTitleAlign: wide ? 'center' : undefined }} />
+          <Stack.Screen name="new" options={{ presentation: 'modal', title: 'New task', headerTitleAlign: wide ? 'center' : undefined }} />
         </Stack>
         <AttentionBanner />
         <SystemAlerts />

@@ -1,19 +1,19 @@
-// What a task asks of you: a permission, questions, a plan to review, a folder to trust. Each card
-// answers the machine directly; it disappears when the machine says the request is settled. If an
-// answer doesn't get through, the card says why and keeps its buttons, to try again.
+// What a task asks of you: a permission, questions, a plan to review, a folder to trust. Each one
+// answers the machine directly, and goes once the machine says it's settled. If an answer doesn't
+// get through, it says why and keeps its buttons, to try again.
 
 import { describeAnswers, type QuestionAnswer } from '@afterhours/protocol'
+import Ionicons from '@expo/vector-icons/Ionicons'
 import * as LocalAuthentication from 'expo-local-authentication'
 import { useState, type ReactNode } from 'react'
-import { Platform, Pressable, Text, View } from 'react-native'
-import { hub, useHub } from '../app-state'
+import { Platform, Text, View } from 'react-native'
+import { hub, useHub, useNow } from '../app-state'
 import { basename } from '../lib/format'
 import type { Need } from '../lib/state'
-import { mono, radius, space, type as T, useColors } from '../theme'
-import { Countdown } from './bits'
-import { Icon, KIND_ICON } from './icons'
+import { mono, useTheme } from '../theme'
+import { countdown } from './bits'
 import { Markdown } from './Markdown'
-import { Button, Card, Field, Label, Outcome, Row, Soft, Title } from './ui'
+import { Block, Button, Group, HStack, Note, Row, TextArea, Txt } from './ui'
 
 type Answer = { decision: 'allow' | 'deny' | 'answer'; text?: string | null }
 
@@ -37,43 +37,84 @@ function useAnswer({ need, onAnswered }: Props) {
   return { done, error, send }
 }
 
-function Head(props: { need: Need; title: string; verb: string }) {
+/** What a permission is for, in plain words. */
+export function permissionTitle(tool: string | undefined): string {
+  switch (tool) {
+    case 'Bash':
+      return 'Run a command'
+    case 'Edit':
+    case 'MultiEdit':
+    case 'Write':
+    case 'NotebookEdit':
+      return 'Change a file'
+    case 'Read':
+      return 'Read a file'
+    case 'WebFetch':
+      return 'Open a web page'
+    case 'WebSearch':
+      return 'Search the web'
+    default:
+      return tool ? `Use ${tool}` : 'Use a tool'
+  }
+}
+
+/** Where a request comes from: "build-box · #14 · web". */
+function From(props: { need: Need; extra?: string | null }) {
   const { machine, approval, job } = props.need
-  const c = useColors()
   return (
     <View style={{ gap: 2 }}>
-      <Row style={{ alignItems: 'flex-start' }}>
-        <View style={{ paddingTop: 2 }}>
-          <Icon name={KIND_ICON[approval.kind]} color={c.accent} size={20} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Title>{props.title}</Title>
-        </View>
-      </Row>
-      <Row style={{ justifyContent: 'space-between' }}>
-        <Soft numberOfLines={1} style={{ flex: 1 }}>
-          {machine.name} · #{approval.job}
-          {job ? ` · ${basename(job.folder)}` : ''}
-        </Soft>
-        <Countdown at={approval.expiresAt} verb={props.verb} />
-      </Row>
-      {machine.status !== 'connected' ? <Soft>{machine.name} is offline right now, so an answer may not get through.</Soft> : null}
+      <Txt v="footnote" tone="soft" lines={1} num>
+        {machine.name} ·{' '}
+        <Txt v="footnote" tone="soft" mono>
+          #{approval.job}
+        </Txt>
+        {job ? ` · ${basename(job.folder)}` : ''}
+        {props.extra ? ` · ${props.extra}` : ''}
+      </Txt>
+      {machine.status !== 'connected' ? (
+        <Txt v="footnote" tone="danger">
+          Offline: an answer may not get through.
+        </Txt>
+      ) : null}
     </View>
   )
 }
 
-/** The buttons until the machine takes the answer, with why the last try didn't work; then how it went. */
-function Answering(props: { done: string | null; error: string | null; children: ReactNode }) {
-  if (props.done) return <Outcome ok text={props.done} />
+function Code(props: { text: string }) {
+  const { c, t, wide } = useTheme()
   return (
-    <View style={{ gap: space.s }}>
-      {props.error ? <Outcome ok={false} text={props.error} /> : null}
-      {props.children}
+    <View style={{ backgroundColor: c.fill, borderRadius: wide ? 6 : 8, paddingHorizontal: 10, paddingVertical: 8 }}>
+      <Text selectable style={{ fontFamily: mono, fontSize: t.subhead.fontSize, lineHeight: t.subhead.lineHeight, color: c.ink }}>
+        {props.text}
+      </Text>
     </View>
   )
 }
 
-/** One request, whichever kind. `onAnswered`: the machine took the answer (the card goes once it says it's settled). */
+/** The buttons until the machine takes the answer, and why the last try didn't work; then how it went. */
+function Answering(props: { done: string | null; error: string | null; children: ReactNode }) {
+  if (props.done) {
+    return (
+      <Block>
+        <Txt v="subhead" tone="ok">
+          {props.done}
+        </Txt>
+      </Block>
+    )
+  }
+  return (
+    <Block gap={10}>
+      {props.children}
+      {props.error ? (
+        <Txt v="footnote" tone="danger">
+          {props.error}
+        </Txt>
+      ) : null}
+    </Block>
+  )
+}
+
+/** One request, whichever kind. `onAnswered`: the machine took the answer. */
 export function RequestCard(props: Props) {
   switch (props.need.approval.kind) {
     case 'permission':
@@ -89,8 +130,8 @@ export function RequestCard(props: Props) {
 
 function PermissionCard(props: Props) {
   const { need } = props
-  const c = useColors()
   const { prefs } = useHub()
+  const now = useNow(15_000)
   const { done, error, send } = useAnswer(props)
   const [noting, setNoting] = useState(false)
   const [note, setNote] = useState('')
@@ -103,46 +144,38 @@ function PermissionCard(props: Props) {
     await send({ decision: 'allow' })
   }
   return (
-    <Card testID={`request-${a.code}`}>
-      <Head need={need} title={`#${a.job} wants to use ${a.tool ?? 'a tool'}`} verb="Denied automatically" />
-      {a.detail ? (
-        <View style={{ backgroundColor: c.code, borderRadius: radius.s, padding: space.m }}>
-          <Text selectable style={{ fontFamily: mono, fontSize: 13, lineHeight: 18, color: c.ink }}>
-            {a.detail}
-          </Text>
-        </View>
-      ) : null}
+    <Group testID={`request-${a.code}`} footer={done ? undefined : countdown(a.expiresAt, now, 'Denied')}>
+      <Block>
+        <From need={need} />
+        <Txt v="headline">{permissionTitle(a.tool)}</Txt>
+        {a.detail ? <Code text={a.detail} /> : null}
+      </Block>
+      {noting && !done ? <TextArea placeholder="What should Claude do instead? (optional)" value={note} onChangeText={setNote} autoFocus minHeight={80} /> : null}
       <Answering done={done} error={error}>
         {noting ? (
-          <>
-            <Field placeholder="What Claude should do instead (optional)" value={note} onChangeText={setNote} multiline autoFocus />
-            <Row>
-              <Button flex kind="danger" title="Deny" onPress={() => send({ decision: 'deny', text: note.trim() || null })} testID={`deny-note-${a.code}`} />
-              <Button flex kind="secondary" title="Back" onPress={() => setNoting(false)} />
-            </Row>
-          </>
+          <HStack>
+            <Button flex kind="dangerFilled" title="Deny" onPress={() => send({ decision: 'deny', text: note.trim() || null })} testID={`deny-note-${a.code}`} />
+            <Button kind="plain" title="Back" onPress={() => setNoting(false)} />
+          </HStack>
         ) : (
           <>
-            <Row>
+            <HStack>
               <Button flex title="Allow" onPress={allow} testID={`allow-${a.code}`} />
               <Button flex kind="danger" title="Deny" onPress={() => send({ decision: 'deny' })} testID={`deny-${a.code}`} />
-            </Row>
-            <Pressable onPress={() => setNoting(true)} role="button">
-              <Soft style={{ textAlign: 'center' }}>Deny with a note for Claude…</Soft>
-            </Pressable>
+            </HStack>
+            <Button small kind="plain" title="Deny and tell Claude why" onPress={() => setNoting(true)} />
           </>
         )}
       </Answering>
-    </Card>
+    </Group>
   )
 }
-
-const letter = (i: number) => String.fromCharCode(65 + i)
 
 /** Claude's questions, one at a time: every option in full; tick several where it allows; or type an answer. */
 function QuestionCard(props: Props) {
   const { need } = props
-  const c = useColors()
+  const { c, wide } = useTheme()
+  const now = useNow(15_000)
   const questions = need.approval.questions ?? []
   const { done, error, send } = useAnswer(props)
   const [step, setStep] = useState(0)
@@ -174,88 +207,84 @@ function QuestionCard(props: Props) {
 
   if (done) {
     return (
-      <Card testID={`request-${code}`}>
-        <Head need={need} title={`#${need.approval.job} asked`} verb="Claude decides itself" />
-        {questions.map((x, i) => (
-          <View key={i} style={{ gap: 2 }}>
-            <Label style={{ fontWeight: '600' }}>{x.question}</Label>
-            <Soft>
-              →{' '}
-              {(() => {
-                const a = answers[i]
-                return !a ? 'no answer' : 'text' in a ? `“${a.text}”` : a.picks.map(p => x.options?.[p]?.label ?? '?').join(', ')
-              })()}
-            </Soft>
-          </View>
-        ))}
-        <Outcome ok text={done} />
-      </Card>
+      <Group testID={`request-${code}`}>
+        <Block>
+          <From need={need} />
+          {questions.map((x, i) => {
+            const a = answers[i]
+            const said = !a ? 'No answer' : 'text' in a ? `“${a.text}”` : a.picks.map(p => x.options?.[p]?.label ?? '?').join(', ')
+            return (
+              <View key={i} style={{ gap: 1 }}>
+                <Txt v="subhead">{x.question}</Txt>
+                <Txt v="subhead" tone="soft">
+                  {said}
+                </Txt>
+              </View>
+            )
+          })}
+          <Txt v="subhead" tone="ok">
+            {done}
+          </Txt>
+        </Block>
+      </Group>
     )
   }
 
   const multi = q.multiSelect === true
   const picked = answers[step]
+  const check = <Ionicons name="checkmark" size={wide ? 15 : 19} color={c.accent} />
   return (
-    <Card testID={`request-${code}`}>
-      <Head need={need} title={`#${need.approval.job} asks${questions.length > 1 ? ` · ${step + 1} of ${questions.length}` : ''}`} verb="Claude decides itself" />
-      {q.header ? <Soft style={[T.tiny, { textTransform: 'uppercase', fontWeight: '600' }]}>{q.header}</Soft> : null}
-      <Label style={{ fontWeight: '600', fontSize: 16 }}>{q.question}</Label>
-      <View style={{ gap: space.s }}>
-        {(q.options ?? []).map((o, i) => {
-          const on = multi ? ticked.includes(i) : picked !== undefined && 'picks' in picked && picked.picks.includes(i)
-          return (
-            <Pressable
-              key={i}
-              testID={`option-${code}-${step}-${i}`}
-              role={multi ? 'checkbox' : 'radio'}
-              aria-checked={on}
-              onPress={() => (multi ? setTicked(on ? ticked.filter(x => x !== i) : [...ticked, i]) : void answer({ picks: [i] }))}
-              style={({ pressed }) => ({
-                borderWidth: 1,
-                borderColor: on ? c.accent : c.line,
-                backgroundColor: on ? c.accentSoft : c.card,
-                borderRadius: radius.m,
-                padding: space.m,
-                gap: 2,
-                opacity: pressed ? 0.7 : 1,
-              })}
-            >
-              <Text style={{ color: c.ink, fontWeight: '600', fontSize: 15 }}>
-                {multi ? (on ? '☑︎ ' : '☐ ') : ''}
-                {letter(i)} · {o.label}
-              </Text>
-              {o.description ? <Soft>{o.description}</Soft> : null}
-            </Pressable>
-          )
-        })}
-      </View>
-      {error ? <Outcome ok={false} text={error} /> : null}
+    <Group testID={`request-${code}`} footer={countdown(need.approval.expiresAt, now, 'Claude decides')}>
+      <Block>
+        <From need={need} extra={questions.length > 1 ? `${step + 1} of ${questions.length}` : null} />
+        <Txt v="headline">{q.question}</Txt>
+        {multi ? (
+          <Txt v="footnote" tone="soft">
+            Choose any.
+          </Txt>
+        ) : null}
+      </Block>
+      {(q.options ?? []).map((o, i) => {
+        const on = multi ? ticked.includes(i) : picked !== undefined && 'picks' in picked && picked.picks.includes(i)
+        return (
+          <Row
+            key={i}
+            testID={`option-${code}-${step}-${i}`}
+            title={o.label}
+            subtitle={o.description}
+            subtitleLines={4}
+            trailing={on ? check : <View style={{ width: wide ? 15 : 19 }} />}
+            onPress={() => (multi ? setTicked(on ? ticked.filter(x => x !== i) : [...ticked, i]) : void answer({ picks: [i] }))}
+          />
+        )
+      })}
       {typing ? (
-        <View style={{ gap: space.s }}>
-          <Field placeholder="Your answer" value={typed} onChangeText={setTyped} multiline autoFocus testID={`typed-${code}`} />
-          <Row>
-            <Button flex title="Send this answer" disabled={!typed.trim()} onPress={() => answer({ text: typed.trim() })} testID={`send-typed-${code}`} />
-            <Button flex kind="secondary" title="Back" onPress={() => setTyping(false)} />
-          </Row>
-        </View>
+        <TextArea placeholder="Your answer" value={typed} onChangeText={setTyped} autoFocus minHeight={80} testID={`typed-${code}`} />
       ) : (
-        <Row wrap>
-          {multi ? <Button flex title={ticked.length ? `Done (${ticked.length})` : 'Done'} disabled={ticked.length === 0} onPress={() => answer({ picks: [...ticked].sort((a, b) => a - b) })} testID={`done-${code}`} /> : null}
-          <Button flex kind="secondary" title="Type an answer" onPress={() => setTyping(true)} testID={`type-${code}`} />
-          {step > 0 ? (
-            <Button
-              kind="ghost"
-              title="Back"
-              onPress={() => {
-                const prev = answers[step - 1]
-                setTicked(prev && 'picks' in prev ? prev.picks : [])
-                setStep(step - 1)
-              }}
-            />
-          ) : null}
-        </Row>
+        <Row testID={`type-${code}`} title="Type an answer" tone="accent" onPress={() => setTyping(true)} />
       )}
-    </Card>
+      {multi || typing || step > 0 || error ? (
+        <Answering done={null} error={error}>
+          <HStack>
+            {typing ? <Button flex title="Send" disabled={!typed.trim()} onPress={() => answer({ text: typed.trim() })} testID={`send-typed-${code}`} /> : null}
+            {multi && !typing ? <Button flex title={ticked.length ? `Done (${ticked.length})` : 'Done'} disabled={ticked.length === 0} onPress={() => answer({ picks: [...ticked].sort((a, b) => a - b) })} testID={`done-${code}`} /> : null}
+            {typing ? (
+              <Button kind="plain" title="Back" onPress={() => setTyping(false)} />
+            ) : step > 0 ? (
+              <Button
+                kind="plain"
+                title="Previous question"
+                onPress={() => {
+                  const prev = answers[step - 1]
+                  setTicked(prev && 'picks' in prev ? prev.picks : [])
+                  setStep(step - 1)
+                }}
+              />
+            ) : null}
+          </HStack>
+        </Answering>
+      ) : null}
+    </Group>
   )
 }
 
@@ -265,20 +294,24 @@ function TypedAnswerCard(props: Props) {
   const { done, error, send } = useAnswer(props)
   const [typed, setTyped] = useState('')
   return (
-    <Card testID={`request-${need.approval.code}`}>
-      <Head need={need} title={`#${need.approval.job} has a question`} verb="Claude decides itself" />
-      <Soft>The question is on the machine’s screen.</Soft>
+    <Group testID={`request-${need.approval.code}`}>
+      <Block>
+        <From need={need} />
+        <Txt v="headline">A question</Txt>
+        <Txt v="subhead" tone="soft">
+          It’s on the machine’s screen.
+        </Txt>
+      </Block>
+      {done ? null : <TextArea placeholder="Your answer" value={typed} onChangeText={setTyped} minHeight={80} />}
       <Answering done={done} error={error}>
-        <Field placeholder="Your answer" value={typed} onChangeText={setTyped} multiline />
         <Button title="Send" disabled={!typed.trim()} onPress={() => send({ decision: 'answer', text: typed.trim() })} />
       </Answering>
-    </Card>
+    </Group>
   )
 }
 
 function ReviewCard(props: Props) {
   const { need } = props
-  const c = useColors()
   const { done, error, send } = useAnswer(props)
   const [open, setOpen] = useState(false)
   const [changing, setChanging] = useState(false)
@@ -286,53 +319,52 @@ function ReviewCard(props: Props) {
   const plan = need.approval.plan ?? ''
   const long = plan.length > 900
   return (
-    <Card testID={`request-${need.approval.code}`}>
-      <Head need={need} title={`#${need.approval.job}'s plan, for your review`} verb="Waits" />
-      <View style={{ maxHeight: long && !open ? 260 : undefined, overflow: 'hidden' }}>
-        {plan ? <Markdown text={plan} /> : <Soft>(The plan is on the machine.)</Soft>}
-      </View>
-      {long ? (
-        <Pressable onPress={() => setOpen(!open)} role="button">
-          <Text style={{ color: c.accent, fontWeight: '600' }}>{open ? 'Show less' : 'Read the whole plan'}</Text>
-        </Pressable>
-      ) : null}
+    <Group testID={`request-${need.approval.code}`}>
+      <Block>
+        <From need={need} />
+        <Txt v="headline">Review the plan</Txt>
+        <View style={{ maxHeight: long && !open ? 280 : undefined, overflow: 'hidden' }}>{plan ? <Markdown text={plan} /> : <Txt tone="soft">The plan is on the machine.</Txt>}</View>
+        {long ? <Button small kind="plain" title={open ? 'Show less' : 'Show the whole plan'} onPress={() => setOpen(!open)} /> : null}
+      </Block>
+      {changing && !done ? <TextArea placeholder="What should change?" value={changes} onChangeText={setChanges} autoFocus minHeight={80} /> : null}
       <Answering done={done} error={error}>
         {changing ? (
-          <>
-            <Field placeholder="What should Claude change?" value={changes} onChangeText={setChanges} multiline autoFocus />
-            <Row>
-              <Button flex title="Send" disabled={!changes.trim()} onPress={() => send({ decision: 'deny', text: changes.trim() })} />
-              <Button flex kind="secondary" title="Back" onPress={() => setChanging(false)} />
-            </Row>
-          </>
+          <HStack>
+            <Button flex title="Send" disabled={!changes.trim()} onPress={() => send({ decision: 'deny', text: changes.trim() })} />
+            <Button kind="plain" title="Back" onPress={() => setChanging(false)} />
+          </HStack>
         ) : (
-          <Row>
+          <HStack>
             <Button flex title="Approve" onPress={() => send({ decision: 'allow' })} testID={`approve-${need.approval.code}`} />
-            <Button flex kind="secondary" title="Ask for changes" onPress={() => setChanging(true)} />
-          </Row>
+            <Button flex kind="tinted" title="Ask for changes" onPress={() => setChanging(true)} />
+          </HStack>
         )}
       </Answering>
-    </Card>
+    </Group>
   )
 }
 
 function TrustCard(props: Props) {
   const { need } = props
+  const now = useNow(15_000)
   const { done, error, send } = useAnswer(props)
   const folder = need.approval.folder ?? need.job?.folder ?? ''
   return (
-    <Card testID={`request-${need.approval.code}`}>
-      <Head need={need} title="Trust this folder?" verb="Cancelled" />
-      <Label>
-        #{need.approval.job} is the first Claude Code task in <Text style={{ fontWeight: '700' }}>{basename(folder)}</Text>. Claude asks whether to trust it.
-      </Label>
-      <Soft>{folder}</Soft>
+    <Group testID={`request-${need.approval.code}`} footer={done ? undefined : countdown(need.approval.expiresAt, now, 'Cancelled')}>
+      <Block>
+        <From need={need} />
+        <Txt v="headline">Trust this folder?</Txt>
+        <Txt v="subhead" tone="soft">
+          It’s the first Claude Code task in {basename(folder)}.
+        </Txt>
+        <Code text={folder} />
+      </Block>
       <Answering done={done} error={error}>
-        <Row>
-          <Button flex title="Trust it" onPress={() => send({ decision: 'allow' })} />
+        <HStack>
+          <Button flex title="Trust" onPress={() => send({ decision: 'allow' })} />
           <Button flex kind="danger" title="Cancel the task" onPress={() => send({ decision: 'deny' })} />
-        </Row>
+        </HStack>
       </Answering>
-    </Card>
+    </Group>
   )
 }

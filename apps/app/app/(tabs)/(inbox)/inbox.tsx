@@ -2,10 +2,11 @@
 // answered stays listed for a few minutes, so you can see it went through.
 
 import { useMemo, useState } from 'react'
-import { hub, useHub, useNow } from '../../src/app-state'
-import { RequestCard } from '../../src/components/Requests'
-import { Card, Empty, Outcome, Screen, Section } from '../../src/components/ui'
-import { needsYou } from '../../src/lib/state'
+import { hub, useHub, useNow } from '../../../src/app-state'
+import { RequestCard } from '../../../src/components/Requests'
+import { EmptyState, Group, Page, Row, Txt } from '../../../src/components/ui'
+import { clock } from '../../../src/lib/format'
+import { needsYou } from '../../../src/lib/state'
 
 const KEEP_MS = 10 * 60_000
 
@@ -18,7 +19,8 @@ export default function Inbox() {
   const recent = answered.filter(a => now - a.at < KEEP_MS)
 
   return (
-    <Screen
+    <Page
+      title="Needs you"
       testID="inbox"
       refreshing={refreshing}
       onRefresh={async () => {
@@ -28,7 +30,7 @@ export default function Inbox() {
       }}
     >
       {needs.length === 0 ? (
-        <Empty title="Nothing needs you" text="When a task asks for a permission, has questions, or has a plan for you to review, it shows up here." />
+        <EmptyState title="Nothing needs you" text="Permissions, questions and plans from your machines show up here." />
       ) : (
         needs.map(n => {
           const key = `${n.machine.id}:${n.approval.code}`
@@ -42,14 +44,12 @@ export default function Inbox() {
         })
       )}
       {recent.length > 0 ? (
-        <Section title="Answered just now">
-          <Card>
-            {recent.map(a => (
-              <Outcome key={a.key} ok text={a.text} />
-            ))}
-          </Card>
-        </Section>
+        <Group header="Just answered">
+          {recent.map(a => (
+            <Row key={a.key} title={<Txt v="subhead">{a.text}</Txt>} value={<Txt v="footnote" tone="soft" num>{clock(a.at, now)}</Txt>} />
+          ))}
+        </Group>
       ) : null}
-    </Screen>
+    </Page>
   )
 }

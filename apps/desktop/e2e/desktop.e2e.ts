@@ -5,7 +5,7 @@
 //   ELECTRON_APP=<executable> bun e2e/desktop.e2e.ts    an installed build: the steps without test hooks
 // ELECTRON_EXTRA_ARGS adds switches (--no-sandbox in a container); E2E_OUT moves the screenshots.
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
@@ -23,7 +23,7 @@ const extra = (process.env.ELECTRON_EXTRA_ARGS ?? '').split(' ').filter(Boolean)
 // An installed build is the real app: on a Mac its Keychain entry is the real one, and a new build
 // (another ad-hoc signature) would make macOS ask before reading it. Chromium's test keychain keeps
 // the run away from yours. (In test mode the app has an entry of its own, and the Electron binary's
-// signature doesn't change, so that run uses the real Keychain.)
+// signature doesn't change, so that run uses the real Keychain, and removes its entry at the end.)
 if (packaged && process.platform === 'darwin' && process.env.E2E_REAL_KEYCHAIN !== '1') extra.push('--use-mock-keychain')
 const out = process.env.E2E_OUT ?? join(import.meta.dir, 'out')
 mkdirSync(out, { recursive: true })
@@ -90,7 +90,7 @@ try {
 
   await check('the app loads from inside itself, with no Node in the page', async () => {
     await page.reload()
-    await see('Welcome to Afterhours', 20_000)
+    await see('No machines yet', 20_000)
     if (!page.url().startsWith('app://afterhours/')) throw new Error(`loaded ${page.url()}`)
     // (The web build has a `process` of its own, for its settings; Node's would have versions.node.)
     const exposed = await page.evaluate(() => {
@@ -108,7 +108,7 @@ try {
     await see('Paired with build-box')
     await tap('pair-open')
     await see('Online')
-    await see('#14 Add a dark mode toggle')
+    await see('Add a dark mode toggle')
     await shot('02-machine')
   })
 
@@ -129,10 +129,14 @@ try {
       await page.evaluate(() => (window as unknown as { afterhoursDesktop: { test: { closeWindow(): Promise<void> } } }).afterhoursDesktop.test.closeWindow())
       await until(async () => !(await state()).visible, 'the window to hide')
       askSamples(machine)
+      let last: TestState | null = null
       const s = await until(async () => {
         const s = await state()
+        last = s
         return s.needsYou === 3 && s.notifications.length > 0 ? s : null
-      }, 'a notification', 15_000)
+      }, 'a notification', 15_000).catch(err => {
+        throw new Error(`${err instanceof Error ? err.message : err}; the app recorded ${JSON.stringify(last)}`)
+      })
       const n = s.notifications.at(-1)!
       if (n.title !== 'build-box' || n.route !== '/inbox') throw new Error(`notification: ${JSON.stringify(n)}`)
       if (s.tray.title !== '3' || !s.tray.tooltip.includes('3 need you')) throw new Error(`tray: ${JSON.stringify(s.tray)}`)
@@ -263,6 +267,7 @@ try {
   machine.stop()
   await relay.stop()
   rmSync(userData, { recursive: true, force: true })
+  if (!packaged && process.platform === 'darwin') spawnSync('security', ['delete-generic-password', '-s', 'Afterhours Test Safe Storage'], { stdio: 'ignore' })
 }
 
 console.log(failures ? `\nFAILED (${failures})` : `\nAll passed. Screenshots: ${out}`)

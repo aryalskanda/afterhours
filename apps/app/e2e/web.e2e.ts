@@ -25,7 +25,7 @@ try {
 
   await check('a new device shows how to pair', async () => {
     await page.goto(base)
-    await see('Welcome to Afterhours')
+    await see('No machines yet')
     await see('cq pair')
     await shot('01-welcome')
   })
@@ -37,19 +37,20 @@ try {
     await shot('02-pair')
     await tap('pair-go')
     await see('Paired with build-box')
-    await see('an owner there')
+    await see('As an owner')
     await shot('03-paired')
     await tap('pair-open')
     await see('Online')
-    await see('#14 Add a dark mode toggle')
+    await see('Add a dark mode toggle')
     await until(() => sent('sync'), 'a sync')
     await shot('04-machine')
   })
 
   await check('requests arrive live: the badge, the banner and the cards', async () => {
     askSamples(m)
-    await see('wants to use Bash')
+    // The banner shows the newest: the plan.
     await visible('attention')
+    await see('#15 plan ready for your review')
     await shot('05-banner')
     await tap('attention')
     await visible('request-perma')
@@ -64,7 +65,7 @@ try {
     await tap('allow-perma')
     await until(() => m.requests.filter(r => r.type === 'answer' && r.code === 'perma' && r.decision === 'allow').length === 2, 'the second allow')
     await gone('request-perma')
-    await see('Answered just now')
+    await see('Just answered')
   })
 
   await check('three questions, one at a time: a pick, several ticks, a typed answer', async () => {
@@ -89,7 +90,7 @@ try {
   })
 
   await check('reviewing a plan, rendered, and approving it', async () => {
-    await see('plan, for your review')
+    await see('Review the plan')
     await see('src/settings/Appearance.tsx')
     await shot('08-review')
     await tap('approve-revie')
@@ -99,16 +100,16 @@ try {
   })
 
   await check('a new task goes to the machine exactly as chosen', async () => {
+    // The Machines tab keeps its place (the machine), as tabs do on a phone.
     await tap('tab-machines')
-    await tap('new-task')
-    await see('Recent')
+    await tap('machine-new')
     await tap('folder-web')
     await typeInto('new-prompt', 'Add a CSV export to the orders page')
     await tap('new-how-none')
     await tap('new-mode-acceptEdits')
     await tap('new-model-opus')
     await tap('new-effort-max')
-    await see('doesn’t let apps start tasks that skip permission prompts')
+    await see('doesn’t allow No prompts')
     await shot('09-new')
     await tap('new-submit')
     await see('Queued #21.')
@@ -121,8 +122,8 @@ try {
   })
 
   await check('a finished task: its answer and plan, rendered', async () => {
-    await page.goBack()
-    await tap('machine-build-box')
+    // Back from the new task: its machine, with its recent tasks.
+    await d.back()
     await tap('job-12')
     await see('Claude’s answer')
     await see('The toggle is in')
@@ -132,7 +133,7 @@ try {
   })
 
   await check('the running task’s screen, and pressing a key', async () => {
-    await page.goBack()
+    await d.back()
     await tap('open-screen')
     await see('Editing src/theme.ts')
     await tap('key-Escape')
@@ -154,8 +155,7 @@ try {
   await check('after a reload the machine is still paired and comes back online', async () => {
     await page.goto(base)
     await see('build-box')
-    await see('Online')
-    await see('62%')
+    await see('Working')
     await shot('13-home')
     await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }])
     await Bun.sleep(300)
@@ -165,16 +165,18 @@ try {
 
   await check('the queue: run one next, remove another (asking once more first)', async () => {
     await tap('machine-build-box')
-    await tap('top-21')
-    await until(() => sent('job', r => r.action === 'top' && r.job === 21), 'the run-next')
-    await tap('remove-15')
-    await see('Remove it?')
-    if (sent('job', r => r.action === 'remove')) throw new Error('removed on the first tap')
-    await tap('remove-15')
-    await until(() => sent('job', r => r.action === 'remove' && r.job === 15), 'the removal')
-    // The buttons sit on the task's card; pressing them didn't open the task.
-    await visible('machine-status')
     await shot('15-queue')
+    await tap('job-21')
+    await tap('task-top')
+    await until(() => sent('job', r => r.action === 'top' && r.job === 21), 'the run-next')
+    await d.back()
+    await tap('job-15')
+    await tap('task-remove')
+    await see('Tap again to remove')
+    if (sent('job', r => r.action === 'remove')) throw new Error('removed on the first tap')
+    await tap('task-remove')
+    await until(() => sent('job', r => r.action === 'remove' && r.job === 15), 'the removal')
+    await visible('task-prompt')
   })
 
   await check('settings show this device’s key; a new name reaches the machine', async () => {
@@ -221,8 +223,7 @@ try {
   await check('a device the machine removed says so', async () => {
     m.removeDevice(m.devices()[0]!)
     await page.goto(base)
-    await see('Removed: pair again', 15_000)
-    await see('This device was removed there')
+    await see('Removed this device', 15_000)
     await shot('17-removed')
   })
 

@@ -76,10 +76,11 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 
 ## How it's built
 
-- Expo SDK 57 and Expo Router. Screens are in `app/`:
-  - tabs `(tabs)/index`, `inbox`, `chats`, `settings`;
-  - `pair` and `new` (modals);
-  - `machine/[id]`, with its `task/[job]`, `screen`, `chat/[session]` and `devices`.
+- Expo SDK 57 and Expo Router. Screens are in `app/`. Each tab has its own stack, so the tab bar (the sidebar, in a wide window) stays while you go deeper:
+  - `(tabs)/(machines)`: the machines, then `machine/[id]` with its `task/[job]`, `screen` and `devices`;
+  - `(tabs)/(inbox)/inbox`; `(tabs)/(chats)/chats`, with one chat at `chats/[machine]/[session]`; `(tabs)/(settings)/settings`;
+  - `pair` and `new`, over the tabs.
+- `src/theme.ts` and `src/components/ui.tsx`: the look. Grouped lists on a grey page, the system's fonts, and one accent (amber) for what needs you and a screen's main action. A wide window gets a denser type scale and the tabs as a sidebar.
 - `src/lib/hub.ts` owns the connections (the protocol's `AppClient`), the paired machines and what they report, and keeps what must survive a restart. Screens read it with `useSyncExternalStore`.
 - `src/lib/state.ts`: pure functions from a snapshot, a queue change or an event to a machine's state, plus "needs you" and a task's timeline.
 - `src/lib/markdown.ts` and `src/components/Markdown.tsx`: Claude's Markdown, drawn natively. Tables become one entry per row, which reads better on a phone.
