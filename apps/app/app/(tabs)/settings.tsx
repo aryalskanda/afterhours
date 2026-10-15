@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { Platform, Text, View } from 'react-native'
 import { APP_VERSION, hub, useHub, useNow } from '../../src/app-state'
 import { statusColor } from '../../src/components/bits'
+import { desktop } from '../../src/desktop'
 import { Button, Card, Dot, Field, Label, Outcome, Row, Screen, Section, Soft, Toggle } from '../../src/components/ui'
 import { ago, statusLabel } from '../../src/lib/format'
 import { mono, useColors } from '../../src/theme'
@@ -18,9 +19,12 @@ export default function Settings() {
   const [name, setName] = useState(s.deviceName)
   const [saved, setSaved] = useState(false)
   const [biometrics, setBiometrics] = useState(false)
+  const [atLogin, setAtLogin] = useState(false)
+  const [blocked, setBlocked] = useState(false)
 
   useEffect(() => setName(s.deviceName), [s.deviceName])
   useEffect(() => {
+    if (desktop) void desktop.loginItem.get().then(setAtLogin)
     if (Platform.OS === 'web') return
     void (async () => setBiometrics((await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync())))()
   }, [])
@@ -55,8 +59,42 @@ export default function Settings() {
 
       <Section title="Security">
         <Card>
-          {Platform.OS === 'web' ? (
-            <Soft>In a browser, this device’s key is kept in the site’s storage, where anything that can read this browser’s data can find it. On a phone, the app keeps it in the Keychain or Keystore.</Soft>
+          {desktop ? (
+            <>
+              <Toggle
+                label="Start at login"
+                hint="Afterhours starts in the tray, so notifications reach you without opening it."
+                value={atLogin}
+                testID="start-at-login"
+                onChange={async v => {
+                  await desktop?.loginItem.set(v)
+                  setAtLogin((await desktop?.loginItem.get()) ?? v)
+                }}
+              />
+              <Soft testID="key-storage">
+                {desktop.info.keyProtected
+                  ? `This device’s key is encrypted by ${desktop.info.platform === 'darwin' ? 'the macOS Keychain' : desktop.info.platform === 'win32' ? 'Windows' : 'your keyring'} and stays on this computer.`
+                  : 'This computer has no keyring (such as GNOME Keyring or KWallet), so the key is stored unencrypted in the app’s data folder.'}
+              </Soft>
+            </>
+          ) : Platform.OS === 'web' ? (
+            <>
+              <Toggle
+                label="Notifications in this browser"
+                hint={blocked ? 'This browser blocks notifications for this site: allow them in its settings.' : 'When something needs you while this tab is in the background.'}
+                value={s.prefs.browserNotifications}
+                testID="browser-notifications"
+                onChange={async v => {
+                  if (v && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+                    const answer = await Notification.requestPermission()
+                    setBlocked(answer !== 'granted')
+                    if (answer !== 'granted') return
+                  }
+                  await hub.setPrefs({ browserNotifications: v })
+                }}
+              />
+              <Soft>In a browser, this device’s key is kept in the site’s storage, where anything that can read this browser’s data can find it. The phone and desktop apps keep it in the system’s keychain.</Soft>
+            </>
           ) : (
             <>
               <Toggle
@@ -104,7 +142,10 @@ export default function Settings() {
 
       <Section title="About">
         <Card>
-          <Label>Afterhours {APP_VERSION}</Label>
+          <Label>
+            Afterhours {APP_VERSION}
+            {desktop ? ` · desktop ${desktop.info.version}` : ''}
+          </Label>
           <Soft>The app and your machines talk end to end encrypted (Noise, protocol {PROTOCOL}), through a relay that passes messages along without being able to read them.</Soft>
         </Card>
       </Section>

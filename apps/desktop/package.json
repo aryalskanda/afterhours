@@ -1,0 +1,28 @@
+{
+  "name": "afterhours-desktop",
+  "productName": "Afterhours",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Afterhours app for Mac, Windows and Linux: the app's web build, in Electron",
+  "license": "Apache-2.0",
+  "author": "Afterhours",
+  "main": "dist/main.js",
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "build:web": "npm --prefix ../app run export:web && node scripts/copy-web.mjs",
+    "build:code": "bun build src/main.ts --target=node --format=cjs --external electron --outfile dist/main.js && bun build src/preload.ts --target=node --format=cjs --external electron --outfile dist/preload.js",
+    "build": "npm run build:web && npm run build:code",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p e2e",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "e2e": "bun e2e/desktop.e2e.ts"
+  },
+  "devDependencies": {
+    "electron": "44.5.1",
+    "electron-builder": "26.17.0",
+    "typescript": "6.0.3"
+  },
+  "desktopName": "afterhours.desktop"
+}

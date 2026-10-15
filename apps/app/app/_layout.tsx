@@ -1,14 +1,15 @@
 // The app's frame: starts the hub, checks the connections when the app comes back to the
 // foreground, themes the navigation, and lays the banner and the lock over every screen.
 
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router'
+import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type Href } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
 import { AppState, useColorScheme } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { hub, useHub } from '../src/app-state'
-import { AttentionBanner, LockGate } from '../src/components/Overlays'
+import { AttentionBanner, LockGate, SystemAlerts } from '../src/components/Overlays'
+import { desktop } from '../src/desktop'
 import { palette } from '../src/theme'
 
 void SplashScreen.preventAutoHideAsync().catch(() => {})
@@ -38,6 +39,20 @@ export default function Root() {
     if (ready) void SplashScreen.hideAsync().catch(() => {})
   }, [ready])
 
+  // The desktop app: afterhours:// links open pairing; a notification or the tray opens a screen.
+  useEffect(() => {
+    if (!desktop) return
+    const offLink = desktop.onLink(link => {
+      const q = link.indexOf('?')
+      router.push({ pathname: '/pair', params: Object.fromEntries(new URLSearchParams(q >= 0 ? link.slice(q + 1) : '')) })
+    })
+    const offRoute = desktop.onNavigate(route => router.push(route as Href))
+    return () => {
+      offLink()
+      offRoute()
+    }
+  }, [])
+
   const base = dark ? DarkTheme : DefaultTheme
   const theme = { ...base, colors: { ...base.colors, primary: c.accent, background: c.bg, card: c.card, text: c.ink, border: c.line, notification: c.accent } }
 
@@ -58,6 +73,7 @@ export default function Root() {
           <Stack.Screen name="new" options={{ presentation: 'modal', title: 'New task' }} />
         </Stack>
         <AttentionBanner />
+        <SystemAlerts />
         <LockGate />
         <StatusBar style="auto" />
       </ThemeProvider>

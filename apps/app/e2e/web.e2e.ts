@@ -188,6 +188,36 @@ try {
     await shot('16-settings')
   })
 
+  await check('browser notifications: switched on in Settings; a request while the tab is hidden shows one', async () => {
+    await d.browser.defaultBrowserContext().overridePermissions(base, ['notifications'])
+    await tap('browser-notifications')
+    await until(async () => (await page.evaluate(() => localStorage.getItem('afterhours.prefs')))?.includes('"browserNotifications":true'), 'the setting')
+    // A hidden tab, and a record of the notifications it shows.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+      const w = window as unknown as { shown: string[]; Notification: typeof Notification }
+      w.shown = []
+      const Real = w.Notification
+      w.Notification = class extends Real {
+        constructor(title: string, options?: NotificationOptions) {
+          super(title, options)
+          w.shown.push(`${title}: ${options?.body ?? ''}`)
+        }
+      } as typeof Notification
+    })
+    const active = m.state.active!
+    m.ask(
+      { code: 'perm2', job: active.id, kind: 'permission', tool: 'Edit', detail: 'src/theme.ts', payload: null, createdAt: Date.now(), expiresAt: Date.now() + 900_000 },
+      { type: 'permission', job: active, code: 'perm2', tool: 'Edit', detail: 'src/theme.ts', minutes: 15 },
+      `🔐 #${active.id} wants to use Edit`,
+    )
+    const shown = await until(async () => {
+      const list = await page.evaluate(() => (window as unknown as { shown: string[] }).shown)
+      return list.length > 0 ? list : null
+    }, 'a notification')
+    if (shown[0] !== `build-box: #${active.id} wants to use Edit`) throw new Error(`showed ${JSON.stringify(shown)}`)
+  })
+
   await check('a device the machine removed says so', async () => {
     m.removeDevice(m.devices()[0]!)
     await page.goto(base)

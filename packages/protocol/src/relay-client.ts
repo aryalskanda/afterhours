@@ -43,6 +43,8 @@ export interface RelayClientOptions {
   log?: (line: string) => void
   socket?: SocketFactory
   timing?: Partial<RelayTiming>
+  /** The clock (tests move it). */
+  now?: () => number
 }
 
 export class RelayClient {
@@ -53,6 +55,8 @@ export class RelayClient {
   private stopped = true
   private failures = 0
   private lastPong = 0
+  /** When the ping still waiting for its pong was sent; not after `lastPong` when none is. */
+  private pingAt = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private authTimer: ReturnType<typeof setTimeout> | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
@@ -100,7 +104,7 @@ export class RelayClient {
       return
     }
     if (!this.isReady) return // signing in right now
-    const asked = Date.now()
+    const asked = this.now()
     try {
       ws.send(JSON.stringify({ t: 'ping' }))
     } catch {
@@ -216,14 +220,15 @@ export class RelayClient {
         this.authTimer = null
         this.isReady = true
         this.failures = 0
-        this.lastPong = Date.now()
+        this.lastPong = this.now()
+        this.pingAt = 0
         this.pingTimer = setInterval(() => this.heartbeat(), this.timing.pingMs)
         for (const done of [...this.readyWaiters]) done()
         this.o.onReady?.()
         return
       }
       case 'pong':
-        this.lastPong = Date.now()
+        this.lastPong = this.now()
         return
       case 'presence':
         this.presence.set(message.peer, message.online)
@@ -253,13 +258,21 @@ export class RelayClient {
     this.o.onFrame(frame)
   }
 
+  /**
+   * Silence counts from the ping that went unanswered, not from the last pong: a timer that fires
+   * late (a hidden tab, an app in the background) isn't a dead connection.
+   */
   private heartbeat(): void {
     if (!this.ws || !this.isReady) return
-    if (Date.now() - this.lastPong > this.timing.pingMs + this.timing.pongTimeoutMs) {
-      this.log('relay: no reply to pings; reconnecting')
-      this.ws.close()
+    const now = this.now()
+    const waiting = this.pingAt > this.lastPong
+    if (waiting && now - this.pingAt > this.timing.pongTimeoutMs) {
+      this.log('relay: no reply to a ping; connecting again')
+      this.reconnect()
       return
     }
+    if (waiting) return
+    this.pingAt = now
     this.ws.send(JSON.stringify({ t: 'ping' }))
   }
 
@@ -289,6 +302,10 @@ export class RelayClient {
     if (this.pingTimer) clearInterval(this.pingTimer)
     if (this.checkTimer) clearTimeout(this.checkTimer)
     this.reconnectTimer = this.authTimer = this.pingTimer = this.checkTimer = null
+  }
+
+  private now(): number {
+    return (this.o.now ?? Date.now)()
   }
 
   private log(line: string): void {

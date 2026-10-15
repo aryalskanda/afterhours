@@ -2,15 +2,51 @@
 
 import * as Haptics from 'expo-haptics'
 import * as LocalAuthentication from 'expo-local-authentication'
-import { router } from 'expo-router'
+import { router, type Href } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import { AppState, Platform, Pressable, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { hub, useHub } from '../app-state'
+import { desktop } from '../desktop'
 import { radius, space, useColors } from '../theme'
 import { withoutEmoji } from '../lib/format'
 import { Icon, NOTICE_ICON } from './icons'
 import { Button, Soft, Title } from './ui'
+
+/** Notices that need an answer: a click goes to Needs you. Others go to their machine. */
+const NEEDS_ANSWER = ['permission', 'question', 'plan_review', 'trust']
+
+function routeFor(a: { type: string; machine: string }): string {
+  return NEEDS_ANSWER.includes(a.type) ? '/inbox' : `/machine/${a.machine}`
+}
+
+/**
+ * Outside the app's window: a system notification. On the desktop when the window isn't in front;
+ * in a browser when the tab is in the background and you turned them on.
+ */
+export function SystemAlerts() {
+  const { attention, prefs } = useHub()
+  const last = useRef<number | null>(null)
+  useEffect(() => {
+    if (!attention || attention.id === last.current) return
+    last.current = attention.id
+    const route = routeFor(attention)
+    const body = withoutEmoji(attention.text.split('\n')[0] ?? '')
+    if (desktop) {
+      if (!document.hasFocus()) desktop.notify({ title: attention.machineName, body, route })
+      return
+    }
+    if (Platform.OS !== 'web' || !prefs.browserNotifications || typeof Notification === 'undefined') return
+    if (Notification.permission !== 'granted' || !document.hidden) return
+    const note = new Notification(attention.machineName, { body, tag: `afterhours-${attention.id}` })
+    note.onclick = () => {
+      window.focus()
+      router.push(route as Href)
+      note.close()
+    }
+  }, [attention, prefs.browserNotifications])
+  return null
+}
 
 export function AttentionBanner() {
   const { attention } = useHub()
@@ -23,13 +59,12 @@ export function AttentionBanner() {
     return () => clearTimeout(timer)
   }, [attention])
   if (!attention) return null
-  const needs = ['permission', 'question', 'plan_review', 'trust'].includes(attention.type)
   return (
     <Pressable
       testID="attention"
       onPress={() => {
         hub.dismissAttention(attention.id)
-        router.push(needs ? '/inbox' : `/machine/${attention.machine}`)
+        router.push(routeFor(attention) as Href)
       }}
       style={{ position: 'absolute', top: insets.top + space.s, left: space.m, right: space.m, alignItems: 'center' }}
     >

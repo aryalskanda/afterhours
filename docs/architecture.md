@@ -163,7 +163,7 @@ The protocol and the crypto get an external review before a public launch.
 | 1. Secure core | Protocol package, relay (with Docker image), the engine's remote module, `cq pair` / `devices` / `remote` / `audit`, a command-line app, tests | **Done.** 40 new tests (Noise vectors, relay rules, sessions through a real relay, the engine's rules) pass on macOS and on Linux (arm64, in Docker). The end-to-end check pairs, runs a real Claude Code task and allows its permission from the app, then checks the folder rules, tampering and removal. |
 | 2. Engine everywhere | `src/platform/` (systemd user service with linger, `xdg-open`, no Full Disk Access or caffeinate off macOS); Linux x64 and arm64 binaries with checksums and build attestations; `install.sh`; an engine Docker image (Claude Code, tmux, git, non-root); EC2/cloud-init, WSL2 and Docker guides ([linux.md](linux.md)); CI on Ubuntu and macOS | **Done.** In a systemd container: the install script, the user service with linger, an update, and a restart that leaves a running task alone. In the engine image: a task queued from this Mac through the relay runs in tmux, and Claude's screen comes back. Not yet run on a real EC2 instance. |
 | 3. The app (Expo) | Machines; "Needs you" across machines; queue and new task; the running task (screen, plan, answer, stop, continue, type, keys); chats; settings (devices, machines, app lock). Pairing by scan, paste or link. Built on `AppClient` ([apps/app](../apps/app/README.md)) | **Done** (Expo Go and the web; store builds need your accounts). The web build passes end to end in headless Chrome against a scripted machine and against a private daemon. Checked by hand on an iPhone simulator and an Android emulator in Expo Go: pairing, Needs you, answering by touch. Engine additions: requests carry what's needed to show them (a permission's detail, the questions, the plan, the deadline); the snapshot carries the machine's defaults and models; one task in full; recent folders; a device may rename or remove itself; waking up checks the connection with a ping |
-| 4. Desktop and testers | Electron around the web build: bundled code only, context isolation, sandbox, strict CSP, tray, notifications, start at login. dmg, NSIS, AppImage/deb/rpm with auto-update. Testers: web build at a URL, desktop builds on GitHub Releases, Android APK by link, iOS on TestFlight | |
+| 4. Desktop and testers | Electron around the web build: bundled code only, context isolation, sandbox, strict CSP, tray, notifications, start at login, `afterhours://` links, the key in the OS keychain. dmg, NSIS, AppImage ([apps/desktop](../apps/desktop/README.md)). Testers: web build at a URL, desktop builds on GitHub Releases, Android APK by link, iOS on TestFlight | **Desktop done**, unsigned. End to end in test mode: pairing, closing to the tray, a notification that opens Needs you, a link handed over by a second launch, the CSP, start at login, a relay on the LAN. The installed Mac app (arm64) and the Linux arm64 build (in Docker, without a keyring) pass the same checks; the Windows installer is built but not run. Also new: the relay heartbeat counts silence from an unanswered ping, so a late timer (a hidden tab, an app in the background) no longer drops the connection. Still to come: signing and auto-update, the `.deb` (it needs a homepage), and tester distribution (your accounts and a pushed repo) |
 | 5. Push and fleets | Push through the relay to Expo push (generic text by default); enrollment tokens for autoscaling servers; optional direct connections on a LAN or Tailscale; Telegram optional; native Windows engine | |
 
 ## Trying it now
@@ -184,6 +184,13 @@ The app (Phase 3), in a browser or Expo Go ([more](../apps/app/README.md)):
 cd apps/app && npm install
 npm run web                                            # or: npx expo start, then scan with your phone
 bun e2e/fake-machine.ts                                # a scripted machine to pair with, if you have none
+```
+
+The desktop app (Phase 4), around the same web build ([more](../apps/desktop/README.md)):
+
+```sh
+cd apps/desktop && npm install
+npm start                                              # or npm run dist:mac (dist:win, dist:linux) for installers
 ```
 
 ## What you need to provide (later phases)

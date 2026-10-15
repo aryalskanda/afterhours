@@ -1,0 +1,7 @@
+{
+  // The unit tests and the end-to-end script run in Bun; the end-to-end script also has code that
+  // runs in the page (the DOM's types).
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "lib": ["ESNext", "DOM", "DOM.Iterable"] },
+  "include": [".", "../test"]
+}

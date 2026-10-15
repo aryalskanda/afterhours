@@ -40,13 +40,27 @@ export interface Driver {
   failed(): boolean
 }
 
+/** Headless Chrome, at a phone's size. */
 export async function drive(out: string): Promise<Driver> {
-  mkdirSync(out, { recursive: true })
   // CI runners' Chrome can't use its sandbox.
   const args = ['--no-first-run', '--no-default-browser-check', ...(process.env.CI ? ['--no-sandbox'] : [])]
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args })
   const page = await browser.newPage()
   await page.setViewport({ width: 430, height: 900, deviceScaleFactor: 2 })
+  return attach(browser, page, out)
+}
+
+/** A browser that's already running (the desktop app, through its debugging port): its page at `url`. */
+export async function connect(browserURL: string, url: (u: string) => boolean, out: string): Promise<Driver> {
+  const browser = await puppeteer.connect({ browserURL, defaultViewport: null })
+  const target = await browser.waitForTarget(t => t.type() === 'page' && url(t.url()), { timeout: 20_000 })
+  const page = await target.page()
+  if (!page) throw new Error('no page')
+  return attach(browser, page, out)
+}
+
+export function attach(browser: Browser, page: Page, out: string): Driver {
+  mkdirSync(out, { recursive: true })
   const errors: string[] = []
   page.on('pageerror', err => errors.push(String(err)))
   page.on('console', msg => {
@@ -64,7 +78,8 @@ export async function drive(out: string): Promise<Driver> {
       const handle = await page
         .waitForFunction(
           (s: string) => [...document.querySelectorAll(s)].find(el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden') ?? false,
-          { timeout },
+          // Timed polling: animation frames stop in a window that's behind another one.
+          { timeout, polling: 100 },
           sel(id),
         )
         .catch(() => {
@@ -89,12 +104,12 @@ export async function drive(out: string): Promise<Driver> {
       await el.type(text)
     },
     async see(text, timeout = 10_000) {
-      await page.waitForFunction((t: string) => document.body.innerText.toLowerCase().includes(t.toLowerCase()), { timeout }, text).catch(() => {
+      await page.waitForFunction((t: string) => document.body.innerText.toLowerCase().includes(t.toLowerCase()), { timeout, polling: 100 }, text).catch(() => {
         throw new Error(`"${text}" never showed`)
       })
     },
     async gone(id, timeout = 10_000) {
-      await page.waitForFunction((s: string) => ![...document.querySelectorAll(s)].some(el => el.getClientRects().length > 0), { timeout }, sel(id))
+      await page.waitForFunction((s: string) => ![...document.querySelectorAll(s)].some(el => el.getClientRects().length > 0), { timeout, polling: 100 }, sel(id))
     },
     async shot(name) {
       await page.screenshot({ path: join(out, `${name}.png`) })

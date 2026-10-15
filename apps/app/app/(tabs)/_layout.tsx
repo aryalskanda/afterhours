@@ -3,9 +3,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { router } from 'expo-router'
 import { Tabs } from 'expo-router/js-tabs'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Pressable, type ColorValue } from 'react-native'
 import { useHub } from '../../src/app-state'
+import { desktop } from '../../src/desktop'
 import { needsYou } from '../../src/lib/state'
 import { space, useColors } from '../../src/theme'
 
@@ -19,6 +20,8 @@ export default function TabsLayout() {
   const c = useColors()
   const { machines } = useHub()
   const waiting = useMemo(() => needsYou(machines).length, [machines])
+  // The desktop app shows the count in the tray and on the dock.
+  useEffect(() => desktop?.setNeedsYou(waiting), [waiting])
   const canQueue = machines.some(m => m.role !== 'viewer' && m.status !== 'refused')
   return (
     <Tabs

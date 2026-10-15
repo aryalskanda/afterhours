@@ -1,6 +1,6 @@
 # The Afterhours app
 
-The app for your Afterhours machines, on iPhone, Android and the web (the desktop app will wrap the web build). It replaces the Telegram bot. It talks to each machine end-to-end encrypted, through a relay that can't read anything ([how](../../docs/architecture.md)).
+The app for your Afterhours machines, on iPhone, Android and the web. The desktop app ([apps/desktop](../desktop/README.md)) wraps the web build for Mac, Windows and Linux. It replaces the Telegram bot. It talks to each machine end-to-end encrypted, through a relay that can't read anything ([how](../../docs/architecture.md)).
 
 - **Machines**: each machine you paired: online or not, the running task, the queue, what waits on you, and the 5-hour limit.
 - **Needs you**, with a badge: everything waiting on you, across machines, soonest settled first.

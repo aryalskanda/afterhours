@@ -82,6 +82,43 @@ function app(o: { name?: string; socket?: SocketFactory } = {}) {
   return { client, identity, id: peerId(identity.publicKey) }
 }
 
+/** Sockets that can go silent, like one the phone's OS froze while the app was away. */
+function freezable() {
+  const sockets: { frozen: boolean }[] = []
+  const socket: SocketFactory = url => {
+    const ws = new WebSocket(url)
+    const state = { frozen: false }
+    sockets.push(state)
+    const wrapper: SocketLike = {
+      get binaryType() {
+        return ws.binaryType
+      },
+      set binaryType(v: string) {
+        ws.binaryType = v as typeof ws.binaryType
+      },
+      get readyState() {
+        return ws.readyState
+      },
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+      onerror: null,
+      send: data => {
+        if (!state.frozen) ws.send(data)
+      },
+      close: (code, reason) => ws.close(code, reason),
+    }
+    ws.onopen = ev => wrapper.onopen?.(ev)
+    ws.onmessage = ev => {
+      if (!state.frozen) wrapper.onmessage?.(ev)
+    }
+    ws.onclose = ev => wrapper.onclose?.(ev)
+    ws.onerror = ev => wrapper.onerror?.(ev)
+    return wrapper
+  }
+  return { socket, sockets }
+}
+
 async function paired() {
   const m = machine()
   await until(() => m.host.connected)
@@ -250,39 +287,7 @@ describe('sessions', () => {
   })
 
   test('waking up replaces a connection that died without a sign, and requests carry on', async () => {
-    // Sockets that can go silent, like one the phone's OS froze while the app was away.
-    const sockets: { frozen: boolean }[] = []
-    const socket: SocketFactory = url => {
-      const ws = new WebSocket(url)
-      const state = { frozen: false }
-      sockets.push(state)
-      const wrapper: SocketLike = {
-        get binaryType() {
-          return ws.binaryType
-        },
-        set binaryType(v: string) {
-          ws.binaryType = v as typeof ws.binaryType
-        },
-        get readyState() {
-          return ws.readyState
-        },
-        onopen: null,
-        onmessage: null,
-        onclose: null,
-        onerror: null,
-        send: data => {
-          if (!state.frozen) ws.send(data)
-        },
-        close: (code, reason) => ws.close(code, reason),
-      }
-      ws.onopen = ev => wrapper.onopen?.(ev)
-      ws.onmessage = ev => {
-        if (!state.frozen) wrapper.onmessage?.(ev)
-      }
-      ws.onclose = ev => wrapper.onclose?.(ev)
-      ws.onerror = ev => wrapper.onerror?.(ev)
-      return wrapper
-    }
+    const { socket, sockets } = freezable()
     const m = machine()
     await until(() => m.host.connected)
     const a = app({ socket })
@@ -299,6 +304,43 @@ describe('sessions', () => {
     expect(sockets.length).toBe(before + 1)
     expect(statuses[0]).not.toBe('connected')
     expect(conn.status).toBe('connected')
+  })
+
+  test('a heartbeat that comes late is not silence; a ping nobody answers is', async () => {
+    const { socket, sockets } = freezable()
+    let offset = 0
+    let disconnects = 0
+    const client = new RelayClient({
+      url: relay!.url,
+      identity: newIdentity(),
+      kind: 'device',
+      onFrame: () => {},
+      onDisconnect: () => disconnects++,
+      socket,
+      now: () => Date.now() + offset,
+      // The real intervals. The test takes well under a ping interval, so beats happen by hand.
+      timing: { pingMs: 20_000, pongTimeoutMs: 10_000 },
+    })
+    stoppers.push(() => client.stop())
+    client.start()
+    await until(() => client.ready)
+    const beat = () => (client as unknown as { heartbeat(): void }).heartbeat()
+    beat()
+    await Bun.sleep(100)
+    // The next beat a minute late, as in a hidden tab: its pong came, so this is no silence.
+    offset += 60_000
+    beat()
+    await Bun.sleep(100)
+    expect(disconnects).toBe(0)
+    expect(client.ready).toBe(true)
+    // The connection goes quiet: a ping, then no pong for longer than the timeout.
+    sockets.at(-1)!.frozen = true
+    beat()
+    offset += 11_000
+    beat()
+    expect(disconnects).toBe(1)
+    await until(() => client.ready)
+    expect(sockets.length).toBe(2)
   })
 
   test('a machine restart is survived', async () => {

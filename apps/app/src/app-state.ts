@@ -6,21 +6,25 @@ import Constants from 'expo-constants'
 import * as SecureStore from 'expo-secure-store'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Platform } from 'react-native'
+import { desktop, desktopPlatform } from './desktop'
 import { Hub, type HubState, type Storage } from './lib/hub'
 import type { MachineState } from './lib/state'
 
+const local = {
+  get: async (key: string) => globalThis.localStorage?.getItem(key) ?? null,
+  set: async (key: string, value: string) => globalThis.localStorage?.setItem(key, value),
+}
+
 /**
- * The key lives in the Keychain / Keystore, on this device only (never in a backup). The web has
- * no keychain: there it's in the browser's storage, which Settings says.
+ * The key lives in the Keychain / Keystore, on this device only (never in a backup); on the
+ * desktop, encrypted by the OS. A plain browser has no keychain: there it's in the site's storage,
+ * which Settings says.
  */
-const storage: Storage =
-  Platform.OS === 'web'
-    ? {
-        getSecret: async key => globalThis.localStorage?.getItem(key) ?? null,
-        setSecret: async (key, value) => globalThis.localStorage?.setItem(key, value),
-        get: async key => globalThis.localStorage?.getItem(key) ?? null,
-        set: async (key, value) => globalThis.localStorage?.setItem(key, value),
-      }
+const bridge = desktop
+const storage: Storage = bridge
+  ? { getSecret: key => bridge.secrets.get(key), setSecret: (key, value) => bridge.secrets.set(key, value), get: local.get, set: local.set }
+  : Platform.OS === 'web'
+    ? { getSecret: local.get, setSecret: local.set, get: local.get, set: local.set }
     : {
         getSecret: key => SecureStore.getItemAsync(key),
         setSecret: (key, value) => SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
@@ -29,6 +33,7 @@ const storage: Storage =
       }
 
 function defaultName(): string {
+  if (desktop?.info.deviceName) return desktop.info.deviceName
   const named = Constants.deviceName?.trim()
   if (named) return named
   return Platform.OS === 'ios' ? 'iPhone' : Platform.OS === 'android' ? 'Android phone' : 'Web browser'
@@ -39,7 +44,7 @@ export const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0'
 export const hub = new Hub({
   storage,
   defaultName: defaultName(),
-  platform: Platform.OS,
+  platform: desktopPlatform ?? Platform.OS,
   app: `afterhours-app/${APP_VERSION}`,
 })
 

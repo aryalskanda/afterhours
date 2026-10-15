@@ -37,6 +37,8 @@ export interface Prefs {
   lockApp: boolean
   /** Ask for it before allowing a permission request. */
   confirmAllow: boolean
+  /** In a browser: system notifications while the tab is in the background. */
+  browserNotifications: boolean
 }
 
 /** What a new task on a machine starts with: what you used last time there. */
@@ -98,7 +100,7 @@ export class Hub {
     deviceName: '',
     fingerprint: '',
     machines: [],
-    prefs: { lockApp: false, confirmAllow: false },
+    prefs: { lockApp: false, confirmAllow: false, browserNotifications: false },
     attention: null,
   }
 

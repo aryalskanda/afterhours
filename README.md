@@ -139,9 +139,9 @@ Your phone sees every chat: **💬 Chats** lists them all, and the same conversa
 
 ## Remote access with the Afterhours apps (preview)
 
-The Telegram bot is being replaced by the Afterhours app, for iPhone, Android and the web (Mac, Windows and Linux next). It talks to your machines end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports, whether it's the Mac at home or a server in the cloud. The design and the plan are in [docs/architecture.md](docs/architecture.md).
+The Telegram bot is being replaced by the Afterhours app, for iPhone, Android, the web, and the Mac, Windows and Linux desktop. It talks to your machines end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports, whether it's the Mac at home or a server in the cloud. The design and the plan are in [docs/architecture.md](docs/architecture.md).
 
-The app is in [apps/app](apps/app/README.md). Until it's in the stores, run it with Expo Go on your phone, or in a browser:
+The app is in [apps/app](apps/app/README.md), and the desktop app in [apps/desktop](apps/desktop/README.md). Until they're in the stores, run the app with Expo Go on your phone or in a browser, or build the desktop app:
 
 ```sh
 # 1. A relay, anywhere both sides can reach (put TLS in front for wss://):
@@ -152,6 +152,7 @@ cq pair --relay wss://relay.example.com
 
 # 3. The app: scan the code, or paste the link
 cd apps/app && npm install && npx expo start      # Expo Go on your phone; or: npm run web
+cd apps/desktop && npm install && npm start        # the desktop app; npm run dist:mac (dist:win, dist:linux) for installers
 ```
 
 A command-line app does the same from any computer: `bun scripts/remote-client.ts pair '<the link>'`, then `status`, `queue` and `watch`.

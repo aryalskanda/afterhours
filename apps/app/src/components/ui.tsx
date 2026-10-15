@@ -144,10 +144,10 @@ export function Label(props: { children: ReactNode; style?: StyleProp<TextStyle>
   )
 }
 
-export function Soft(props: { children: ReactNode; style?: StyleProp<TextStyle>; numberOfLines?: number }) {
+export function Soft(props: { children: ReactNode; style?: StyleProp<TextStyle>; numberOfLines?: number; testID?: string }) {
   const c = useColors()
   return (
-    <Text numberOfLines={props.numberOfLines} style={[T.small, { color: c.soft }, props.style]}>
+    <Text numberOfLines={props.numberOfLines} style={[T.small, { color: c.soft }, props.style]} testID={props.testID}>
       {props.children}
     </Text>
   )
@@ -232,7 +232,7 @@ export function Choice<T extends string>(props: { options: { value: T; label: st
   )
 }
 
-export function Toggle(props: { label: string; hint?: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+export function Toggle(props: { label: string; hint?: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean; testID?: string }) {
   const c = useColors()
   return (
     <Row style={{ justifyContent: 'space-between', opacity: props.disabled ? 0.5 : 1 }}>
@@ -240,7 +240,7 @@ export function Toggle(props: { label: string; hint?: string; value: boolean; on
         <Label>{props.label}</Label>
         {props.hint ? <Soft>{props.hint}</Soft> : null}
       </View>
-      <Switch value={props.value} onValueChange={props.onChange} disabled={props.disabled} trackColor={{ true: c.accent, false: c.line }} />
+      <Switch value={props.value} onValueChange={props.onChange} disabled={props.disabled} trackColor={{ true: c.accent, false: c.line }} testID={props.testID} />
     </Row>
   )
 }
