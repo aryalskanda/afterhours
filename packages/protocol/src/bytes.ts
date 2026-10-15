@@ -1,7 +1,14 @@
 // Byte helpers that behave the same in Bun, browsers, Electron and React Native (Hermes).
 
 const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null
-const decoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null
+const decoder = (() => {
+  // Some JavaScript engines (older Hermes) lack TextDecoder or its options: then the fallback below.
+  try {
+    return typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null
+  } catch {
+    return null
+  }
+})()
 
 export function utf8(text: string): Uint8Array {
   if (encoder) return encoder.encode(text)

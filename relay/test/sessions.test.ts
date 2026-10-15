@@ -76,7 +76,7 @@ function app(o: { name?: string; socket?: SocketFactory } = {}) {
     identity,
     device: { name: o.name ?? 'Test phone', platform: 'test', app: 'afterhours-test/0' },
     socket: o.socket,
-    timing: { retryMs: 50, maxRetryMs: 200, handshakeMs: 2000 },
+    timing: { retryMs: 50, maxRetryMs: 200, handshakeMs: 2000, checkMs: 300 },
   })
   stoppers.push(() => client.close())
   return { client, identity, id: peerId(identity.publicKey) }
@@ -234,6 +234,71 @@ describe('sessions', () => {
     expect(statuses).toContain('connecting')
     // Each request ran once on the machine: the retry reused the request id.
     expect(m.requests.filter(r => r.type === 'command' && r.text === 'after tampering').length).toBeGreaterThanOrEqual(1)
+  })
+
+  test('waking up leaves a healthy connection alone', async () => {
+    const { a, result } = await paired()
+    const conn = a.client.connect({ id: result.machine.id, name: result.machine.name, relay: result.machine.relay })
+    await until(() => conn.status === 'connected')
+    const statuses: string[] = []
+    conn.on('status', s => statuses.push(s))
+    a.client.wake()
+    await Bun.sleep(500)
+    const reply = await conn.request({ type: 'command', text: 'after waking' }, { timeoutMs: 5000 })
+    expect(reply.text).toBe('echo: after waking')
+    expect(statuses).toEqual([])
+  })
+
+  test('waking up replaces a connection that died without a sign, and requests carry on', async () => {
+    // Sockets that can go silent, like one the phone's OS froze while the app was away.
+    const sockets: { frozen: boolean }[] = []
+    const socket: SocketFactory = url => {
+      const ws = new WebSocket(url)
+      const state = { frozen: false }
+      sockets.push(state)
+      const wrapper: SocketLike = {
+        get binaryType() {
+          return ws.binaryType
+        },
+        set binaryType(v: string) {
+          ws.binaryType = v as typeof ws.binaryType
+        },
+        get readyState() {
+          return ws.readyState
+        },
+        onopen: null,
+        onmessage: null,
+        onclose: null,
+        onerror: null,
+        send: data => {
+          if (!state.frozen) ws.send(data)
+        },
+        close: (code, reason) => ws.close(code, reason),
+      }
+      ws.onopen = ev => wrapper.onopen?.(ev)
+      ws.onmessage = ev => {
+        if (!state.frozen) wrapper.onmessage?.(ev)
+      }
+      ws.onclose = ev => wrapper.onclose?.(ev)
+      ws.onerror = ev => wrapper.onerror?.(ev)
+      return wrapper
+    }
+    const m = machine()
+    await until(() => m.host.connected)
+    const a = app({ socket })
+    const result = await a.client.pair(m.host.openOffer({ role: 'owner', autoApprove: true }).link)
+    const conn = a.client.connect({ id: result.machine.id, name: result.machine.name, relay: result.machine.relay })
+    await until(() => conn.status === 'connected')
+    const before = sockets.length
+    sockets.at(-1)!.frozen = true
+    const statuses: string[] = []
+    conn.on('status', s => statuses.push(s))
+    a.client.wake()
+    const reply = await conn.request({ type: 'command', text: 'after waking' }, { timeoutMs: 5000 })
+    expect(reply.text).toBe('echo: after waking')
+    expect(sockets.length).toBe(before + 1)
+    expect(statuses[0]).not.toBe('connected')
+    expect(conn.status).toBe('connected')
   })
 
   test('a machine restart is survived', async () => {

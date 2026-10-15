@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist-web/
+e2e/out/
+e2e/out-engine/
+# Made by `npx expo prebuild` / `expo run:*` (development builds); the app is configured in app.json.
+ios/
+android/
+expo-env.d.ts
+*.log

@@ -1,9 +1,10 @@
 // The daemon's jobs, chats and notices as the plain data apps receive (packages/protocol).
 
 import type { ApprovalInfo, ChatInfo, JobInfo, LimitsInfo, Notice as WireNotice } from '@afterhours/protocol'
+import type { Config } from '../../shared/config'
 import type { Approval, Job, LimitState } from '../../shared/types'
 import type { Chat } from '../chats'
-import type { Notice } from '../notify'
+import { permissionDetail, type Notice, type Question } from '../notify'
 import type { Conversation } from '../sessions'
 
 /** `brief`: prompts cut to 500 characters, for the lists sent on every change. */
@@ -51,8 +52,19 @@ export function chatInfo(c: Conversation & Partial<Pick<Chat, 'where' | 'busy' |
   }
 }
 
-export function approvalInfo(a: Approval): ApprovalInfo {
-  return { code: a.code, job: a.jobId, kind: a.kind, payload: a.payload, createdAt: a.createdAt }
+/** A pending request with what an app needs to show it, and when it's settled without you. */
+export function approvalInfo(a: Approval, o: { job: Job | null; timeouts: Config['timeouts'] }): ApprovalInfo {
+  const payload = (a.payload ?? {}) as { tool?: string; input?: unknown; questions?: Question[]; dir?: string }
+  const seconds = { permission: o.timeouts.approvalSec, question: o.timeouts.questionSec, review: o.timeouts.reviewSec, trust: o.timeouts.approvalSec }[a.kind]
+  const info: ApprovalInfo = { code: a.code, job: a.jobId, kind: a.kind, payload: a.payload, createdAt: a.createdAt, expiresAt: a.createdAt + seconds * 1000 }
+  if (a.kind === 'permission' && payload.tool) {
+    info.tool = payload.tool
+    info.detail = permissionDetail(payload.tool, payload.input)
+  }
+  if (a.kind === 'question') info.questions = payload.questions ?? []
+  if (a.kind === 'review') info.plan = o.job?.planText ?? null
+  if (a.kind === 'trust') info.folder = payload.dir ?? o.job?.projectDir
+  return info
 }
 
 export function limitsInfo(l: LimitState): LimitsInfo {

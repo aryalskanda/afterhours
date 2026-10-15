@@ -25,9 +25,11 @@ export interface RelayTiming {
   authTimeoutMs: number
   minBackoffMs: number
   maxBackoffMs: number
+  /** After waking up: how long the relay may take to answer a ping before the connection counts as dead. */
+  checkMs: number
 }
 
-const DEFAULT_TIMING: RelayTiming = { pingMs: 20_000, pongTimeoutMs: 10_000, authTimeoutMs: 15_000, minBackoffMs: 1_000, maxBackoffMs: 30_000 }
+const DEFAULT_TIMING: RelayTiming = { pingMs: 20_000, pongTimeoutMs: 10_000, authTimeoutMs: 15_000, minBackoffMs: 1_000, maxBackoffMs: 30_000, checkMs: 3_000 }
 
 export interface RelayClientOptions {
   url: string
@@ -54,6 +56,7 @@ export class RelayClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private authTimer: ReturnType<typeof setTimeout> | null = null
   private pingTimer: ReturnType<typeof setInterval> | null = null
+  private checkTimer: ReturnType<typeof setTimeout> | null = null
   private readonly presence = new Map<string, boolean>()
   private readonly timing: RelayTiming
   private readonly readyWaiters = new Set<() => void>()
@@ -81,6 +84,52 @@ export class RelayClient {
     this.ws = null
     this.isReady = false
     ws?.close(1000, 'bye')
+  }
+
+  /**
+   * For an app back from the background, where the connection may have died without a sign: a
+   * signed-in connection must answer a ping within `checkMs` or it's made again; one waiting out
+   * a pause before its next try tries now. A healthy connection is left alone.
+   */
+  check(): void {
+    if (this.stopped) return
+    const ws = this.ws
+    if (!ws) {
+      this.failures = 0
+      this.connect()
+      return
+    }
+    if (!this.isReady) return // signing in right now
+    const asked = Date.now()
+    try {
+      ws.send(JSON.stringify({ t: 'ping' }))
+    } catch {
+      this.reconnect()
+      return
+    }
+    if (this.checkTimer) clearTimeout(this.checkTimer)
+    this.checkTimer = setTimeout(() => {
+      this.checkTimer = null
+      if (this.ws === ws && this.lastPong < asked) {
+        this.log('relay: no reply after waking up; connecting again')
+        this.reconnect()
+      }
+    }, this.timing.checkMs)
+  }
+
+  /** Drops the connection and connects again at once. */
+  reconnect(): void {
+    if (this.stopped) return
+    const old = this.ws
+    const wasReady = this.isReady
+    this.ws = null // the old socket's close event is ignored from here on
+    this.isReady = false
+    this.clearTimers()
+    this.presence.clear()
+    old?.close()
+    if (wasReady) this.o.onDisconnect?.()
+    this.failures = 0
+    this.connect()
   }
 
   /** Resolves once signed in (immediately if already). */
@@ -238,7 +287,8 @@ export class RelayClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     if (this.authTimer) clearTimeout(this.authTimer)
     if (this.pingTimer) clearInterval(this.pingTimer)
-    this.reconnectTimer = this.authTimer = this.pingTimer = null
+    if (this.checkTimer) clearTimeout(this.checkTimer)
+    this.reconnectTimer = this.authTimer = this.pingTimer = this.checkTimer = null
   }
 
   private log(line: string): void {

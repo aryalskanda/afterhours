@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Afterhours",
+    "slug": "afterhours",
+    "scheme": "afterhours",
+    "version": "0.1.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#faf8f4",
+    "ios": {
+      "bundleIdentifier": "dev.afterhours.app",
+      "supportsTablet": true,
+      "config": { "usesNonExemptEncryption": false }
+    },
+    "android": {
+      "package": "dev.afterhours.app",
+      "adaptiveIcon": { "foregroundImage": "./assets/adaptive-icon.png", "backgroundColor": "#0e1320" },
+      "edgeToEdgeEnabled": true
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-secure-store",
+      "expo-font",
+      ["expo-camera", { "cameraPermission": "Afterhours uses the camera to scan the pairing code your computer shows.", "recordAudioAndroid": false }],
+      ["expo-local-authentication", { "faceIDPermission": "Afterhours can ask for Face ID before it allows a task to do something." }],
+      ["expo-splash-screen", { "image": "./assets/splash-icon.png", "imageWidth": 160, "backgroundColor": "#faf8f4", "dark": { "backgroundColor": "#0e1320" } }]
+    ],
+    "experiments": { "typedRoutes": true }
+  }
+}

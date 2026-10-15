@@ -23,6 +23,7 @@ const NEEDS: Record<RequestType, Role> = {
   sync: 'viewer',
   snapshot: 'viewer',
   jobs: 'viewer',
+  task: 'viewer',
   peek: 'viewer',
   chats: 'viewer',
   folders: 'viewer',
@@ -139,8 +140,12 @@ export class Router {
     const device = this.d.db.device(session.device)
     const name = device?.name ?? session.hello.name
     let outcome: Outcome
-    if (RANK[session.role] < RANK[NEEDS[request.type]]) {
-      outcome = { ok: false, code: 'forbidden', error: `This device is ${session.role === 'operator' ? 'an' : 'a'} ${session.role} here; that needs ${NEEDS[request.type]}.` }
+    // Any device may rename or remove itself (renamed in the app, or forgetting this machine);
+    // doing that to other devices takes an owner.
+    const itself = (request.type === 'devices.remove' || request.type === 'devices.rename') && request.device === session.device
+    const needs = itself ? 'viewer' : NEEDS[request.type]
+    if (RANK[session.role] < RANK[needs]) {
+      outcome = { ok: false, code: 'forbidden', error: `This device is ${session.role === 'operator' ? 'an' : 'a'} ${session.role} here; that needs ${needs}.` }
     } else {
       try {
         outcome = await this.run(session, request, name)
@@ -158,6 +163,7 @@ export class Router {
   }
 
   snapshot(role: Role): Snapshot {
+    const config = this.d.config()
     const active = this.d.store.active()
     return {
       type: 'snapshot',
@@ -168,9 +174,18 @@ export class Router {
       active: active ? jobInfo(active) : null,
       queued: this.d.store.queued().map(j => jobInfo(j, { brief: true })),
       recent: this.d.store.recentFinished(10).map(j => jobInfo(j, { brief: true })),
-      approvals: this.d.store.pendingApprovals().map(approvalInfo),
+      approvals: this.d.store.pendingApprovals().map(a => approvalInfo(a, { job: this.d.store.getJob(a.jobId), timeouts: config.timeouts })),
       limits: limitsInfo(this.d.runner.limits()),
-      policy: policyInfo(this.d.config()),
+      policy: policyInfo(config),
+      defaults: {
+        plan: config.defaults.plan,
+        review: config.defaults.review,
+        mode: config.defaults.execMode,
+        model: config.defaults.model,
+        effort: config.defaults.effort,
+        isolate: config.isolate,
+      },
+      models: [...new Set([...config.models, config.defaults.model])],
     }
   }
 
@@ -210,6 +225,11 @@ export class Router {
             recent: store.recentFinished(r.recent ?? 20).map(j => jobInfo(j)),
           },
         }
+      }
+      case 'task': {
+        const job = store.getJob(r.job)
+        if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+        return { ok: true, data: { job: jobInfo(job), plan: job.planText, answer: job.lastMessage } }
       }
       case 'queue':
         return this.queue(r, config)
@@ -269,12 +289,24 @@ export class Router {
       case 'chat.write':
         return this.writeToChat(r.session, r.text, name, config)
       case 'folders': {
+        // Nothing typed yet: the folders tasks ran in lately.
+        if (!r.query.trim()) {
+          const recent = store.recentFolders(12).filter(p => isDir(p) && isAllowed(p, roots))
+          return { ok: true, data: recent.map(path => ({ path, name: path.split('/').pop() || path, isRepo: isDir(`${path}/.git`) })) }
+        }
         const hits = await this.d.folders.search(r.query, store.recentFolders(8), 30)
         return { ok: true, data: hits.filter(h => isAllowed(h.path, roots)).slice(0, 20) }
       }
       case 'devices':
         return { ok: true, data: this.d.db.devices().map(publicDevice) }
       case 'devices.remove': {
+        if (r.device === session.device) {
+          // A device removing itself hears the answer before its session is cut.
+          const device = this.d.db.device(r.device)
+          if (!device || device.revokedAt !== null) return { ok: false, code: 'not-found', error: 'No such device.' }
+          setTimeout(() => this.d.removeDevice(r.device, name), 200)
+          return { ok: true, text: 'Removed.' }
+        }
         const ok = this.d.removeDevice(r.device, name)
         return ok ? { ok, text: 'Removed.' } : { ok, code: 'not-found', error: 'No such device.' }
       }

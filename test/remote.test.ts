@@ -276,6 +276,58 @@ describe('remote access', () => {
     expect(resolved).toMatchObject({ code: 'ab12', status: 'allowed', by: 'Phone' })
   })
 
+  test('the snapshot has what an app needs to show requests and start tasks', async () => {
+    const m = machine()
+    const app = await pairedApp(m)
+    const job = m.runner.enqueue({ projectDir: m.project, prompt: 'x', plan: true, review: true, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    m.store.updateJob(job.id, { planText: '1. Do it' })
+    const now = Date.now()
+    m.store.addApproval('perma', job.id, 'permission', { tool: 'Bash', input: { command: 'npm test', description: 'Run the tests' } }, now)
+    m.store.addApproval('quest', job.id, 'question', { questions: [{ question: 'Which?', options: [{ label: 'A' }] }] }, now)
+    m.store.addApproval('revie', job.id, 'review', {}, now)
+    m.store.addApproval('trust', job.id, 'trust', { dir: m.project }, now)
+    const r = await app.conn.request({ type: 'snapshot' })
+    const snap = r.data as Snapshot
+    const by = Object.fromEntries(snap.approvals.map(a => [a.code, a]))
+    expect(by.perma).toMatchObject({ kind: 'permission', tool: 'Bash' })
+    expect(by.perma!.detail).toContain('npm test')
+    expect(by.perma!.expiresAt).toBe(now + m.config().timeouts.approvalSec * 1000)
+    expect(by.quest!.questions![0]!.question).toBe('Which?')
+    expect(by.revie!.plan).toBe('1. Do it')
+    expect(by.trust!.folder).toBe(m.project)
+    expect(snap.defaults).toMatchObject({ model: 'haiku', mode: 'auto' })
+    expect(snap.models).toContain('haiku')
+  })
+
+  test("a task in full, and the folders tasks ran in lately (only allowed ones)", async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const inside = m.runner.enqueue({ projectDir: m.project, prompt: 'x', plan: true, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    m.runner.enqueue({ projectDir: m.outside, prompt: 'y', plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    m.store.updateJob(inside.id, { planText: '## Plan', lastMessage: 'Done: **all good**' })
+    const task = await conn.request({ type: 'task', job: inside.id })
+    expect(task.data).toMatchObject({ plan: '## Plan', answer: 'Done: **all good**', job: { id: inside.id } })
+    expect(await conn.request({ type: 'task', job: 999 })).toMatchObject({ ok: false, code: 'not-found' })
+    const folders = await conn.request({ type: 'folders', query: '' })
+    expect((folders.data as { path: string }[]).map(f => f.path)).toEqual([m.project])
+  })
+
+  test('any device may rename or remove itself, but only an owner may do that to others', async () => {
+    const m = machine()
+    const owner = await pairedApp(m, { name: 'Laptop' })
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'Tablet' })
+    const ownerId = m.remote.devices().find(d => d.name === 'Laptop')!.id
+    const viewerId = m.remote.devices().find(d => d.name === 'Tablet')!.id
+    expect(await viewer.conn.request({ type: 'devices.rename', device: viewerId, name: 'Kitchen tablet' })).toMatchObject({ ok: true })
+    expect(m.remote.devices().find(d => d.id === viewerId)!.name).toBe('Kitchen tablet')
+    expect(await viewer.conn.request({ type: 'devices.rename', device: ownerId, name: 'Mine now' })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await viewer.conn.request({ type: 'devices.remove', device: ownerId })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await viewer.conn.request({ type: 'devices.remove', device: viewerId })).toMatchObject({ ok: true })
+    await until(() => viewer.conn.status === 'refused')
+    expect(m.remote.devices().map(d => d.id)).toEqual([ownerId])
+    expect(owner.conn.status).toBe('connected')
+  })
+
   test('a removed device is cut off at once', async () => {
     const m = machine()
     const app = await pairedApp(m)

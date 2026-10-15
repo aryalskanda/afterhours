@@ -43,7 +43,7 @@ bot  ✅ #14 done in 48m · 6 files changed, 212 insertions(+)
 - macOS 13 or newer, or Linux on x64 or arm64 (Ubuntu 22.04+, Debian 12+, Fedora, Amazon Linux 2023…). Windows 11 through WSL2.
 - Claude Code, signed in with a Claude Pro or Max plan or an API key. Developed against Claude Code 2.1.296–2.1.300.
 - tmux, git and curl (`cq setup` offers to install tmux with Homebrew on a Mac).
-- Telegram on your phone, or the Afterhours app once it ships (see [remote access](#remote-access-with-the-afterhours-apps-preview)).
+- Telegram on your phone, or the Afterhours app (a preview for now: see [remote access](#remote-access-with-the-afterhours-apps-preview)).
 
 On Linux, a server, WSL2 or Docker, see **[docs/linux.md](docs/linux.md)**. It covers the install script, the systemd service, signing Claude Code in without a browser, and an EC2 cloud-init example.
 
@@ -139,9 +139,9 @@ Your phone sees every chat: **💬 Chats** lists them all, and the same conversa
 
 ## Remote access with the Afterhours apps (preview)
 
-The Telegram bot is being replaced by Afterhours apps for iPhone, Android, Mac, Windows and Linux. They talk to your machine end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports. That is also what will let a server in the cloud work like the Mac at home: running the engine on Linux is the next step. The design and the plan are in [docs/architecture.md](docs/architecture.md).
+The Telegram bot is being replaced by the Afterhours app, for iPhone, Android and the web (Mac, Windows and Linux next). It talks to your machines end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports, whether it's the Mac at home or a server in the cloud. The design and the plan are in [docs/architecture.md](docs/architecture.md).
 
-The engine side works now; until the apps ship, a command-line app stands in for them:
+The app is in [apps/app](apps/app/README.md). Until it's in the stores, run it with Expo Go on your phone, or in a browser:
 
 ```sh
 # 1. A relay, anywhere both sides can reach (put TLS in front for wss://):
@@ -150,11 +150,11 @@ docker build -f relay/Dockerfile -t afterhours-relay . && docker run -d -p 8787:
 # 2. On the machine: pair (shows a QR code and a link, valid once for 10 minutes)
 cq pair --relay wss://relay.example.com
 
-# 3. On another computer: pair with the link, then drive the machine
-bun scripts/remote-client.ts pair '<the link>'
-bun scripts/remote-client.ts queue <machine> ~/code/shop "Add a dark mode toggle"
-bun scripts/remote-client.ts watch
+# 3. The app: scan the code, or paste the link
+cd apps/app && npm install && npx expo start      # Expo Go on your phone; or: npm run web
 ```
+
+A command-line app does the same from any computer: `bun scripts/remote-client.ts pair '<the link>'`, then `status`, `queue` and `watch`.
 
 The machine decides what apps may do, and no app can change it:
 

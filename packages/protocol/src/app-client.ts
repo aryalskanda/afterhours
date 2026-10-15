@@ -152,6 +152,15 @@ export class AppClient {
     })
   }
 
+  /**
+   * The app came back to the foreground: relay connections that died meanwhile are made again (a
+   * ping tells), and machines waiting out a pause before their next try try now.
+   */
+  wake(): void {
+    for (const relay of this.relays.values()) relay.check()
+    for (const m of this.machines.values()) m.wake()
+  }
+
   close(): void {
     for (const m of this.machines.values()) m.close()
     this.machines.clear()
@@ -311,6 +320,15 @@ export class MachineConnection {
       this.client.o.log?.(`${this.record.name}: session broke (${err instanceof Error ? err.message : err}); starting a new one`)
       this.lost('decrypt')
     }
+  }
+
+  /** @internal The app is back in the foreground: don't wait out the pause before the next try. */
+  wake(): void {
+    if (this.closed || this.status === 'refused' || this.status === 'connected') return
+    if (this.session && !this.session.established) return // a handshake is under way
+    this.failures = 0
+    // Without the relay, its sign-in starts the handshake.
+    if (this.relay.ready) this.handshake()
   }
 
   /** @internal The relay says the machine came or went. */

@@ -1,0 +1,7 @@
+{
+  // The end-to-end scripts run in Bun and drive a browser: Bun's types, plus the DOM's for the
+  // code that runs in the page.
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "lib": ["ESNext", "DOM", "DOM.Iterable"] },
+  "include": ["."]
+}

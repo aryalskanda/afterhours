@@ -13,7 +13,9 @@ export const Role = z.enum(['owner', 'operator', 'viewer'])
 export type Role = z.infer<typeof Role>
 
 export const ExecMode = z.enum(['auto', 'acceptEdits', 'bypassPermissions', 'plan'])
+export type ExecMode = z.infer<typeof ExecMode>
 export const Effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
+export type Effort = z.infer<typeof Effort>
 
 export const MachineInfo = z.object({
   id: PeerId,
@@ -127,6 +129,17 @@ export const ApprovalInfo = z.object({
   kind: z.enum(['permission', 'question', 'review', 'trust']),
   payload: z.unknown(),
   createdAt: z.number(),
+  /** When it's settled for you if nobody answers (denied, or Claude decides itself). */
+  expiresAt: z.number().optional(),
+  /** Permissions: the tool and what it wants to do, in words. */
+  tool: z.string().optional(),
+  detail: z.string().optional(),
+  /** Questions: all of them, with their options. */
+  questions: z.array(Question).optional(),
+  /** Plan reviews: the plan. */
+  plan: z.string().nullable().optional(),
+  /** Folder trust: the folder. */
+  folder: z.string().optional(),
 })
 export type ApprovalInfo = z.infer<typeof ApprovalInfo>
 
@@ -220,6 +233,8 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('control'), action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover']), job: z.number().int().optional() }),
   withId({ type: z.literal('job'), action: z.enum(['remove', 'top']), job: z.number().int() }),
   withId({ type: z.literal('jobs'), recent: z.number().int().min(0).max(100).optional() }),
+  /** One task in full: its plan and Claude's final answer. */
+  withId({ type: z.literal('task'), job: z.number().int() }),
   withId({ type: z.literal('peek'), lines: z.number().int().min(5).max(200).optional(), job: z.number().int().optional() }),
   withId({ type: z.literal('say'), text: z.string().min(1).max(20_000), job: z.number().int().optional() }),
   withId({ type: z.literal('keys'), keys: z.array(z.string().min(1).max(20)).min(1).max(20), job: z.number().int().optional() }),
@@ -271,6 +286,18 @@ export const State = z.object({
 })
 export type State = z.infer<typeof State>
 
+/** What a new task starts with on this machine, unless the app picks otherwise. */
+export const Defaults = z.object({
+  plan: z.boolean(),
+  review: z.boolean(),
+  mode: ExecMode,
+  model: z.string(),
+  effort: Effort,
+  /** New conversations on their own git branch. */
+  isolate: z.boolean(),
+})
+export type Defaults = z.infer<typeof Defaults>
+
 export const Snapshot = z.object({
   type: z.literal('snapshot'),
   seq: z.number().int(),
@@ -283,8 +310,19 @@ export const Snapshot = z.object({
   approvals: z.array(ApprovalInfo),
   limits: LimitsInfo,
   policy: PolicyInfo,
+  defaults: Defaults.optional(),
+  /** Models offered for new tasks. */
+  models: z.array(z.string()).optional(),
 })
 export type Snapshot = z.infer<typeof Snapshot>
+
+/** The answer to a `task` request. */
+export const TaskDetail = z.object({
+  job: JobInfo,
+  plan: z.string().nullable(),
+  answer: z.string().nullable(),
+})
+export type TaskDetail = z.infer<typeof TaskDetail>
 
 /** Pairing only: the machine's decision. */
 export const PairResult = z.object({
