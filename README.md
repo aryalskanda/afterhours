@@ -1,8 +1,8 @@
 # Afterhours
 
-**Line up Claude Code tasks from your phone. They run one after another on your Mac while you're away, wait out usage limits, and message you only when they need you.**
+**Line up Claude Code tasks from your phone. They run one after another on your computer while you're away, wait out usage limits, and message you only when they need you.**
 
-Afterhours is a free, open-source task queue for [Claude Code](https://claude.com/claude-code) on macOS. You send a prompt to your own Telegram bot and tap buttons to choose the folder, mode, model and effort. Afterhours then runs the real Claude Code CLI on your Mac. It:
+Afterhours is a free, open-source task queue for [Claude Code](https://claude.com/claude-code) on macOS and Linux (Windows through WSL2), from a laptop to a server in the cloud. You send a prompt to your own Telegram bot and tap buttons to choose the folder, mode, model and effort. Afterhours then runs the real Claude Code CLI on that machine. It:
 
 - approves plans;
 - sends permission requests and questions to your phone;
@@ -40,14 +40,16 @@ bot  ✅ #14 done in 48m · 6 files changed, 212 insertions(+)
 
 ## Requirements
 
-- A Mac with macOS 13 or newer.
-- Claude Code, signed in with a Claude Pro or Max plan or an API key. Developed against Claude Code 2.1.296–2.1.299.
-- tmux (`cq setup` offers to install it with Homebrew).
-- Telegram on your phone.
+- macOS 13 or newer, or Linux on x64 or arm64 (Ubuntu 22.04+, Debian 12+, Fedora, Amazon Linux 2023…). Windows 11 through WSL2.
+- Claude Code, signed in with a Claude Pro or Max plan or an API key. Developed against Claude Code 2.1.296–2.1.300.
+- tmux, git and curl (`cq setup` offers to install tmux with Homebrew on a Mac).
+- Telegram on your phone, or the Afterhours app once it ships (see [remote access](#remote-access-with-the-afterhours-apps-preview)).
+
+On Linux, a server, WSL2 or Docker, see **[docs/linux.md](docs/linux.md)**. It covers the install script, the systemd service, signing Claude Code in without a browser, and an EC2 cloud-init example.
 
 ## Install
 
-With Homebrew:
+On Linux: `curl -fsSL https://github.com/<owner>/afterhours/releases/latest/download/install.sh | sh`, then see [docs/linux.md](docs/linux.md). On a Mac, with Homebrew:
 
 ```sh
 brew install <owner>/tap/afterhours

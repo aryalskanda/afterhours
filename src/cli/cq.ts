@@ -9,10 +9,11 @@ import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
 import { setup } from './setup'
+import { installHint } from '../platform/os'
 import { telegramCommand } from './telegram'
 import { daemonUrl, restartAgent } from './util'
 
-const CLI_HELP = `${BRAND.name} ${VERSION}: queue Claude Code tasks from your phone; they run on this Mac while you're away.
+const CLI_HELP = `${BRAND.name} ${VERSION}: queue Claude Code tasks from your phone; they run on this computer while you're away.
 
 Getting started:
   cq setup             guided setup: folders, defaults, background service, permissions, Telegram
@@ -24,10 +25,10 @@ Setup and service:
   cq devices           the devices paired with this machine; cq devices remove <name> cuts one off
   cq remote            remote access settings: relay, name, allowed folders, what apps may do
   cq audit             what apps did on this machine
-  cq install           (re)install and start it at login
-  cq restart           restart it (after granting Full Disk Access)
+  cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux)
+  cq restart           restart it (on macOS, after granting Full Disk Access)
   cq update            update to the latest release
-  cq uninstall         stop it and remove it from login items (keeps ${CQ_HOME.replace(process.env.HOME ?? '', '~')})
+  cq uninstall         stop it and stop it starting by itself (keeps ${CQ_HOME.replace(process.env.HOME ?? '', '~')})
   cq doctor            check that everything is in place
   cq report            write a support file (no prompts or code)
   cq attach            watch the running job live (read-only; detach with Ctrl-b d)
@@ -83,7 +84,7 @@ async function launch(id: number): Promise<void> {
 function attach(): void {
   const tmux = findExecutable('tmux', loadConfig().tmuxPath)
   if (!tmux) {
-    console.error('tmux not found. Install it with: brew install tmux')
+    console.error(`tmux not found. Install it with: ${installHint('tmux')}`)
     process.exit(1)
   }
   const env = { ...process.env }
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
     case 'install': {
       const result = await install()
       if (result) console.log(nextSteps(result))
+      if (result && !result.started) process.exitCode = 1
       return
     }
     case 'uninstall':

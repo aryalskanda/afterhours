@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { BRAND } from '../shared/brand'
 import { detectCodeFolders, expandHome, findExecutable, loadConfig, saveConfig, type Config } from '../shared/config'
 import type { Effort, ExecMode } from '../shared/types'
+import { installHint, isMac } from '../platform/os'
 import { claudeStatus, doctor } from './doctor'
 import { install, migrateIfNeeded, type InstallResult } from './install'
 import { telegramCommand, TOKEN_RE } from './telegram'
@@ -126,7 +127,7 @@ function askDefaults(config: Config): void {
 
 export async function setup(): Promise<void> {
   stepNo = 0
-  console.log(`${BRAND.name} setup: queue Claude Code tasks from your phone; they run on this Mac while you're away.`)
+  console.log(`${BRAND.name} setup: queue Claude Code tasks from your phone; they run on this ${isMac ? 'Mac' : 'computer'} while you're away.`)
   if (!migrateIfNeeded()) return
 
   step('Claude Code')
@@ -143,9 +144,9 @@ export async function setup(): Promise<void> {
 
   step('tmux (runs Claude in the background)')
   if (!findExecutable('tmux')) {
-    const brew = findExecutable('brew')
+    const brew = isMac ? findExecutable('brew') : null
     if (!brew || !confirmYes('  tmux is missing. Install it with Homebrew now?')) {
-      console.log('  ✖ Install tmux (brew install tmux), then run cq setup again.')
+      console.log(`  ✖ Install tmux (${installHint('tmux')}), then run cq setup again.`)
       return
     }
     if (Bun.spawnSync([brew, 'install', 'tmux'], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) return
@@ -175,8 +176,10 @@ export async function setup(): Promise<void> {
   const result = await install()
   if (!result) return
 
-  step('Full Disk Access')
-  await fullDiskAccess(result)
+  if (isMac) {
+    step('Full Disk Access')
+    await fullDiskAccess(result)
+  }
 
   step('Your phone')
   await telegramStep()

@@ -255,15 +255,21 @@ export function searchPath(): string {
  * Claude Code treats CLAUDECODE / CLAUDE_CODE_* as "you are nested inside another session".
  */
 export function cleanEnv(extra: Record<string, string> = {}): Record<string, string> {
-  const keep = ['HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SSH_AUTH_SOCK', '__CF_USER_TEXT_ENCODING']
+  const keep = [
+    ...['HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR', 'SSH_AUTH_SOCK', '__CF_USER_TEXT_ENCODING'],
+    // Set on purpose for a server or a container: Claude Code's sign-in without a browser
+    // (claude setup-token), and the way out to the internet.
+    ...['CLAUDE_CODE_OAUTH_TOKEN', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'],
+  ]
   const env: Record<string, string> = {}
   for (const key of keep) {
     const value = process.env[key]
     if (value) env[key] = value
   }
   env.HOME ??= homedir()
-  env.LANG ??= 'en_US.UTF-8'
-  env.SHELL ??= '/bin/zsh'
+  // C.UTF-8 exists on every current Linux; en_US.UTF-8 often isn't generated on servers.
+  env.LANG ??= process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
+  env.SHELL ??= ['/bin/zsh', '/bin/bash', '/bin/sh'].find(existsSync) ?? '/bin/sh'
   env.PATH = searchPath()
   env.TERM = 'xterm-256color'
   return { ...env, ...extra }

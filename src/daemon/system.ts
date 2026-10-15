@@ -1,4 +1,3 @@
-import type { Subprocess } from 'bun'
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { BRAND } from '../shared/brand'
@@ -78,20 +77,9 @@ export const git = {
     await run(['git', '-C', dir, 'add', '-A'])
     const unchanged = await run(['git', '-C', dir, 'diff', '--cached', '--quiet'])
     if (unchanged.code === 0) return false
-    return (await run(['git', '-C', dir, 'commit', '--no-verify', '-m', message])).code === 0
+    // A fresh server or container often has no git identity; then the commit is signed as Afterhours.
+    const named = (await run(['git', '-C', dir, 'config', 'user.email'])).out.trim() !== ''
+    const identity = named ? [] : ['-c', `user.name=${BRAND.name}`, '-c', `user.email=${BRAND.slug}@localhost`]
+    return (await run(['git', '-C', dir, ...identity, 'commit', '--no-verify', '-m', message])).code === 0
   },
-}
-
-/** Holds a `caffeinate -i` assertion (no idle sleep) while there's queued or running work. */
-export class KeepAwake {
-  private proc: Subprocess | null = null
-
-  set(on: boolean): void {
-    if (on && !this.proc) {
-      this.proc = Bun.spawn(['caffeinate', '-i', '-w', String(process.pid)], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
-    } else if (!on && this.proc) {
-      this.proc.kill()
-      this.proc = null
-    }
-  }
 }

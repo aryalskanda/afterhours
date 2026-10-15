@@ -6,8 +6,10 @@ import { VERSION } from '../daemon/main'
 import { isTrusted } from '../daemon/sessions'
 import { BRAND } from '../shared/brand'
 import { codeRoots, findExecutable, loadConfig, paths, readToken } from '../shared/config'
+import { installHint, isMac, osLabel } from '../platform/os'
+import { service } from '../platform/service'
 import { launcherPath } from './install'
-import { agentLoaded, daemonHealth, run } from './util'
+import { daemonHealth, run } from './util'
 
 export interface Check {
   level: 'ok' | 'bad' | 'info'
@@ -52,15 +54,19 @@ export async function checks(): Promise<Check[]> {
 
   const tmux = findExecutable('tmux', config.tmuxPath)
   if (tmux) ok(`tmux: ${run([tmux, '-V']).out}`)
-  else bad('tmux not found: brew install tmux')
+  else bad(`tmux not found: ${installHint('tmux')}`)
 
   const health = await daemonHealth()
   if (!health) {
     bad(`${BRAND.name} is not running (cq install, or cq daemon to run it in this terminal)`)
   } else {
     ok(`${BRAND.name} ${health.version} is running (pid ${health.pid}, ${health.home})`)
-    if (health.fullDiskAccess) ok('Full Disk Access: yes (Claude sessions can work in your folders unattended)')
-    else bad(`Full Disk Access: missing. Add ${existsSync(launcherPath) ? launcherPath : paths.binary} in System Settings → Privacy & Security → Full Disk Access, then cq restart`)
+    if (isMac && health.fullDiskAccess) ok('Full Disk Access: yes (Claude sessions can work in your folders unattended)')
+    else if (isMac) bad(`Full Disk Access: missing. Add ${existsSync(launcherPath) ? launcherPath : paths.binary} in System Settings → Privacy & Security → Full Disk Access, then cq restart`)
+    const r = health.remote
+    if (r?.enabled && r.connected) ok(`Remote access: connected to ${r.relay} · ${r.devices} device(s) paired`)
+    else if (r?.enabled) bad(`Remote access: not connected to ${r.relay}${r.error ? ` (${r.error})` : ''}`)
+    else info('Remote access: off (cq pair sets it up)')
     const tg = health.telegram
     if ('bot' in tg && tg.ok && tg.paired) ok(`Telegram: ${tg.bot} · paired with ${tg.owner ?? 'you'}`)
     else if ('bot' in tg && tg.ok) bad(`Telegram: ${tg.bot} is running but not paired yet (cq telegram shows the code)`)
@@ -71,8 +77,11 @@ export async function checks(): Promise<Check[]> {
     else if (config.imessage.enabled) bad(`iMessage: ${im.error}`)
   }
 
-  if (agentLoaded()) ok('Starts at login')
-  else info('Not set to start at login: run cq install')
+  const svc = service()
+  if (!svc.installed()) info(svc.kind === 'none' ? `Not started by itself: there's no service manager here, so run cq daemon (cq install says how)` : 'Not set to start by itself: run cq install')
+  else if (svc.kind === 'launchd') ok('Starts at login')
+  else if (svc.lingers?.()) ok(`Runs in the background (${svc.name}): starts at boot, keeps running after you log out`)
+  else info(`Runs in the background (${svc.name}) while you're logged in. To keep it running after you log out: sudo loginctl enable-linger $USER`)
   if (!readToken()) bad(`no token at ${paths.token} (the daemon creates it)`)
 
   info(`Code folders: ${codeRoots(config).map(r => r.replace(homedir(), '~')).join(', ')}`)
@@ -119,7 +128,7 @@ export async function report(): Promise<void> {
   const config = loadConfig()
   const sections: string[] = []
   sections.push(`${BRAND.name} ${VERSION} report · ${new Date().toISOString()}`)
-  sections.push(`macOS ${run(['sw_vers', '-productVersion']).out} · ${process.arch}`)
+  sections.push(`${osLabel()} · ${process.arch}`)
   sections.push(`== Checks ==\n${formatChecks(await checks())}`)
 
   const safeConfig = {

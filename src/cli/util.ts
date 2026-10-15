@@ -1,6 +1,6 @@
-import { userInfo } from 'node:os'
 import type { Health } from '../daemon/main'
-import { LAUNCH_AGENT_LABEL, loadConfig, readToken, searchPath } from '../shared/config'
+import { loadConfig, readToken, searchPath } from '../shared/config'
+import { service } from '../platform/service'
 import type { TelegramStatus } from '../telegram/bot'
 
 export function run(argv: string[]): { ok: boolean; out: string } {
@@ -33,17 +33,14 @@ export async function daemonTelegram(): Promise<TelegramStatus | null> {
   }
 }
 
-export function launchDomain(): string {
-  return `gui/${userInfo().uid}`
-}
-
+/** Set up to run in the background (a LaunchAgent, a systemd user service). */
 export function agentLoaded(): boolean {
-  return run(['launchctl', 'print', `${launchDomain()}/${LAUNCH_AGENT_LABEL}`]).ok
+  return service().installed()
 }
 
 /** Restarts the installed daemon; false when it isn't installed. */
 export function restartAgent(): boolean {
-  return run(['launchctl', 'kickstart', '-k', `${launchDomain()}/${LAUNCH_AGENT_LABEL}`]).ok
+  return service().restart()
 }
 
 /** Asks a question on the terminal; empty input returns the default. */

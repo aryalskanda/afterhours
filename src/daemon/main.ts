@@ -1,4 +1,4 @@
-import { closeSync, openSync, realpathSync, statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import hookScript from '../../bin/cq-hook.sh' with { type: 'text' }
 import statusScript from '../../bin/cq-statusline.sh' with { type: 'text' }
@@ -31,7 +31,9 @@ import { Runner, type HookPayload } from './runner'
 import { deliverToInbox } from './inbox'
 import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { Store } from './store'
-import { git, KeepAwake } from './system'
+import { git } from './system'
+import { hasFullDiskAccess, KeepAwake, reopenInVsCode } from '../platform/desktop'
+import { isMac, osLabel } from '../platform/os'
 import { Tmux, TMUX_CONF } from './tmux'
 import { SessionWatcher } from './watch'
 
@@ -59,16 +61,6 @@ export interface Health {
   remote: RemoteStatus
   /** Whether this process may read Full-Disk-Access-protected files (and so ~/Documents without prompts). */
   fullDiskAccess: boolean
-}
-
-/** chat.db is readable only with Full Disk Access, and checking it never pops up a prompt. */
-function hasFullDiskAccess(): boolean {
-  try {
-    closeSync(openSync(join(homedir(), 'Library', 'Messages', 'chat.db'), 'r'))
-    return true
-  } catch {
-    return false
-  }
 }
 
 export async function runDaemon(): Promise<void> {
@@ -124,12 +116,8 @@ export async function runDaemon(): Promise<void> {
       }
     },
     log,
-    reopenInVsCode: sessionId => {
-      // Only into a VS Code that's running: never start it just for this.
-      if (Bun.spawnSync(['pgrep', '-f', 'Visual Studio Code.app/Contents/MacOS/']).exitCode !== 0) return
-      Bun.spawn(['open', '-g', `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`], { stdout: 'ignore', stderr: 'ignore' })
-      log(`opened chat ${sessionId} in VS Code again`)
-    },
+    // Only into a VS Code that's running on this desktop: never started just for this.
+    reopenInVsCode: sessionId => reopenInVsCode(sessionId, log),
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
@@ -219,7 +207,7 @@ export async function runDaemon(): Promise<void> {
 
   // Without Full Disk Access a task can stop on a macOS prompt nobody is there to click: say so, once a day.
   setTimeout(() => {
-    if (hasFullDiskAccess() || Date.now() - (store.kvGet<number>('warned.fullDiskAccess') ?? 0) < 24 * 3600_000) return
+    if (!isMac || hasFullDiskAccess() || Date.now() - (store.kvGet<number>('warned.fullDiskAccess') ?? 0) < 24 * 3600_000) return
     store.kvSet('warned.fullDiskAccess', Date.now())
     notifier.send({
       type: 'setup_warning',
@@ -400,7 +388,7 @@ export async function runDaemon(): Promise<void> {
   process.on('SIGTERM', () => shutdown())
   process.on('SIGINT', () => shutdown())
 
-  log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · claude ${claudePath} · tmux -L ${TMUX_SOCKET} · state ${CQ_HOME}`)
+  log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · ${osLabel()} · claude ${claudePath} · tmux -L ${TMUX_SOCKET} · state ${CQ_HOME}`)
 }
 
 function mtime(path: string): number {

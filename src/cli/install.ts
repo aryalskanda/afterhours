@@ -4,21 +4,13 @@ import { dirname, join, resolve } from 'node:path'
 import launcherSource from '../../bin/cq-launcher.c' with { type: 'text' }
 import { selfCommand, VERSION } from '../daemon/main'
 import { BRAND, LEGACY } from '../shared/brand'
-import {
-  CQ_HOME,
-  ensureHome,
-  findExecutable,
-  LAUNCH_AGENT_LABEL,
-  loadConfig,
-  paths,
-  searchPath,
-  writeFileAtomic,
-} from '../shared/config'
+import { CQ_HOME, ensureHome, findExecutable, LAUNCH_AGENT_LABEL, loadConfig, paths, writeFileAtomic } from '../shared/config'
+import { isMac, isWsl } from '../platform/os'
+import { launchAgentsDir, launchDomain, service, type Service } from '../platform/service'
 import { migrateLegacy } from './migrate'
-import { launchDomain, run } from './util'
+import { run } from './util'
 
-const agentsDir = join(homedir(), 'Library', 'LaunchAgents')
-export const plistPath = join(agentsDir, `${LAUNCH_AGENT_LABEL}.plist`)
+/** macOS: the small launcher that holds Full Disk Access, so updates don't undo it. */
 export const launcherPath = join(paths.bin, 'cq-launcher')
 
 /** For a binary inside a Homebrew Cellar, the stable link Homebrew keeps pointing at the current version. */
@@ -29,44 +21,19 @@ export function homebrewLink(execPath: string): string | null {
   return existsSync(link) ? link : null
 }
 
-/** Moves a pre-rename install over. False if it can't happen yet (a job is running). */
+/** Moves a pre-rename install over (macOS only). False if it can't happen yet (a job is running). */
 export function migrateIfNeeded(): boolean {
+  if (!isMac) return true
   const result = migrateLegacy({
     home: CQ_HOME,
     legacyHome: join(homedir(), LEGACY.homeDir),
-    agentsDir,
+    agentsDir: launchAgentsDir,
     domain: launchDomain(),
     run,
     tmuxBin: findExecutable('tmux'),
   })
   if (result.message) console.log(result.message)
   return result.moved || result.message === null
-}
-
-function plist(program: string): string {
-  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${LAUNCH_AGENT_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array><string>${esc(program)}</string><string>daemon</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-  <key>ProcessType</key><string>Interactive</string>
-  <key>LimitLoadToSessionType</key><string>Aqua</string>
-  <key>WorkingDirectory</key><string>${esc(homedir())}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>${esc(searchPath())}</string>
-    <key>CQ_HOME</key><string>${esc(CQ_HOME)}</string>
-  </dict>
-  <key>StandardOutPath</key><string>${esc(paths.log)}</string>
-  <key>StandardErrorPath</key><string>${esc(paths.log)}</string>
-</dict>
-</plist>
-`
 }
 
 /**
@@ -123,6 +90,7 @@ function placeBinary(): void {
       renameSync(tmp, binary)
     }
   }
+  if (!isMac) return
   const identity = process.env.CQ_SIGN_IDENTITY ?? '-'
   const sign = run(['codesign', '--force', '--sign', identity, '--identifier', LAUNCH_AGENT_LABEL, binary])
   if (!sign.ok) console.log(`codesign failed: ${sign.out}`)
@@ -148,31 +116,27 @@ function linkOntoPath(): void {
 
 export interface InstallResult {
   program: string
-  /** Full Disk Access must be granted (again): the launcher is new or its path changed. */
+  /** macOS: Full Disk Access must be granted (again): the launcher is new or its path changed. */
   needsAccess: boolean
+  /** How it runs in the background ('none': you start `cq daemon` yourself). */
+  service: Service['kind']
+  /** False when the service manager failed to start it (not when there's no service manager). */
+  started: boolean
 }
 
 export async function install(): Promise<InstallResult | null> {
   if (!migrateIfNeeded()) return null
   ensureHome()
-  const domain = launchDomain()
+  const svc = service()
   // Stop a running daemon first: overwriting the binary under a live process can crash it.
-  run(['launchctl', 'bootout', `${domain}/${LAUNCH_AGENT_LABEL}`])
+  svc.stop()
   placeBinary()
   linkOntoPath()
-  const launcher = buildLauncher()
+  const launcher = isMac ? buildLauncher() : null
   const program = launcher?.path ?? paths.binary
-
-  mkdirSync(agentsDir, { recursive: true })
-  writeFileAtomic(plistPath, plist(program))
-  // launchd can still be tearing down the old instance for a moment after bootout.
-  let boot = run(['launchctl', 'bootstrap', domain, plistPath])
-  for (let i = 0; i < 5 && !boot.ok; i++) {
-    await Bun.sleep(1000)
-    boot = run(['launchctl', 'bootstrap', domain, plistPath])
-  }
-  console.log(boot.ok ? `Started ${BRAND.name} in the background (starts at login).` : `launchctl bootstrap failed: ${boot.out}`)
-  return { program, needsAccess: !launcher || launcher.built }
+  const started = await svc.install(program)
+  console.log(started.message)
+  return { program, needsAccess: isMac && (!launcher || launcher.built), service: svc.kind, started: started.ok || svc.kind === 'none' }
 }
 
 /** The steps printed after `cq install` (cq setup walks through them instead). */
@@ -189,23 +153,23 @@ export function nextSteps(result: InstallResult): string {
           'Restart it so the permission takes effect: cq restart',
         ]
       : []),
+    ...(result.service === 'none' ? [`Start it: cq daemon (see above for keeping it running${isWsl() ? ', or turn on systemd in WSL' : ''})`] : []),
     ...(config.telegram.enabled ? [] : ['Connect your phone: create a bot with @BotFather in Telegram, then run cq telegram <token>']),
     'Check everything: cq doctor',
   ]
-  const intro = result.needsAccess ? '' : 'Full Disk Access on the launcher still applies.\n'
+  const intro = isMac && !result.needsAccess ? 'Full Disk Access on the launcher still applies.\n' : ''
   return `${intro}\nNext:\n${steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
 }
 
 export function uninstall(): void {
-  run(['launchctl', 'bootout', `${launchDomain()}/${LAUNCH_AGENT_LABEL}`])
-  rmSync(plistPath, { force: true })
+  service().uninstall()
   const link = join(homedir(), '.local', 'bin', 'cq')
   try {
     if (lstatSync(link).isSymbolicLink() && readlinkSync(link) === paths.binary) rmSync(link)
   } catch {
     // no link
   }
-  console.log(`Stopped ${BRAND.name} and removed it from login items. Your queue and settings stay in ${CQ_HOME}.`)
+  console.log(`Stopped ${BRAND.name} and removed it from what starts by itself. Your queue and settings stay in ${CQ_HOME}.`)
 }
 
 /** Updates a direct (non-Homebrew) install from the latest GitHub release. */
@@ -230,11 +194,31 @@ export async function update(): Promise<void> {
     console.log(`Already on the latest version (${VERSION}).`)
     return
   }
-  const asset = release.assets.find(a => a.name === `cq-darwin-${process.arch === 'arm64' ? 'arm64' : 'x64'}`)
-  if (!asset) throw new Error(`release ${release.tag_name} has no build for this Mac`)
+  const asset = release.assets.find(a => a.name === releaseAsset())
+  if (!asset) throw new Error(`release ${release.tag_name} has no build for ${process.platform} ${process.arch}`)
+  const sums = release.assets.find(a => a.name === 'SHA256SUMS')
+  if (!sums) throw new Error(`release ${release.tag_name} has no SHA256SUMS to check the download against`)
+  const expected = checksumFor(await (await fetch(sums.browser_download_url)).text(), asset.name)
+  const bytes = new Uint8Array(await (await fetch(asset.browser_download_url)).arrayBuffer())
+  const actual = new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
+  if (!expected || actual !== expected) throw new Error(`the download of ${asset.name} doesn't match its checksum; nothing was changed`)
   // Next to the binary, so the final rename stays on one volume and is atomic.
   const tmp = `${paths.binary}.${process.pid}.download`
-  writeFileSync(tmp, new Uint8Array(await (await fetch(asset.browser_download_url)).arrayBuffer()), { mode: 0o755 })
+  writeFileSync(tmp, bytes, { mode: 0o755 })
   renameSync(tmp, paths.binary)
   console.log(`Updated to ${release.tag_name}. ${BRAND.name} restarts itself with it in a moment.`)
+}
+
+/** The release file for this computer: cq-darwin-arm64, cq-linux-x64… */
+export function releaseAsset(platform: string = process.platform, arch: string = process.arch): string {
+  return `cq-${platform === 'darwin' ? 'darwin' : 'linux'}-${arch === 'arm64' ? 'arm64' : 'x64'}`
+}
+
+/** The SHA-256 a SHA256SUMS file (`sha256sum` format) lists for `name`. */
+export function checksumFor(sums: string, name: string): string | null {
+  for (const line of sums.split('\n')) {
+    const m = /^([0-9a-f]{64})\s+\*?(\S+)$/i.exec(line.trim())
+    if (m && m[2] === name) return m[1]!.toLowerCase()
+  }
+  return null
 }
