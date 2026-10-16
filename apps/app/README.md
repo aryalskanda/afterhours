@@ -117,11 +117,23 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 - With **Lock the app** on, Face ID or a fingerprint opens it, and again after a minute away. With **Confirm Allow** on, it asks before allowing a permission.
 - The machine's rules (folders, skipping permission prompts, screens, typing) are enforced on the machine. The app only shows them.
 
-## Builds for testers and the stores (later)
+## Builds for testers and the stores
 
-Expo Go is for development. A real app needs:
+Expo Go is for development. Installable builds are configured (`app.json`, `eas.json`) and need your accounts:
 
-- **iPhone (TestFlight, the App Store, iOS push):** the Apple Developer Program, and an Expo account (free) for EAS Build.
-- **Android (Play, or an APK by link):** an Expo account; a Google Play developer account for the store; a Firebase project for push.
+| For | You need | Then |
+| --- | --- | --- |
+| Push notifications (both) | An Expo account (free) | `npx eas-cli login`, then `npx eas-cli init` here: it writes the project id into `app.json`, and Settings > Notifications can switch push on |
+| iPhone: TestFlight and the App Store | The Apple Developer Program | `npx eas-cli build -p ios --profile production`, then `npx eas-cli submit -p ios`. EAS makes the certificates and the push key if you let it |
+| Android: an APK for testers | The Expo account | `npx eas-cli build -p android --profile preview`: a link to install from |
+| Android: Google Play, and push | A Play developer account; a Firebase project | `--profile production` makes the bundle for Play. Push needs Firebase's `google-services.json` and its FCM key, added with `npx eas-cli credentials` |
 
-With those: `npx eas build --platform ios` / `android`. Without them you can still make a development build locally: `npx expo run:ios` or `npx expo run:android`. That needs Xcode or Android Studio, and signing for a real iPhone.
+Build numbers are kept by EAS (`appVersionSource: remote`, `autoIncrement`); the version is `app.json`'s. Over-the-air updates (expo-updates) come later: they also need the Expo project.
+
+Without accounts, locally (the native folders are made fresh and stay out of git):
+
+- **iOS simulator**: `npx expo prebuild -p ios`, `cd ios && pod install`, then
+  `xcodebuild -workspace Afterhours.xcworkspace -scheme Afterhours -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGN_IDENTITY=- build`
+  and `xcrun simctl install booted <the .app>`. Checked: it builds in about four minutes and runs from its own bundle. Keep the ad-hoc signing (`CODE_SIGN_IDENTITY=-`): an unsigned build can't use the Keychain, where this device's key lives.
+- **Android APK** (side-loading only, signed with the debug key): Android SDK 36, build-tools 36, NDK 27.1 and JDK 17 (Android Studio's), then `npx expo prebuild -p android` and `cd android && ./gradlew assembleRelease`. Not run here yet.
+- `expo prebuild` changes the `ios` and `android` scripts in `package.json`; put them back.
