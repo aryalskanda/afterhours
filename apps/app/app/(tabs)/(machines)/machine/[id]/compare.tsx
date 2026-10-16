@@ -1,19 +1,16 @@
 // The same prompt tried several ways (each task on its own branch): how each went, what it cost,
 // what it changed. Keep one: its branch is merged into your checkout and the others are thrown away.
 
-import { JobInfo, type JobInfo as Job } from '@afterhours/protocol'
+import type { JobInfo as Job } from '@afterhours/protocol'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useState } from 'react'
-import { z } from 'zod'
 import { hub, useMachine, useNow } from '../../../../../src/app-state'
 import { LineCounts } from '../../../../../src/components/Changes'
 import { ConfirmRow, EmptyState, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { duration, modelLabel, money, oneLine, phaseLabel } from '../../../../../src/lib/format'
-import { DiffSummary } from '../../../../../src/lib/results'
+import { DiffSummary, Jobs } from '../../../../../src/lib/results'
 import { supports, type MachineState } from '../../../../../src/lib/state'
-
-const Jobs = z.object({ active: JobInfo.nullable(), queued: z.array(JobInfo), recent: z.array(JobInfo) })
 
 function Way(props: { m: MachineState; job: Job; now: number }) {
   const { m, job: j, now } = props

@@ -2,10 +2,13 @@
 // checks: the device's role, this machine's own rules (which no app can change), and whether the
 // request was already carried out (a retry gets the first answer again).
 
-import { existsSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import type {
+  AuditEntryInfo,
+  ClaudeInfo,
+  HealthInfo,
   QueueOptions,
   DiffSummary,
   FilePatch,
@@ -23,7 +26,9 @@ import type {
 } from '@afterhours/protocol'
 import { expandHome, type Config } from '../../shared/config'
 import type { Effort, Job, JobSpec } from '../../shared/types'
-import { continueSpec, type ChatSource } from '../chats'
+import { continueSpec, type Chat, type ChatSource } from '../chats'
+import { claudeInfo } from '../claude-info'
+import { claudeVersion, health } from '../health'
 import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
 import { oneLine } from '../format'
 import { slashCommands } from '../slash'
@@ -57,6 +62,12 @@ export const FEATURES = [
   'attachments',
   'commands',
   'group',
+  'history',
+  'health',
+  'claude',
+  'limits.history',
+  'audit',
+  'invite',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -90,10 +101,34 @@ const NEEDS: Record<RequestType, Role> = {
   open: 'operator',
   upload: 'operator',
   commands: 'viewer',
+  health: 'viewer',
+  restart: 'owner',
+  claude: 'viewer',
+  'claude.md': 'operator',
+  'limits.history': 'viewer',
+  audit: 'owner',
+  'pair.offer': 'owner',
 }
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 /** Requests that change something: audited, and answered from memory when retried. */
-const CHANGES = new Set<RequestType>(['queue', 'answer', 'control', 'job', 'say', 'keys', 'chat.write', 'devices.remove', 'devices.rename', 'command', 'branch', 'open', 'upload'])
+const CHANGES = new Set<RequestType>([
+  'queue',
+  'answer',
+  'control',
+  'job',
+  'say',
+  'keys',
+  'chat.write',
+  'devices.remove',
+  'devices.rename',
+  'command',
+  'branch',
+  'open',
+  'upload',
+  'restart',
+  'claude.md',
+  'pair.offer',
+])
 
 export interface RouterDeps {
   runner: Runner
@@ -117,6 +152,15 @@ export interface RouterDeps {
   uploadsDir: string
   /** Claude Code's folder (~/.claude): your own slash commands and skills. */
   claudeDir: string
+  /** Claude Code's settings file (~/.claude.json): the account and MCP servers. */
+  claudeJson: string
+  claudePath: string
+  /** The engine's log, whose tail owners may read (it never holds prompts). */
+  logPath: string
+  /** A pairing link for another device. */
+  openOffer: (role: Role) => { link: string; expires: number } | string
+  /** Restarts the engine: its service starts it again. */
+  restart: () => void
   now: () => number
   log: (line: string) => void
 }
@@ -183,6 +227,10 @@ function auditDetail(r: Request): string | null {
       return `${r.action} #${r.job}`
     case 'upload':
       return `${Math.round((r.data.length * 3) / 4 / 1024)} KB`
+    case 'claude.md':
+      return `${r.folder} · ${r.text.length} characters`
+    case 'pair.offer':
+      return r.role
     case 'open':
       return r.job !== undefined ? `#${r.job}` : (r.session?.slice(0, 8) ?? null)
     default:
@@ -287,12 +335,16 @@ export class Router {
         return { ok: true, data: this.snapshot(session.role) }
       case 'jobs': {
         const active = store.active()
+        const limit = r.recent ?? 20
+        // Newest first by number, so `before` pages back with no gaps.
+        const found = store.searchFinished({ before: r.before, status: r.status, query: r.query, limit: limit + 1 })
         return {
           ok: true,
           data: {
             active: active ? jobInfo(active) : null,
             queued: store.queued().map(j => jobInfo(j)),
-            recent: store.recentFinished(r.recent ?? 20).map(j => jobInfo(j)),
+            recent: found.slice(0, limit).map(j => jobInfo(j)),
+            more: found.length > limit,
           },
         }
       }
@@ -362,6 +414,21 @@ export class Router {
       case 'chats': {
         if (r.folder && !isAllowed(r.folder, roots)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
         const limit = r.limit ?? 20
+        const words = (r.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+        if (words.length > 0) {
+          // A search looks through your last 500 conversations.
+          const matches = (c: Chat) => {
+            const text = `${c.title} ${c.lastPrompt ?? ''} ${c.lastReply ?? ''}`.toLowerCase()
+            return words.every(w => text.includes(w))
+          }
+          const found: Chat[] = []
+          for (let page = 0; page < 10 && found.length < limit; page++) {
+            const batch = this.d.chats.recent(page, 50)
+            found.push(...batch.chats.filter(c => c.cwd !== null && isAllowed(c.cwd, roots) && matches(c)))
+            if (!batch.more) break
+          }
+          return { ok: true, data: { chats: found.slice(0, limit).map(chatInfo), more: false } }
+        }
         const list = r.folder ? { chats: this.d.chats.list(resolve(expandHome(r.folder)), limit), more: false } : this.d.chats.recent(r.page ?? 0, limit)
         const visible = list.chats.filter(c => c.cwd !== null && isAllowed(c.cwd, roots))
         return { ok: true, data: { chats: visible.map(chatInfo), more: list.more } }
@@ -421,6 +488,39 @@ export class Router {
         return this.files(r, roots)
       case 'branch':
         return this.branch(r, session.role, roots)
+      case 'health': {
+        const info = this.d.machine()
+        return { ok: true, data: health({ version: info.version, os: `${info.os} ${info.arch}`, claudePath: this.d.claudePath, logPath: this.d.logPath, owner: session.role === 'owner', now: this.d.now() }) satisfies HealthInfo }
+      }
+      case 'restart':
+        // After the answer is on its way. A non-zero exit, so launchd and systemd start it again.
+        setTimeout(() => this.d.restart(), 500)
+        return { ok: true, text: `Restarting Afterhours on ${this.d.machine().name}.` }
+      case 'claude': {
+        let folder: string | null = null
+        if (r.folder) {
+          folder = resolve(expandHome(r.folder))
+          if (!isAllowed(folder, roots) || !isDir(folder)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
+        }
+        return { ok: true, data: claudeInfo({ claudeJson: this.d.claudeJson, folder, owner: session.role === 'owner', version: claudeVersion(this.d.claudePath, this.d.now()) }) satisfies ClaudeInfo }
+      }
+      case 'claude.md': {
+        const folder = resolve(expandHome(r.folder))
+        if (!isAllowed(folder, roots) || !isDir(folder)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
+        writeFileSync(join(folder, 'CLAUDE.md'), r.text)
+        return { ok: true, text: 'Saved CLAUDE.md.' }
+      }
+      case 'limits.history':
+        return { ok: true, data: { samples: store.limitSamples(this.d.now() - 7 * 86_400_000) } }
+      case 'audit':
+        return {
+          ok: true,
+          data: { entries: this.d.db.auditLog(r.limit ?? 200).map(e => ({ at: e.at, device: e.deviceName, action: e.action, detail: e.detail, ok: e.ok }) satisfies AuditEntryInfo) },
+        }
+      case 'pair.offer': {
+        const offer = this.d.openOffer(r.role)
+        return typeof offer === 'string' ? { ok: false, code: 'failed', error: offer } : { ok: true, data: offer }
+      }
       case 'upload': {
         const saved = saveUpload(this.d.uploadsDir, r.name, r.data, this.d.now())
         return 'error' in saved ? { ok: false, code: 'invalid', error: saved.error } : { ok: true, text: 'Uploaded.', data: { path: saved.path } }

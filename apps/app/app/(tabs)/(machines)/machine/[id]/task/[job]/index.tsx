@@ -6,7 +6,7 @@
 import type { Event, JobInfo, TaskDetail as Detail } from '@afterhours/protocol'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
-import { hub, useMachine, useNow } from '../../../../../../../src/app-state'
+import { hub, useHub, useMachine, useNow } from '../../../../../../../src/app-state'
 import { Changes } from '../../../../../../../src/components/Changes'
 import { Conversation, type ConversationMeta, type Pending } from '../../../../../../../src/components/Conversation'
 import { Markdown } from '../../../../../../../src/components/Markdown'
@@ -26,6 +26,7 @@ export default function TaskScreen() {
   const { id, job } = useLocalSearchParams<{ id: string; job: string }>()
   const jobId = Number(job)
   const m = useMachine(id)
+  const { machines } = useHub()
   const { c } = useTheme()
   const now = useNow(5_000)
   const live = m ? findJob(m, jobId) : null
@@ -156,6 +157,9 @@ export default function TaskScreen() {
           {j.status === 'queued' && editable && place > 0 ? <Row title="Move up" onPress={() => act.run(m.id, { type: 'job', action: 'move', job: j.id, to: place - 1 })} testID="task-up" /> : null}
           {j.status === 'queued' && editable && place >= 0 && place < m.queued.length - 1 ? <Row title="Move down" onPress={() => act.run(m.id, { type: 'job', action: 'move', job: j.id, to: place + 1 })} testID="task-down" /> : null}
           {j.status === 'queued' && editable && !editing ? <Row title="Edit" chevron onPress={() => setEditing({ prompt: j.prompt, model: j.model, effort: j.effort })} testID="task-edit" /> : null}
+          {j.status === 'queued' && !j.session && !j.attachments?.length && machines.some(x => x.id !== m.id && x.role !== 'viewer' && x.status !== 'refused') ? (
+            <Row title="Move to another machine" chevron onPress={() => router.push({ pathname: '/new', params: { move: `${m.id}:${j.id}` } })} testID="task-move" />
+          ) : null}
           {j.status === 'queued' ? <ConfirmRow title="Remove from the queue" confirm="Tap again to remove" onConfirm={() => act.run(m.id, { type: 'job', action: 'remove', job: j.id })} testID="task-remove" /> : null}
           {finished && session ? (
             <Row

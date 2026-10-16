@@ -111,6 +111,11 @@ export default function Settings() {
         ))}
         <Row title="Pair a machine" tone="accent" onPress={() => router.push('/pair')} testID="settings-pair" />
       </Group>
+      {s.machines.some(m => m.role === 'owner') ? (
+        <Group footer="A lost or stolen phone: cut it off from every machine you own.">
+          <Row title="Remove a device" chevron onPress={() => router.push('/lost-device')} testID="settings-lost" />
+        </Group>
+      ) : null}
 
       <Group footer="End-to-end encrypted. The relay in between can’t read anything.">
         <Row title="Version" value={desktop ? `${APP_VERSION} · desktop ${desktop.info.version}` : APP_VERSION} />

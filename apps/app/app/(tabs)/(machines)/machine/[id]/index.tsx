@@ -8,7 +8,7 @@ import { LimitRow, statusColor, TaskRow } from '../../../../../src/components/bi
 import { Block, Button, ConfirmButton, ConfirmRow, EmptyState, Group, GroupAction, HStack, Note, Page, Row, StatusDot, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { clock, oneLine, roleLabel, shortPath, statusLabel } from '../../../../../src/lib/format'
-import { needsYou } from '../../../../../src/lib/state'
+import { needsYou, supports } from '../../../../../src/lib/state'
 import { useTheme } from '../../../../../src/theme'
 
 export default function MachineScreen() {
@@ -125,6 +125,7 @@ export default function MachineScreen() {
         <LimitRow label="Weekly limit" window={m.limits.sevenDay} />
         {blocked ? <Row title="Next task starts" value={clock(blocked, now)} /> : null}
         {noUsage && !blocked ? <Row title={<Txt tone="soft">Nothing reported yet</Txt>} /> : null}
+        {supports(m, 'limits.history') ? <Row title="Over time" chevron onPress={() => router.push({ pathname: '/machine/[id]/usage', params: { id: m.id } })} testID="open-usage" /> : null}
       </Group>
 
       <Group header="Recent">
@@ -132,7 +133,14 @@ export default function MachineScreen() {
           <TaskRow key={j.id} machine={m.id} job={j} />
         ))}
         {m.recent.length === 0 ? <Row title={<Txt tone="soft">None yet</Txt>} /> : null}
+        {m.recent.length > 0 ? <Row title="All tasks" chevron onPress={() => router.push({ pathname: '/machine/[id]/tasks', params: { id: m.id } })} testID="open-all-tasks" /> : null}
       </Group>
+
+      {supports(m, 'health') ? (
+        <Group>
+          <Row title="About this machine" subtitle="Versions, disk, battery, Claude Code" chevron onPress={() => router.push({ pathname: '/machine/[id]/about', params: { id: m.id } })} testID="open-about" />
+        </Group>
+      ) : null}
 
       {p ? (
         <Group header="Rules for apps" footer="Set on the machine, with cq remote.">
@@ -142,6 +150,7 @@ export default function MachineScreen() {
           <Row title="Type into tasks" value={p.allowTyping ? 'Allowed' : 'Off'} />
           {m.role === 'owner' ? <Row title="Devices" chevron onPress={() => router.push({ pathname: '/machine/[id]/devices', params: { id: m.id } })} testID="open-devices" /> : null}
           {m.role === 'owner' ? <Row title="Commands" chevron onPress={() => router.push({ pathname: '/machine/[id]/console', params: { id: m.id } })} testID="open-console" /> : null}
+          {m.role === 'owner' && supports(m, 'audit') ? <Row title="Activity" chevron onPress={() => router.push({ pathname: '/machine/[id]/audit', params: { id: m.id } })} testID="open-audit" /> : null}
         </Group>
       ) : null}
 

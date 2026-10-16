@@ -306,14 +306,31 @@ export const Request = z.discriminatedUnion('type', [
     options: QueueOptions.optional(),
     to: z.number().int().min(0).optional(),
   }),
-  withId({ type: z.literal('jobs'), recent: z.number().int().min(0).max(100).optional() }),
+  /**
+   * The queue and finished tasks, newest first; `more` says older ones match too. `before` (a task
+   * id) pages back; `status` and `query` (words in the prompt or the answer) narrow them.
+   */
+  withId({
+    type: z.literal('jobs'),
+    recent: z.number().int().min(0).max(100).optional(),
+    before: z.number().int().optional(),
+    status: z.enum(['done', 'failed', 'cancelled']).optional(),
+    query: z.string().max(200).optional(),
+  }),
   /** One task in full: its plan and Claude's final answer. */
   withId({ type: z.literal('task'), job: z.number().int() }),
   /** `ansi`: the screen with its colour codes (newer machines). */
   withId({ type: z.literal('peek'), lines: z.number().int().min(5).max(200).optional(), job: z.number().int().optional(), ansi: z.boolean().optional() }),
   withId({ type: z.literal('say'), text: z.string().min(1).max(20_000), job: z.number().int().optional() }),
   withId({ type: z.literal('keys'), keys: z.array(z.string().min(1).max(20)).min(1).max(20), job: z.number().int().optional() }),
-  withId({ type: z.literal('chats'), folder: z.string().max(4096).optional(), page: z.number().int().min(0).max(1000).optional(), limit: z.number().int().min(1).max(50).optional() }),
+  /** `query`: only conversations whose title or last messages have these words. */
+  withId({
+    type: z.literal('chats'),
+    folder: z.string().max(4096).optional(),
+    page: z.number().int().min(0).max(1000).optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+    query: z.string().max(200).optional(),
+  }),
   withId({ type: z.literal('chat.write'), session: z.string().min(1).max(64), text: z.string().min(1).max(100_000) }),
   withId({ type: z.literal('folders'), query: z.string().max(200) }),
   withId({ type: z.literal('devices') }),
@@ -337,10 +354,20 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('timeline'), job: z.number().int() }),
   /** The files a task changed; with `file`, that file's diff. */
   withId({ type: z.literal('diff'), job: z.number().int(), file: z.string().max(4096).optional() }),
-  /**
-   * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
-   * reads a file; `query` searches file names.
-   */
+  /** How the machine is: versions, uptime, disk, battery, load; for owners its last log lines. */
+  withId({ type: z.literal('health') }),
+  /** Owners: restart the engine (its service starts it again). */
+  withId({ type: z.literal('restart') }),
+  /** Claude Code on the machine: the account (owners), its MCP servers by name, and a folder's CLAUDE.md. */
+  withId({ type: z.literal('claude'), folder: z.string().max(4096).optional() }),
+  /** Replaces a folder's CLAUDE.md. */
+  withId({ type: z.literal('claude.md'), folder: z.string().min(1).max(4096), text: z.string().max(200_000) }),
+  /** The usage limits over the last week, as the machine sampled them. */
+  withId({ type: z.literal('limits.history') }),
+  /** Owners: what devices did here, newest first. */
+  withId({ type: z.literal('audit'), limit: z.number().int().min(1).max(500).optional() }),
+  /** Owners: a pairing link for another device, with its role (approved by asking for it). */
+  withId({ type: z.literal('pair.offer'), role: Role }),
   /** A photo or file for a task's prompt, base64 (up to about 5 MB). Gives back its path on the machine. */
   withId({ type: z.literal('upload'), name: z.string().min(1).max(200), data: z.string().min(1).max(7_000_000) }),
   /** The slash commands and skills a folder's tasks can use, the project's and yours. */
@@ -349,6 +376,10 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('branch'), job: z.number().int(), action: z.enum(['merge', 'discard', 'pr']) }),
   /** Opens a task's or a chat's conversation on the machine's screen, in VS Code. */
   withId({ type: z.literal('open'), job: z.number().int().optional(), session: z.string().max(64).optional() }),
+  /**
+   * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
+   * reads a file; `query` searches file names.
+   */
   withId({
     type: z.literal('files'),
     job: z.number().int().optional(),
@@ -534,6 +565,39 @@ export const FileContent = z.object({
   truncated: z.boolean(),
 })
 export type FileContent = z.infer<typeof FileContent>
+
+/** The answer to a `health` request. */
+export const HealthInfo = z.object({
+  version: z.string(),
+  uptimeSec: z.number(),
+  claudeVersion: z.string().nullable(),
+  os: z.string(),
+  diskFreeBytes: z.number().nullable(),
+  diskTotalBytes: z.number().nullable(),
+  battery: z.object({ pct: z.number(), charging: z.boolean() }).nullable(),
+  /** The 1-minute load average per CPU (1 = busy). */
+  load: z.number().nullable(),
+  /** Owners: the engine's last log lines (prompts are never logged). */
+  logs: z.array(z.string()).optional(),
+})
+export type HealthInfo = z.infer<typeof HealthInfo>
+
+/** The answer to a `claude` request. */
+export const ClaudeInfo = z.object({
+  version: z.string().nullable(),
+  /** Owners only. */
+  account: z.object({ email: z.string().nullable(), organization: z.string().nullable() }).nullable().optional(),
+  /** By name only: their commands, URLs and keys stay on the machine. */
+  mcp: z.array(z.object({ name: z.string(), scope: z.enum(['user', 'project', 'local']), type: z.string() })),
+  memory: z.object({ path: z.string(), exists: z.boolean(), text: z.string().optional() }).nullable(),
+})
+export type ClaudeInfo = z.infer<typeof ClaudeInfo>
+
+export const LimitSample = z.object({ at: z.number(), fiveHour: z.number().nullable(), sevenDay: z.number().nullable() })
+export type LimitSample = z.infer<typeof LimitSample>
+
+export const AuditEntryInfo = z.object({ at: z.number(), device: z.string().nullable(), action: z.string(), detail: z.string().nullable(), ok: z.boolean() })
+export type AuditEntryInfo = z.infer<typeof AuditEntryInfo>
 
 /** One of the answers to a `commands` request. */
 export const SlashCommand = z.object({

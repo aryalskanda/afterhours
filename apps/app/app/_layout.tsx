@@ -29,6 +29,7 @@ export default function Root() {
     const timer = setTimeout(() => void SplashScreen.hideAsync().catch(() => {}), 4000)
     const sub = AppState.addEventListener('change', s => {
       if (s === 'active') hub.wake()
+      else if (s === 'background') hub.leave()
     })
     return () => {
       clearTimeout(timer)

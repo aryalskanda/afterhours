@@ -45,6 +45,11 @@ export interface RemoteDeps {
   openInVsCode?: (sessionId: string) => boolean
   uploadsDir: string
   claudeDir: string
+  claudeJson: string
+  claudePath: string
+  logPath: string
+  /** Exits so the service starts the engine again. */
+  restart: () => void
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
@@ -93,6 +98,15 @@ export class Remote {
       openInVsCode: d.openInVsCode,
       uploadsDir: d.uploadsDir,
       claudeDir: d.claudeDir,
+      claudeJson: d.claudeJson,
+      claudePath: d.claudePath,
+      logPath: d.logPath,
+      restart: d.restart,
+      // An owner asking for an invite is the approval.
+      openOffer: role => {
+        const offer = this.openOffer({ role, autoApprove: true })
+        return typeof offer === 'string' ? offer : { link: offer.link, expires: offer.expires }
+      },
       now: d.now,
       log: d.log,
     })

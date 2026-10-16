@@ -138,9 +138,16 @@ The protocol and the crypto get an external review before a public launch.
 | Request (app → machine) | Role | What it does |
 | --- | --- | --- |
 | `sync {since}` | viewer | Start receiving events: the ones after `since` (up to 200), then a snapshot |
-| `snapshot`, `jobs` | viewer | The queue, the running task, waiting approvals, limits, the machine's rules |
+| `snapshot` | viewer | The queue, the running task, waiting approvals, limits, the machine's rules |
+| `jobs {recent, before, status, query}` | viewer | The queue and finished tasks newest first, with `more` when older ones match: `before` pages back, `status` and `query` (every word, in the prompt or Claude's answer) narrow them |
 | `peek {lines, ansi}` | viewer | The running task's screen (if the machine shows screens), with its colours when `ansi` |
-| `chats`, `folders` | viewer | Conversations and folders, only within the allowed folders |
+| `chats {folder, page, query}`, `folders` | viewer | Conversations and folders, only within the allowed folders; `query` finds conversations by their title and last messages |
+| `health` | viewer | Afterhours and Claude Code versions, uptime, disk, battery, load; owners also get the engine's last log lines (prompts are never logged) |
+| `restart` | owner | Restarts the engine: it exits with code 75, and launchd (KeepAlive) or systemd (`Restart=on-failure`) starts it again. A running task carries on |
+| `claude {folder}`, `claude.md {folder, text}` | viewer (`claude.md`: operator) | Claude Code as set up on the machine: the signed-in account (owners only), MCP servers by name, scope and type only (never their commands, URLs or keys), and a folder's CLAUDE.md, which operators may replace (in the allowed folders) |
+| `limits.history` | viewer | The usage limits as the engine sampled them over the last week (when one moves by a point, and every ten minutes while a task works); apps chart them and forecast when a limit runs out |
+| `audit {limit}` | owner | What devices did on the machine, newest first |
+| `pair.offer {role}` | owner | A pairing link for another device with that role, approved by the owner asking for it; good for one device, for a few minutes |
 | `transcript {job\|session, before, after, limit}` | viewer | A conversation a page at a time: what you and Claude said, each tool call in a line with an excerpt of its result, and Claude Code's own cost and token totals (a task counts only its own runs) |
 | `timeline {job}` | viewer | Every notice about one task (events are kept 14 days) |
 | `diff {job, file}` | viewer | The files a task changed, exactly: git trees of its folder when it started and ended (written to the object store; no commit, ref or index touched), so your own earlier edits aren't in it. With `file`, that file's diff. Only files inside the allowed folders, never secrets |

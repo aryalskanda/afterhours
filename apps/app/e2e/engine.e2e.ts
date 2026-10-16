@@ -1,14 +1,17 @@
 // The web build against the real engine: a relay and a private Afterhours daemon (throwaway home,
-// port and tmux socket), and headless Chrome driving the app. It checks what the app shows of a
-// real machine (its rules, defaults and folders), that the machine's rules hold for a task from
-// the app, and devices: renaming this one, and being removed. No Claude task runs, so it costs
-// nothing. `--keep` keeps the scratch folder.
+// port, tmux socket and Claude Code config), and headless Chrome driving the app. It checks what
+// the app shows of a real machine (its rules, defaults, folders, health and Claude Code), that the
+// machine's rules hold for a task from the app, and devices: renaming this one, inviting another,
+// removing a lost one, and being removed. No Claude task runs, so it costs nothing. `--keep` keeps
+// the scratch folder.
 //   npm run export:web && bun e2e/engine.e2e.ts
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parsePairingLink } from '@afterhours/protocol'
 import { startRelay } from '../../../relay/src/server'
+import { Hub } from '../src/lib/hub'
 import { drive, serveWeb, until } from './browser'
 
 const repoRoot = join(import.meta.dir, '..', '..', '..')
@@ -23,6 +26,10 @@ for (const dir of [home, join(projects, 'shop'), join(projects, 'notes'), outsid
 Bun.spawnSync(['git', 'init', '-q', join(projects, 'shop')])
 
 const relay = startRelay({ port: 0, hostname: '127.0.0.1' })
+// Claude Code's config as the engine reads it: an account, and an MCP server whose URL and key
+// must never reach an app.
+const claudeJson = join(root, 'claude.json')
+writeFileSync(claudeJson, JSON.stringify({ oauthAccount: { emailAddress: 'e2e@example.com' }, mcpServers: { tracker: { type: 'http', url: 'https://mcp.example.com/e2e', headers: { Authorization: 'Bearer e2e-not-a-real-key' } } } }))
 writeFileSync(
   join(home, 'config.json'),
   JSON.stringify({
@@ -36,9 +43,11 @@ writeFileSync(
     remote: { enabled: true, relay: relay.url, name: 'e2e-box', allowedRoots: [projects], allowBypass: false, allowScreens: true, allowTyping: true },
   }),
 )
-const logFile = join(root, 'daemon.log')
+// Where the service writes the engine's output on a real install (launchd, systemd).
+mkdirSync(join(home, 'logs'), { recursive: true })
+const logFile = join(home, 'logs', 'cqd.log')
 const daemon = Bun.spawn([process.execPath, join(repoRoot, 'src', 'cli', 'cq.ts'), 'daemon'], {
-  env: { ...process.env, CQ_HOME: home, CQ_TMUX_SOCKET: SOCKET, CQ_PORT: String(PORT) },
+  env: { ...process.env, CQ_HOME: home, CQ_TMUX_SOCKET: SOCKET, CQ_PORT: String(PORT), CQ_CLAUDE_JSON: claudeJson },
   stdout: Bun.file(logFile),
   stderr: Bun.file(join(root, 'daemon.err')),
 })
@@ -57,7 +66,7 @@ async function local<T>(path: string, body?: unknown): Promise<T> {
 const out = join(import.meta.dir, 'out-engine')
 const web = serveWeb()
 const d = await drive(out)
-const { page, tap, typeInto, replace, see, visible, shot, check } = d
+const { page, tap, typeInto, replace, see, visible, gone, shot, check } = d
 const base = `http://127.0.0.1:${web.port}`
 
 try {
@@ -126,6 +135,74 @@ try {
     await tap('open-devices')
     await see('E2E browser (this device)')
     await shot('04-devices')
+  })
+
+  await check('the machine’s health and Claude Code; a CLAUDE.md written; usage; what devices did', async () => {
+    await page.goto(base)
+    await tap('machine-e2e-box')
+    await tap('open-about')
+    await visible('health')
+    await see('Up for')
+    await see('Disk')
+    await visible('engine-log')
+    await see('relay: connected')
+    await see('e2e@example.com')
+    await see('tracker')
+    const text = await page.evaluate(() => document.body.innerText)
+    if (text.includes('mcp.example.com') || text.includes('e2e-not-a-real-key')) throw new Error('an MCP server’s URL or key reached the app')
+    await shot('05-about')
+    await tap('open-instructions')
+    const shop = realpathSync(join(projects, 'shop'))
+    await typeInto('instructions-path', shop)
+    await page.keyboard.press('Enter')
+    await see('No CLAUDE.md in this folder yet.')
+    await tap('instructions-edit')
+    await typeInto('instructions-field', '# Shop\n\nRun the tests before you finish.\n')
+    await tap('instructions-save')
+    await see('Saved CLAUDE.md.')
+    await until(() => existsSync(join(shop, 'CLAUDE.md')) && readFileSync(join(shop, 'CLAUDE.md'), 'utf8').includes('Run the tests before you finish.'), 'the file on the machine')
+    await page.goto(base)
+    await tap('machine-e2e-box')
+    await tap('open-usage')
+    await visible('usage-history')
+    await page.goto(base)
+    await tap('machine-e2e-box')
+    await tap('open-audit')
+    await see('Changed a CLAUDE.md')
+    await see('Renamed a device')
+    await shot('06-activity')
+  })
+
+  await check('an invite pairs another device; removing it as lost cuts it off', async () => {
+    await page.goto(base)
+    await tap('machine-e2e-box')
+    await tap('open-devices')
+    await tap('invite-role-viewer')
+    await tap('invite-create')
+    await visible('invite-qr')
+    const link = await page.$eval('[data-testid="invite-link"]', el => el.textContent ?? '')
+    parsePairingLink(link)
+    const store = new Map<string, string>()
+    const phone = new Hub({
+      storage: { getSecret: async k => store.get(k) ?? null, setSecret: async (k, v) => void store.set(k, v), get: async k => store.get(k) ?? null, set: async (k, v) => void store.set(k, v) },
+      defaultName: 'Lost phone',
+      platform: 'test',
+      app: 'afterhours-e2e/0',
+    })
+    await phone.init()
+    const paired = await phone.pair(link)
+    phone.close()
+    if (paired.role !== 'viewer') throw new Error(`paired as ${paired.role}`)
+    await until(async () => (await local<{ name: string; role: string }[]>('/api/remote/devices')).some(x => x.name === 'Lost phone' && x.role === 'viewer'), 'the new device on the machine')
+    await visible('device-Lost phone', 15_000)
+    await shot('07-invite')
+    await page.goto(`${base}/settings`)
+    await tap('settings-lost')
+    await tap('lost-remove-Lost phone')
+    await tap('lost-remove-Lost phone')
+    await see('Removed Lost phone from e2e-box.')
+    await until(async () => !(await local<{ name: string }[]>('/api/remote/devices')).some(x => x.name === 'Lost phone'), 'the device gone from the machine')
+    await gone('lost-Lost phone')
   })
 
   await check('removed on the machine (cq devices remove), the app says so', async () => {

@@ -30,7 +30,7 @@ import { Remote, type RemoteStatus } from './remote'
 import { allowedRoots, isAllowed } from './remote/router'
 import { Runner, type HookPayload, type ToolActivity } from './runner'
 import { deliverToInbox } from './inbox'
-import { CLAUDE_DIR, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
+import { CLAUDE_DIR, CLAUDE_JSON, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { git } from './system'
@@ -91,6 +91,7 @@ export async function runDaemon(): Promise<void> {
   const store = new Store(paths.db)
   store.pruneEvents(Date.now() - 30 * 24 * 3600_000)
   pruneUploads(paths.uploads, Date.now())
+  store.pruneLimitSamples(Date.now() - 8 * 86_400_000)
   // Hooks that were waiting on these lost their connection when the daemon stopped.
   store.expirePendingApprovals(Date.now())
 
@@ -186,6 +187,13 @@ export async function runDaemon(): Promise<void> {
     openInVsCode: sessionId => openInVsCode(sessionId, log),
     uploadsDir: paths.uploads,
     claudeDir: CLAUDE_DIR,
+    claudeJson: CLAUDE_JSON,
+    claudePath,
+    logPath: paths.log,
+    restart: () => {
+      log('restarting, as an owner asked from an app')
+      process.exit(75)
+    },
     log,
     now: Date.now,
   })

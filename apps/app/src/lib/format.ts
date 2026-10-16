@@ -197,3 +197,42 @@ export function withoutEmoji(text: string): string {
   const first = text.codePointAt(0)
   return space > 0 && space <= 8 && first !== undefined && isEmoji(first) ? text.slice(space + 1) : text
 }
+
+/** 830 KB, 2.4 MB, 112 GB, 1.8 TB (powers of 1024, as Finder and df -h count). */
+export function bytes(n: number): string {
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${i === 0 ? Math.round(v) : v < 10 ? v.toFixed(1).replace(/\.0$/, '') : Math.round(v)} ${units[i]}`
+}
+
+const AUDIT: Record<string, string> = {
+  queue: 'Queued a task',
+  answer: 'Answered a request',
+  control: 'Controlled the running task',
+  job: 'Changed a queued task',
+  say: 'Wrote to a task',
+  keys: 'Pressed keys in a task',
+  'chat.write': 'Wrote in a chat',
+  'devices.remove': 'Removed a device',
+  'devices.rename': 'Renamed a device',
+  command: 'Ran a command',
+  branch: 'Acted on a task’s branch',
+  open: 'Opened a conversation in VS Code',
+  upload: 'Uploaded a file',
+  restart: 'Restarted Afterhours',
+  'claude.md': 'Changed a CLAUDE.md',
+  'pair.offer': 'Invited a device',
+  paired: 'Paired',
+  'pair.denied': 'Was refused pairing',
+  'device.removed': 'Was removed',
+}
+
+/** What an audit entry's action was, in words ("queue" → "Queued a task"). */
+export function auditLabel(action: string): string {
+  return AUDIT[action] ?? action
+}

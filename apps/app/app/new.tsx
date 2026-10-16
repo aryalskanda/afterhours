@@ -1,5 +1,6 @@
 // New task: pick the machine and the folder, write the prompt, choose how it runs. It starts from
-// what you chose last time on that machine, and offers only what the machine allows.
+// what you chose last time on that machine, and offers only what the machine allows. Also how a
+// queued task moves to another machine (`move`: queued there, then taken off the first).
 
 import type { Effort, ExecMode, FileEntry, SlashCommand } from '@afterhours/protocol'
 import Ionicons from '@expo/vector-icons/Ionicons'
@@ -12,7 +13,7 @@ import { basename, clock, effortLabel, minutes, modelLabel, nextAt, oneLine, par
 import type { Choices } from '../src/lib/hub'
 import { fileSize, MAX_ATTACHMENT_BYTES, pickFiles, pickPhotos, type Picked } from '../src/lib/attach'
 import { FilesResult, FolderList, Queued, SlashCommandList, UNREADABLE, Uploaded, type FolderHit } from '../src/lib/results'
-import { supports } from '../src/lib/state'
+import { findJob, freeMachine, supports } from '../src/lib/state'
 import { HeaderButton } from '../src/navigation'
 import { useTheme } from '../src/theme'
 
@@ -47,10 +48,14 @@ function withHow(c: Choices, how: How): Choices {
 }
 
 export default function NewTask() {
-  const params = useLocalSearchParams<{ machine?: string; folder?: string; session?: string; title?: string }>()
+  const params = useLocalSearchParams<{ machine?: string; folder?: string; session?: string; title?: string; move?: string }>()
   const { machines, ready } = useHub()
   const { c, wide } = useTheme()
-  const usable = machines.filter(m => m.role !== 'viewer' && m.status !== 'refused')
+  // Moving a queued task: where it is now, and the task.
+  const move = params.move ? /^(.+):(\d+)$/.exec(params.move) : null
+  const moveFrom = move ? machines.find(x => x.id === move[1]) : undefined
+  const [moving] = useState(() => (moveFrom && move ? findJob(moveFrom, Number(move[2])) : null))
+  const usable = machines.filter(m => m.role !== 'viewer' && m.status !== 'refused' && m.id !== moveFrom?.id)
   // The machine you picked, else the one in the link, else one that's online. Worked out on every
   // render: the machines may load after this screen opens (from a link, or a reload).
   const [picked, setPicked] = useState<string | null>(params.machine || null)
@@ -58,23 +63,25 @@ export default function NewTask() {
   const m = machines.find(x => x.id === machineId)
   const session = params.session || null
   const chat = session ? chatCache.get(session) : undefined
-  const [changed, setChanged] = useState<Choices | null>(null)
-  const [touched, setTouched] = useState(false)
+  const [changed, setChanged] = useState<Choices | null>(
+    moving ? { folder: moving.folder, plan: moving.plan, review: moving.review, mode: moving.mode, model: moving.model, effort: moving.effort, isolate: moving.isolate } : null,
+  )
+  const [touched, setTouched] = useState(Boolean(moving))
   // What you chose here, else what you used last time on this machine (or its defaults).
   const choices = touched && changed ? changed : machineId ? hub.choicesFor(machineId) : null
-  const [pickedFolder, setPickedFolder] = useState<string | null | undefined>(params.folder || undefined)
+  const [pickedFolder, setPickedFolder] = useState<string | null | undefined>(params.folder || moving?.folder || undefined)
   const folder = pickedFolder !== undefined ? pickedFolder : machineId ? hub.choicesFor(machineId).folder : null
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<FolderHit[] | null>(null)
   const [searchError, setSearchError] = useState<string | null>(null)
-  const [prompt, setPrompt] = useState('')
+  const [prompt, setPrompt] = useState(moving?.prompt ?? '')
   const [front, setFront] = useState(false)
   // When it starts, and how long it may work.
   const [when, setWhen] = useState<'now' | 'time' | 'reset' | 'after'>('now')
   const [at, setAt] = useState('')
   const [daily, setDaily] = useState(false)
   const [after, setAfter] = useState<number | null>(null)
-  const [limit, setLimit] = useState<number | null>(null)
+  const [limit, setLimit] = useState<number | null>(moving?.maxMinutes ?? null)
   const now = useNow(30_000)
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string; job?: number; group?: string } | null>(null)
   const [sending, setSending] = useState(false)
@@ -93,7 +100,7 @@ export default function NewTask() {
 
   // What you were writing here last time, until it's queued.
   useEffect(() => {
-    if (!machineId || restored || session) return
+    if (!machineId || restored || session || moving) return
     setRestored(true)
     const draft = hub.draftFor(machineId)
     if (draft && !prompt) {
@@ -102,7 +109,7 @@ export default function NewTask() {
     }
   }, [machineId, restored, session, prompt, pickedFolder])
   useEffect(() => {
-    if (!machineId || !restored || session) return
+    if (!machineId || !restored || session || moving) return
     const timer = setTimeout(() => void hub.saveDraft(machineId, { prompt, folder, at: Date.now() }), 600)
     return () => clearTimeout(timer)
   }, [machineId, restored, session, prompt, folder])
@@ -181,10 +188,14 @@ export default function NewTask() {
     return (
       <Page sheet>
         <Stack.Screen options={{ headerLeft: cancel }} />
-        <EmptyState
-          title={machines.length === 0 ? 'No machines yet' : 'No machine takes tasks from this device'}
-          text={machines.length === 0 ? 'Pair a machine first.' : 'It’s a viewer on every machine it’s paired with. An owner can pair it again as an operator.'}
-        />
+        {moveFrom ? (
+          <EmptyState title="No other machine" text="This device can only queue tasks on the machine the task is on." />
+        ) : (
+          <EmptyState
+            title={machines.length === 0 ? 'No machines yet' : 'No machine takes tasks from this device'}
+            text={machines.length === 0 ? 'Pair a machine first.' : 'It’s a viewer on every machine it’s paired with. An owner can pair it again as an operator.'}
+          />
+        )}
       </Page>
     )
   }
@@ -221,9 +232,10 @@ export default function NewTask() {
           ? 'When that task has finished well. If it fails, this one doesn’t run.'
           : undefined
   const whenReady = whenNow === 'now' || whenNow === 'reset' || (whenNow === 'time' && atMinutes !== null) || (whenNow === 'after' && after !== null)
-  const canQueue = Boolean(folder && prompt.trim()) && !sending && whenReady
   const online = m.status === 'connected'
-  const variants = threeWays && !session ? (ways === 'models' && models.length >= 3 ? models.slice(0, 3) : [choices.model, choices.model, choices.model]) : [choices.model]
+  // A moved task goes straight to a machine that's online: it leaves the first one at once.
+  const canQueue = Boolean(folder && prompt.trim()) && !sending && whenReady && (!moving || online)
+  const variants = threeWays && !session && !moving ? (ways === 'models' && models.length >= 3 ? models.slice(0, 3) : [choices.model, choices.model, choices.model]) : [choices.model]
   const suggestions =
     slash !== null
       ? (commands?.list ?? []).filter(x => x.name.toLowerCase().includes(slash)).slice(0, 6)
@@ -232,6 +244,10 @@ export default function NewTask() {
 
   const submit = async () => {
     if (!folder || sending) return
+    if (moving && moveFrom && findJob(moveFrom, moving.id)?.status !== 'queued') {
+      setOutcome({ ok: false, text: `#${moving.id} isn’t waiting on ${moveFrom.name} any more.` })
+      return
+    }
     setSending(true)
     try {
       const group = variants.length > 1 ? `try-${Date.now().toString(36)}` : undefined
@@ -281,6 +297,15 @@ export default function NewTask() {
         }
         const queued = Queued.safeParse(r.data)
         if (queued.success) ids.push(queued.data.job.id)
+      }
+      if (moving && moveFrom) {
+        const gone = await hub.request(moveFrom.id, { type: 'job', action: 'remove', job: moving.id })
+        setOutcome({
+          ok: true,
+          text: gone.ok ? `Moved to ${m.name} as #${ids[0]}.` : `Queued #${ids[0]} on ${m.name}, but #${moving.id} is still on ${moveFrom.name}: ${gone.error ?? 'it didn’t answer'}.`,
+          job: ids[0],
+        })
+        return
       }
       await hub.rememberChoices(m.id, { ...choices, mode, folder: session ? choices.folder : folder })
       await hub.saveDraft(m.id, null)
@@ -332,13 +357,30 @@ export default function NewTask() {
   }
 
   const typedPath = /^[~/]/.test(query.trim()) ? query.trim() : null
+  const free = freeMachine(usable, now)
+  const pickMachine = (id: string) => {
+    setPicked(id)
+    setHits(null)
+    setQuery('')
+    // A task being moved keeps its own folder and choices.
+    if (moving) return
+    setTouched(false)
+    setChanged(null)
+    if (!session) setPickedFolder(undefined)
+  }
   const check = <Ionicons name="checkmark" size={wide ? 15 : 19} color={c.accent} />
   return (
     <Page sheet testID="new">
       {/* Phones: Queue in the header. A wide window: at the end of the form, like a dialog's button. */}
-      <Stack.Screen options={{ headerLeft: cancel, headerRight: wide ? undefined : () => <HeaderButton title="Queue" bold disabled={!canQueue} onPress={() => void submit()} testID="new-submit" /> }} />
-      {usable.length > 1 ? (
-        <Group header="Machine">
+      <Stack.Screen
+        options={{
+          title: moving ? 'Move task' : 'New task',
+          headerLeft: cancel,
+          headerRight: wide ? undefined : () => <HeaderButton title={moving ? 'Move' : 'Queue'} bold disabled={!canQueue} onPress={() => void submit()} testID="new-submit" />,
+        }}
+      />
+      {usable.length > 1 || moving ? (
+        <Group header={moving ? `Move #${moving.id} from ${moveFrom?.name} to` : 'Machine'} footer={free === null && usable.length > 1 ? 'None is free right now: all are busy, offline or waiting for a limit.' : undefined}>
           {usable.map(x => (
             <Row
               key={x.id}
@@ -346,19 +388,15 @@ export default function NewTask() {
               title={x.name}
               value={x.status === 'connected' ? undefined : 'offline'}
               trailing={x.id === m.id ? check : <View style={{ width: wide ? 15 : 19 }} />}
-              onPress={() => {
-                setPicked(x.id)
-                setTouched(false)
-                setChanged(null)
-                if (!session) setPickedFolder(undefined)
-                setHits(null)
-                setQuery('')
-              }}
+              onPress={() => pickMachine(x.id)}
             />
           ))}
+          {usable.length > 1 && free ? (
+            <Row title="Any free machine" subtitle="The one with the least to do and the most limit left" tone="accent" onPress={() => pickMachine(free.id)} testID="new-machine-free" />
+          ) : null}
         </Group>
       ) : null}
-      {m.status !== 'connected' ? <Note text={`${m.name} is offline. The task waits on this device and goes out when it’s back.`} /> : null}
+      {m.status !== 'connected' ? <Note text={moving ? `${m.name} is offline. Pick a machine that’s online to move it to.` : `${m.name} is offline. The task waits on this device and goes out when it’s back.`} /> : null}
 
       <Group header="Folder" footer={!session && !folder && policy ? `${m.name} lets apps use ${policy.allowedRoots.map(r => shortPath(r, 40)).join(', ')}.` : undefined}>
         {session ? (
@@ -489,7 +527,7 @@ export default function NewTask() {
       <Group>
         {!session ? <SwitchRow title="Own git branch" subtitle="For a new conversation, in a git folder" value={choices.isolate} onChange={v => change({ ...choices, isolate: v })} /> : null}
         <SwitchRow title="Run next" value={front} onChange={setFront} />
-        {!session && supports(m, 'group') ? (
+        {!session && !moving && supports(m, 'group') ? (
           <SwitchRow title="Try it three ways" subtitle="Three tasks, each on its own branch, to compare" value={threeWays} onChange={setThreeWays} testID="new-three" />
         ) : null}
         {threeWays && !session ? (
@@ -552,7 +590,7 @@ export default function NewTask() {
       {outcome && !outcome.ok ? <Note ok={false} text={outcome.text} /> : null}
       {wide ? (
         <HStack style={{ justifyContent: 'flex-end' }}>
-          <Button title="Queue" disabled={!canQueue} onPress={submit} testID="new-submit" />
+          <Button title={moving ? 'Move' : 'Queue'} disabled={!canQueue} onPress={submit} testID="new-submit" />
         </HStack>
       ) : null}
     </Page>

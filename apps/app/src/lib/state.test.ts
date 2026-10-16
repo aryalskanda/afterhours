@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Event } from '@afterhours/protocol'
 import { job } from '../../e2e/fake-machine'
-import { applyEvent, findJob, machineState, needsYou, timeline } from './state'
+import { applyEvent, findJob, finishedSince, freeMachine, machineState, needsYou, runningNow, timeline } from './state'
 
 const base = () => machineState({ id: 'm1', name: 'box', relay: 'ws://x/v1', role: 'owner', lastSeq: 0, addedAt: 0 })
 const event = (seq: number, notice: Event['notice']): Event => ({ type: 'event', seq, at: 1000 * seq, notice, text: notice.type })
@@ -40,5 +40,29 @@ describe('machine state', () => {
     const a = { ...base(), id: 'a', approvals: [{ code: 'late', job: 1, kind: 'permission' as const, payload: null, createdAt: 1, expiresAt: 900 }] }
     const b = { ...base(), id: 'b', approvals: [{ code: 'soon', job: 2, kind: 'question' as const, payload: null, createdAt: 2, expiresAt: 100 }, { code: 'none', job: 3, kind: 'review' as const, payload: null, createdAt: 0 }] }
     expect(needsYou([a, b]).map(n => n.approval.code)).toEqual(['soon', 'late', 'none'])
+  })
+})
+
+describe('across machines', () => {
+  const base = (id: string, name: string) => ({ ...machineState({ id, name, relay: 'r', role: 'operator', lastSeq: 0, addedAt: 0 }), status: 'connected' as const, synced: true })
+  const now = Date.now()
+
+  test('a free machine: the least to do, then the most limit left', () => {
+    const a = { ...base('a', 'alpha'), active: job(1, { status: 'running' }) }
+    const b = { ...base('b', 'bravo'), limits: { fiveHour: { usedPct: 70, resetsAt: null } } }
+    const c = { ...base('c', 'charlie'), limits: { fiveHour: { usedPct: 20, resetsAt: null } } }
+    expect(freeMachine([a, b, c], now)?.id).toBe('c')
+    // Waiting for its limit, offline, or a viewer: not free.
+    const limited = { ...c, limits: { ...c.limits, blockedUntil: now + 60_000 } }
+    expect(freeMachine([a, b, limited], now)?.id).toBe('b')
+    expect(freeMachine([a, { ...b, status: 'offline' as const }, { ...limited, role: 'viewer' as const }], now)?.id).toBe('a')
+    expect(freeMachine([], now)).toBeNull()
+  })
+
+  test('running now and what finished since', () => {
+    const a = { ...base('a', 'alpha'), active: job(1, { status: 'running' }), recent: [job(2, { status: 'done', finishedAt: now - 1000 }), job(3, { status: 'failed', finishedAt: now - 9000 })] }
+    const b = { ...base('b', 'bravo'), recent: [job(7, { status: 'done', finishedAt: now - 5000 })] }
+    expect(runningNow([a, b]).map(x => x.job.id)).toEqual([1])
+    expect(finishedSince([a, b], now - 6000).map(x => `${x.machine.name}#${x.job.id}`)).toEqual(['alpha#2', 'bravo#7'])
   })
 })

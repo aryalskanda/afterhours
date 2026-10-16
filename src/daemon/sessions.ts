@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
 export const CLAUDE_DIR = process.env.CQ_CLAUDE_DIR ?? join(homedir(), '.claude')
-const CLAUDE_JSON = process.env.CQ_CLAUDE_JSON ?? join(homedir(), '.claude.json')
+export const CLAUDE_JSON = process.env.CQ_CLAUDE_JSON ?? join(homedir(), '.claude.json')
 
 /** An entry from ~/.claude/sessions/<pid>.json: every live Claude Code process, VS Code ones included. */
 export interface LiveSession {

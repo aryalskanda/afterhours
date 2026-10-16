@@ -57,8 +57,8 @@ export function MachineRow(props: { machine: MachineState }) {
   )
 }
 
-/** A task in a list: done, failed, running or waiting, what it was asked, where and when. */
-export function TaskRow(props: { machine: string; job: JobInfo; position?: number }) {
+/** A task in a list: done, failed, running or waiting, what it was asked, where and when. `where`: the machine's name, in lists across machines. */
+export function TaskRow(props: { machine: string; job: JobInfo; position?: number; where?: string }) {
   const j = props.job
   const { c, wide } = useTheme()
   const now = useNow(30_000)
@@ -90,7 +90,7 @@ export function TaskRow(props: { machine: string; job: JobInfo; position?: numbe
           <Txt v="footnote" tone="soft" mono>
             #{j.id}
           </Txt>
-          {` · ${basename(j.folder)} · ${when}`}
+          {` · ${props.where ? `${props.where} · ` : ''}${basename(j.folder)} · ${when}`}
         </Txt>
       }
       chevron

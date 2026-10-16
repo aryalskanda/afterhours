@@ -195,3 +195,28 @@ export function timeline(m: MachineState, jobId: number): Event[] {
 export function wantsAttention(n: Notice): boolean {
   return ['permission', 'question', 'plan_review', 'trust', 'held', 'failed', 'conflict', 'setup_warning'].includes(n.type)
 }
+
+// --- across machines -------------------------------------------------------------------------------
+
+/** What every machine is working on now. */
+export function runningNow(machines: MachineState[]): { machine: MachineState; job: JobInfo }[] {
+  return machines.flatMap(machine => (machine.active ? [{ machine, job: machine.active }] : []))
+}
+
+/**
+ * The machine to give a new task to: one this device may queue on, online, not waiting for a
+ * limit, with the least to do and the most of its 5-hour limit left.
+ */
+export function freeMachine(machines: MachineState[], now: number): MachineState | null {
+  const busy = (m: MachineState) => (m.active ? 1 : 0) + m.queued.length
+  const used = (m: MachineState) => [m.limits.fiveHour?.usedPct ?? 0, m.limits.sevenDay?.usedPct ?? 0] as const
+  const free = machines.filter(m => m.role !== 'viewer' && m.status === 'connected' && m.synced && !(m.limits.blockedUntil && m.limits.blockedUntil > now))
+  free.sort((a, b) => busy(a) - busy(b) || used(a)[0] - used(b)[0] || used(a)[1] - used(b)[1] || a.name.localeCompare(b.name))
+  return free[0] ?? null
+}
+
+/** Tasks that finished after `since`, on every machine, newest first. */
+export function finishedSince(machines: MachineState[], since: number): { machine: MachineState; job: JobInfo }[] {
+  const all = machines.flatMap(machine => machine.recent.filter(j => (j.finishedAt ?? 0) > since).map(job => ({ machine, job })))
+  return all.sort((a, b) => (b.job.finishedAt ?? 0) - (a.job.finishedAt ?? 0))
+}

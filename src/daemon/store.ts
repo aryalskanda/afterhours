@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS limit_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  five_hour REAL,
+  seven_day REAL
+);
+CREATE INDEX IF NOT EXISTS limit_samples_at ON limit_samples (at);
 CREATE TABLE IF NOT EXISTS watches (
   session_id TEXT PRIMARY KEY,
   cwd TEXT,
@@ -318,6 +325,50 @@ export class Store {
       )
       .all(limit)
       .map(toJob)
+  }
+
+  /**
+   * Finished jobs, newest first: before job `before`, with `status`, whose prompt or final answer
+   * has every word of `query`. One more than `limit` tells there are more.
+   */
+  searchFinished(o: { before?: number; status?: 'done' | 'failed' | 'cancelled'; query?: string; limit: number }): Job[] {
+    const where = [o.status ? 'status = ?' : "status IN ('done', 'failed', 'cancelled')"]
+    const args: SqlValue[] = o.status ? [o.status] : []
+    if (o.before !== undefined) {
+      where.push('id < ?')
+      args.push(o.before)
+    }
+    for (const word of (o.query ?? '').split(/\s+/).filter(Boolean).slice(0, 8)) {
+      where.push("(prompt LIKE ? ESCAPE '\\' OR last_message LIKE ? ESCAPE '\\')")
+      const like = `%${word.replace(/[\\%_]/g, c => `\\${c}`)}%`
+      args.push(like, like)
+    }
+    return this.db
+      .query<Row, SqlValue[]>(`SELECT * FROM jobs WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+      .all(...args, o.limit)
+      .map(toJob)
+  }
+
+  // --- usage limits over time ------------------------------------------------
+
+  addLimitSample(at: number, fiveHour: number | null, sevenDay: number | null): void {
+    this.db.query('INSERT INTO limit_samples (at, five_hour, seven_day) VALUES (?, ?, ?)').run(at, fiveHour, sevenDay)
+  }
+
+  lastLimitSample(): { at: number; fiveHour: number | null; sevenDay: number | null } | null {
+    const r = this.db.query<{ at: number; five_hour: number | null; seven_day: number | null }, []>('SELECT at, five_hour, seven_day FROM limit_samples ORDER BY id DESC LIMIT 1').get()
+    return r ? { at: r.at, fiveHour: r.five_hour, sevenDay: r.seven_day } : null
+  }
+
+  limitSamples(since: number): { at: number; fiveHour: number | null; sevenDay: number | null }[] {
+    return this.db
+      .query<{ at: number; five_hour: number | null; seven_day: number | null }, [number]>('SELECT at, five_hour, seven_day FROM limit_samples WHERE at >= ? ORDER BY id')
+      .all(since)
+      .map(r => ({ at: r.at, fiveHour: r.five_hour, sevenDay: r.seven_day }))
+  }
+
+  pruneLimitSamples(olderThan: number): void {
+    this.db.query('DELETE FROM limit_samples WHERE at < ?').run(olderThan)
   }
 
   /** A waiting or running job that continues this conversation. */

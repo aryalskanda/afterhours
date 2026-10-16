@@ -9,6 +9,7 @@ import { useState, type ReactNode } from 'react'
 import { Platform, Text, View } from 'react-native'
 import { hub, useHub, useNow } from '../app-state'
 import { basename, permissionsLabel, plainReply } from '../lib/format'
+import { permissionRisk, type Risk } from '../lib/risk'
 import { supports, type Need } from '../lib/state'
 import { mono, useTheme } from '../theme'
 import { countdown } from './bits'
@@ -88,6 +89,25 @@ function From(props: { need: Need; extra?: string | null }) {
   )
 }
 
+/** Why to look twice at a permission: red for what can't be undone, grey for the rest. */
+function RiskNotes(props: { risk: Risk; code: string }) {
+  const { c, wide } = useTheme()
+  if (props.risk.reasons.length === 0) return null
+  const high = props.risk.level === 'high'
+  return (
+    <View style={{ gap: 4 }} testID={`risk-${props.code}`}>
+      {props.risk.reasons.map(r => (
+        <View key={r} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Ionicons name={high ? 'warning' : 'information-circle-outline'} size={wide ? 13 : 15} color={high ? c.danger : c.soft} />
+          <Txt v="footnote" tone={high ? 'danger' : 'soft'}>
+            {r}
+          </Txt>
+        </View>
+      ))}
+    </View>
+  )
+}
+
 function Code(props: { text: string }) {
   const { c, t, wide } = useTheme()
   return (
@@ -153,12 +173,19 @@ function PermissionCard(props: Props) {
   }
   const rules = supports(need.machine, 'rules') ? (a.suggestions ?? []) : []
   const before = a.allowedBefore ?? 0
+  const risk = permissionRisk(a.tool, a.detail, need.job?.folder ?? null)
   return (
     <Group testID={`request-${a.code}`} footer={done ? undefined : countdown(a.expiresAt, now, 'Denied')}>
       <Block>
         <From need={need} />
         <Txt v="headline">{permissionTitle(a.tool)}</Txt>
+        {risk.summary ? (
+          <Txt v="subhead" tone="soft" testID={`risk-summary-${a.code}`}>
+            {risk.summary}
+          </Txt>
+        ) : null}
         {a.detail ? <Code text={a.detail} /> : null}
+        {done ? null : <RiskNotes risk={risk} code={a.code} />}
         {before >= 2 && !done ? (
           <Txt v="footnote" tone="soft" testID={`allowed-before-${a.code}`}>
             You allowed this {before} times before.

@@ -44,6 +44,8 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
+let restarts = 0
+
 /** The conversations the fake machine has; tests add to it. */
 let conversations: Chat[] = []
 const chats: ChatSource = {
@@ -100,6 +102,10 @@ function machine() {
     git,
     uploadsDir: join(dir, 'uploads'),
     claudeDir: join(dir, 'claude'),
+    claudeJson: join(dir, 'claude.json'),
+    claudePath: '/usr/bin/true',
+    logPath: join(dir, 'cqd.log'),
+    restart: () => restarts++,
     log: () => {},
     now: Date.now,
     identityPath: join(dir, 'identity.json'),
@@ -634,5 +640,106 @@ describe('prompts', () => {
       { name: 'release-notes', description: 'Write release notes from the log', scope: 'user', kind: 'skill' },
     ])
     expect(await conn.request({ type: 'commands', folder: m.outside })).toMatchObject({ ok: false, code: 'policy' })
+  })
+})
+
+describe('machines, money, safety', () => {
+  const base = { plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'remote' }
+
+  test('history: paging back, a status, words in the prompt or the answer', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const ids: number[] = []
+    for (const [i, p] of ['Add CSV export', 'Fix the 50% bug', 'Add dark mode', 'Fix flaky test'].entries()) {
+      const j = m.store.addJob({ ...base, projectDir: m.project, prompt: p }, Date.now())
+      m.store.updateJob(j.id, { status: i === 3 ? 'failed' : 'done', finishedAt: Date.now() + i, lastMessage: i === 2 ? 'The toggle is in Settings' : null })
+      ids.push(j.id)
+    }
+    const page = async (o: object) => (await conn.request({ type: 'jobs', ...o })).data as { recent: { id: number }[]; more: boolean }
+    expect(await page({ recent: 3 })).toMatchObject({ recent: [{ id: ids[3] }, { id: ids[2] }, { id: ids[1] }], more: true })
+    expect((await page({ recent: 2, before: ids[3]! + 1 })).recent.map(j => j.id)).toEqual([ids[3]!, ids[2]!])
+    expect((await page({ recent: 2, before: ids[3]! + 1 })).more).toBe(true)
+    expect((await page({ recent: 2, before: ids[1] })).recent.map(j => j.id)).toEqual([ids[0]!])
+    expect((await page({ status: 'failed' })).recent.map(j => j.id)).toEqual([ids[3]!])
+    expect((await page({ query: 'add' })).recent.map(j => j.id)).toEqual([ids[2]!, ids[0]!])
+    expect((await page({ query: 'settings toggle' })).recent.map(j => j.id)).toEqual([ids[2]!])
+    expect((await page({ query: '50%' })).recent.map(j => j.id)).toEqual([ids[1]!])
+    expect((await page({ query: '%' })).recent.map(j => j.id)).toEqual([ids[1]!])
+  })
+
+  test('chats: a search through titles and last messages, in shared folders', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const chat = (id: string, title: string, cwd: string) => ({ sessionId: id, cwd, title, lastPrompt: null, lastReply: 'Moved the price lookup', updatedAt: 1, model: null, permissionMode: null, limit: null, where: null, busy: false, running: false })
+    conversations = [chat('a', 'Refactor the checkout', m.project), chat('b', 'Checkout notes', m.outside), chat('c', 'Dark mode', m.project)]
+    const r = await conn.request({ type: 'chats', query: 'checkout price' })
+    expect((r.data as { chats: { session: string }[] }).chats.map(c => c.session)).toEqual(['a'])
+  })
+
+  test('health for everyone, the log only for owners; restart and invites for owners', async () => {
+    const m = machine()
+    require('node:fs').writeFileSync(join(dir, 'cqd.log'), 'line one\nline two\n')
+    const viewer = await pairedApp(m, { role: 'viewer' })
+    const h = (await viewer.conn.request({ type: 'health' })).data as { version: string; uptimeSec: number; logs?: string[]; load: number }
+    expect(h.version).toBe('0.1.0-test')
+    expect(h.uptimeSec).toBeGreaterThan(0)
+    expect(h.logs).toBeUndefined()
+    expect(await viewer.conn.request({ type: 'restart' })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await viewer.conn.request({ type: 'pair.offer', role: 'viewer' })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await viewer.conn.request({ type: 'audit' })).toMatchObject({ ok: false, code: 'forbidden' })
+
+    const owner = await pairedApp(m, { role: 'owner' })
+    expect(((await owner.conn.request({ type: 'health' })).data as { logs: string[] }).logs).toEqual(['line one', 'line two'])
+    const invite = await owner.conn.request({ type: 'pair.offer', role: 'operator' })
+    expect((invite.data as { link: string }).link).toStartWith('afterhours://pair?')
+    const before = restarts
+    expect(await owner.conn.request({ type: 'restart' })).toMatchObject({ ok: true })
+    await until(() => restarts === before + 1)
+    const audit = (await owner.conn.request({ type: 'audit', limit: 50 })).data as { entries: { action: string }[] }
+    expect(audit.entries.map(e => e.action)).toContain('restart')
+  })
+
+  test('Claude Code: the account for owners, MCP servers by name only, and CLAUDE.md', async () => {
+    const m = machine()
+    const fs = require('node:fs')
+    fs.writeFileSync(
+      join(dir, 'claude.json'),
+      JSON.stringify({
+        oauthAccount: { emailAddress: 'me@example.com', organizationName: 'Me' },
+        mcpServers: { github: { type: 'http', url: 'https://x', headers: { Authorization: 'Bearer secret' } } },
+        projects: { [m.project]: { mcpServers: { db: { command: 'pg-mcp', env: { PGPASSWORD: 'secret' } } } } },
+      }),
+    )
+    fs.writeFileSync(join(m.project, '.mcp.json'), JSON.stringify({ mcpServers: { linear: { type: 'sse', url: 'https://y' } } }))
+    fs.writeFileSync(join(m.project, 'CLAUDE.md'), '# Shop\nUse bun.\n')
+    const viewer = await pairedApp(m, { role: 'viewer' })
+    const v = (await viewer.conn.request({ type: 'claude', folder: m.project })).data as Record<string, unknown>
+    expect(v.account).toBeUndefined()
+    expect(v.mcp).toEqual([
+      { name: 'github', scope: 'user', type: 'http' },
+      { name: 'db', scope: 'local', type: 'stdio' },
+      { name: 'linear', scope: 'project', type: 'sse' },
+    ])
+    expect(JSON.stringify(v)).not.toContain('secret')
+    expect(v.memory).toEqual({ path: join(m.project, 'CLAUDE.md'), exists: true, text: '# Shop\nUse bun.\n' })
+    expect(await viewer.conn.request({ type: 'claude.md', folder: m.project, text: 'x' })).toMatchObject({ ok: false, code: 'forbidden' })
+    const owner = await pairedApp(m, { role: 'owner' })
+    expect(((await owner.conn.request({ type: 'claude' })).data as { account: unknown }).account).toEqual({ email: 'me@example.com', organization: 'Me' })
+    expect(await owner.conn.request({ type: 'claude.md', folder: m.project, text: '# Shop\nUse bun. Run tests with bun test.\n' })).toMatchObject({ ok: true })
+    expect(fs.readFileSync(join(m.project, 'CLAUDE.md'), 'utf8')).toContain('bun test')
+    expect(await owner.conn.request({ type: 'claude.md', folder: m.outside, text: 'x' })).toMatchObject({ ok: false, code: 'policy' })
+  })
+
+  test('the limits over the last week, as sampled from the status line', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'x' }, Date.now())
+    m.store.updateJob(job.id, { status: 'running' })
+    const line = (five: number) => ({ rate_limits: { five_hour: { used_percentage: five, resets_at: Math.floor(Date.now() / 1000) + 3600 }, seven_day: { used_percentage: 20, resets_at: Math.floor(Date.now() / 1000) + 86400 } } })
+    m.runner.onStatusline(job.id, line(40))
+    m.runner.onStatusline(job.id, line(40.4))
+    m.runner.onStatusline(job.id, line(55))
+    const r = await conn.request({ type: 'limits.history' })
+    expect((r.data as { samples: { fiveHour: number }[] }).samples.map(s => s.fiveHour)).toEqual([40, 55])
   })
 })

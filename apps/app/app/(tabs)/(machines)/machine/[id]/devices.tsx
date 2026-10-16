@@ -1,14 +1,98 @@
 // The devices paired with a machine (owners only): their roles, when they were last seen, and
-// renaming or removing them. A removed device is cut off at once.
+// renaming or removing them. A removed device is cut off at once. Owners can invite another
+// device: a pairing link and its QR code, good for one device for a few minutes.
 
-import { fingerprint, type DeviceInfo } from '@afterhours/protocol'
+import { fingerprint, type DeviceInfo, type Role } from '@afterhours/protocol'
+import * as Clipboard from 'expo-clipboard'
 import { Stack, useLocalSearchParams } from 'expo-router'
 import { useCallback, useEffect, useState } from 'react'
+import { Platform, Share } from 'react-native'
 import { hub, useHub, useMachine, useNow } from '../../../../../src/app-state'
-import { Block, Button, ConfirmRow, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
+import { QrCode } from '../../../../../src/components/QrCode'
+import { Block, Button, ConfirmRow, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Segmented, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
-import { ago, roleLabel } from '../../../../../src/lib/format'
-import { DeviceList, UNREADABLE } from '../../../../../src/lib/results'
+import { ago, clock, roleLabel } from '../../../../../src/lib/format'
+import { DeviceList, Offer, UNREADABLE } from '../../../../../src/lib/results'
+import { supports } from '../../../../../src/lib/state'
+
+const ROLES: { value: Role; label: string }[] = [
+  { value: 'operator', label: 'Operator' },
+  { value: 'viewer', label: 'Viewer' },
+  { value: 'owner', label: 'Owner' },
+]
+
+const ROLE_HINT: Record<Role, string> = {
+  operator: 'Queues tasks and answers requests.',
+  viewer: 'Sees tasks and requests, changes nothing.',
+  owner: 'Everything, devices and commands too.',
+}
+
+/** A link another device pairs with: shown as a QR code, copied or shared. */
+function Invite(props: { machine: string; name: string; onUsed: () => void }) {
+  const now = useNow(5_000)
+  const [role, setRole] = useState<Role>('operator')
+  const [offer, setOffer] = useState<{ link: string; expires: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const { onUsed } = props
+  const live = offer && offer.expires > now
+
+  // While it's open, the new device shows up as soon as it pairs.
+  useEffect(() => {
+    if (!live) return
+    const timer = setInterval(onUsed, 5_000)
+    return () => clearInterval(timer)
+  }, [live, onUsed])
+
+  const create = async () => {
+    setError(null)
+    setCopied(false)
+    const r = await hub.request(props.machine, { type: 'pair.offer', role }, { timeoutMs: 15_000 })
+    const parsed = r.ok ? Offer.safeParse(r.data) : null
+    if (parsed?.success) setOffer(parsed.data)
+    else setError(r.error ?? UNREADABLE)
+  }
+
+  if (!live) {
+    return (
+      <Group header="Invite a device" footer={ROLE_HINT[role]} testID="invite">
+        <Block>
+          <Segmented options={ROLES} value={role} onChange={setRole} testID="invite-role" />
+        </Block>
+        <Row title={offer ? 'That link expired. Make another' : 'Make a pairing link'} tone="accent" onPress={() => void create()} testID="invite-create" />
+        {error ? <Row title={<Txt tone="danger">{error}</Txt>} /> : null}
+      </Group>
+    )
+  }
+  return (
+    <Group
+      header={`Invite a device as ${roleLabel(role).toLowerCase()}`}
+      footer={`Scan it in the Afterhours app on the other device, or send it the link. It pairs one device, until ${clock(offer.expires, now)}; anyone with it can, so keep it to your own devices.`}
+      testID="invite"
+    >
+      <Block gap={12}>
+        <QrCode value={offer.link} size={220} label={`Pairing code for ${props.name}`} testID="invite-qr" />
+        <Txt v="footnote" tone="soft" mono selectable testID="invite-link">
+          {offer.link}
+        </Txt>
+        <HStack>
+          <Button
+            flex
+            kind="gray"
+            title={copied ? 'Copied' : 'Copy link'}
+            onPress={async () => {
+              await Clipboard.setStringAsync(offer.link)
+              setCopied(true)
+            }}
+            testID="invite-copy"
+          />
+          {Platform.OS !== 'web' ? <Button flex kind="gray" title="Share" onPress={() => void Share.share({ message: offer.link })} /> : null}
+          <Button kind="plain" title="Done" onPress={() => setOffer(null)} testID="invite-done" />
+        </HStack>
+      </Block>
+    </Group>
+  )
+}
 
 export default function Devices() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -113,8 +197,9 @@ export default function Devices() {
         </Group>
       ))}
       {act.outcome ? <Note ok={act.outcome.ok} text={act.outcome.text} /> : null}
+      {m.role === 'owner' && online && supports(m, 'invite') ? <Invite machine={m.id} name={m.name} onUsed={load} /> : null}
       <Txt v="footnote" tone="soft" style={{ paddingHorizontal: 16 }}>
-        To add one, run cq pair on {m.name}.
+        {supports(m, 'invite') ? `Or run cq pair on ${m.name}.` : `To add one, run cq pair on ${m.name}.`}
       </Txt>
     </Page>
   )

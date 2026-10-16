@@ -1,10 +1,10 @@
 // What machines send back for each request, checked before the app uses it: an older or newer
 // machine may send something this version doesn't expect.
 
-import { ChatInfo, DeviceInfo, Event, JobInfo } from '@afterhours/protocol'
+import { AuditEntryInfo, ChatInfo, DeviceInfo, Event, JobInfo, LimitSample } from '@afterhours/protocol'
 import { z } from 'zod'
 
-export { DiffSummary, FilePatch, FilesResult, TaskDetail, TranscriptPage } from '@afterhours/protocol'
+export { ClaudeInfo, DiffSummary, FilePatch, FilesResult, HealthInfo, TaskDetail, TranscriptPage } from '@afterhours/protocol'
 import { SlashCommand } from '@afterhours/protocol'
 
 export const ChatList = z.object({ chats: z.array(ChatInfo), more: z.boolean() })
@@ -21,5 +21,13 @@ export const SlashCommandList = z.object({ commands: z.array(SlashCommand) })
 export const Uploaded = z.object({ path: z.string() })
 /** `timeline`: every notice about one task. */
 export const Timeline = z.object({ events: z.array(Event) })
+/** `jobs`: the queue, and finished tasks newest first; `more` when older ones match too. */
+export const Jobs = z.object({ active: JobInfo.nullable(), queued: z.array(JobInfo), recent: z.array(JobInfo), more: z.boolean().optional() })
+/** `limits.history`: the usage limits as the machine sampled them over the last week. */
+export const LimitHistory = z.object({ samples: z.array(LimitSample) })
+/** `audit`: what devices did on the machine, newest first. */
+export const AuditList = z.object({ entries: z.array(AuditEntryInfo) })
+/** `pair.offer`: a pairing link for another device, until `expires`. */
+export const Offer = z.object({ link: z.string(), expires: z.number() })
 
 export const UNREADABLE = 'The machine sent something this version of the app doesn’t understand. Update the app or Afterhours on the machine.'

@@ -75,6 +75,8 @@ export interface HubState {
   outbox: Outgoing[]
   /** The latest live event that needs you, for a banner. */
   attention: Attention | null
+  /** When you last left the app: what finished since is "while you were away". Null once read. */
+  away: number | null
 }
 
 export interface HubOptions {
@@ -96,7 +98,11 @@ const KEYS = {
   saved: 'afterhours.savedPrompts',
   drafts: 'afterhours.drafts',
   outbox: 'afterhours.outbox',
+  left: 'afterhours.leftAt',
 }
+
+/** Away for less than this (a quick look at another app): nothing new to report. */
+const AWAY_MIN_MS = 5 * 60_000
 
 /** A prompt you were writing, kept per machine until it's queued. */
 export interface Draft {
@@ -135,7 +141,9 @@ export class Hub {
     attention: null,
     saved: [],
     outbox: [],
+    away: null,
   }
+  private leftAt: number | null = null
   private drafts: Record<string, Draft> = {}
 
   constructor(private readonly o: HubOptions) {}
@@ -185,10 +193,11 @@ export class Hub {
       this.drafts = JSON.parse((await s.get(KEYS.drafts)) ?? '{}') as Record<string, Draft>
       const saved = JSON.parse((await s.get(KEYS.saved)) ?? '[]') as string[]
       const outbox = JSON.parse((await s.get(KEYS.outbox)) ?? '[]') as Outgoing[]
+      const leftAt = Number(await s.get(KEYS.left)) || null
       const id = peerId(identity.publicKey)
       this.client = new AppClient({ identity, device: { name, platform: this.o.platform, app: this.o.app }, socket: this.o.socket, log: this.o.log })
       this.startedAt = this.now()
-      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox })
+      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox, away: leftAt })
       for (const m of machines) this.connect(m)
     } catch (err) {
       this.set({ ready: true, error: err instanceof Error ? err.message : String(err) })
@@ -240,16 +249,20 @@ export class Hub {
     return paired
   }
 
-  /** Removes a machine from this device, and asks it to forget this device too. */
+  /**
+   * Removes a machine from this device at once (and what waited to go to it), then asks it to
+   * forget this device too.
+   */
   async forget(id: string): Promise<void> {
     const conn = this.conns.get(id)
+    this.conns.delete(id)
+    this.set({ machines: this.state.machines.filter(m => m.id !== id) })
+    await this.save()
+    if (this.state.outbox.some(x => x.machine === id)) await this.setOutbox(this.state.outbox.filter(x => x.machine !== id))
     if (conn && conn.status === 'connected') {
       await conn.request({ type: 'devices.remove', device: this.state.deviceId }, { timeoutMs: 4000 }).catch(() => undefined)
     }
     this.client?.disconnect(id)
-    this.conns.delete(id)
-    this.set({ machines: this.state.machines.filter(m => m.id !== id) })
-    await this.save()
   }
 
   /** Sends a request to a machine. Never throws: a failure comes back as a result that says why. */
@@ -267,6 +280,19 @@ export class Hub {
   /** The app came back to the foreground: reconnect now rather than when a ping notices. */
   wake(): void {
     this.client?.wake()
+    if (this.leftAt && this.now() - this.leftAt >= AWAY_MIN_MS) this.set({ away: this.leftAt })
+    this.leftAt = null
+  }
+
+  /** The app went to the background (or closed): from now on is "while you were away". */
+  leave(): void {
+    this.leftAt = this.now()
+    void this.o.storage.set(KEYS.left, String(this.leftAt))
+  }
+
+  /** You've seen what happened while you were away. */
+  dismissAway(): void {
+    this.set({ away: null })
   }
 
   /** Pull to refresh: a fresh snapshot from every machine that's online (and a reconnect for the rest). */

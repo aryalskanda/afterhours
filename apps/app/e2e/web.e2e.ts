@@ -3,9 +3,10 @@
 // received, not just what the screen shows. Screenshots land in e2e/out/.
 //   npm run export:web && bun e2e/web.e2e.ts
 
-import { describeAnswers, type QuestionAnswer, type Request } from '@afterhours/protocol'
+import { describeAnswers, parsePairingLink, type QuestionAnswer, type Request } from '@afterhours/protocol'
 import { join } from 'node:path'
 import { startRelay } from '../../../relay/src/server'
+import { Hub } from '../src/lib/hub'
 import { drive, serveWeb, until } from './browser'
 import { askSamples, fakeMachine } from './fake-machine'
 
@@ -55,6 +56,8 @@ try {
     await tap('attention')
     await visible('request-perma')
     await see('npm test -- --watch=false')
+    // What it does, in words.
+    await see('Runs the tests')
     await shot('06-inbox')
   })
 
@@ -306,15 +309,185 @@ try {
     await shot('12g-comment')
   })
 
-  await check('after a reload the machine is still paired and comes back online', async () => {
+  await check('history: all tasks, older pages, a filter, words; search across machines', async () => {
     await page.goto(base)
+    await tap('machine-build-box')
+    await tap('open-all-tasks')
+    await see('Add CSV export to reports')
+    // A page at a time (this machine answers eight), then the older ones.
+    await tap('tasks-more')
+    await see('Set up the project')
+    if (!sent('jobs', r => r.before === 5)) throw new Error('the second page wasn’t asked from #5 back')
+    await tap('tasks-status-failed')
+    await see('Fix the 50% off coupon bug')
+    await gone('job-12')
+    await tap('tasks-status-all')
+    await typeInto('tasks-search', 'appearance')
+    // Words in Claude's answers find them: neither prompt says it.
+    await until(() => sent('jobs', r => r.query === 'appearance'), 'the search')
+    await gone('job-11')
+    await visible('job-12')
+    await visible('job-9')
+    await shot('18-all-tasks')
+    await page.goto(base)
+    await tap('header-search')
+    await typeInto('search-field', 'checkout')
+    await see('Refactor the checkout')
+    await until(() => sent('chats', r => r.query === 'checkout'), 'the chats search')
+    await shot('19-search')
+  })
+
+  await check('the machine: health and Claude Code, CLAUDE.md edited, usage and its forecast, what devices did', async () => {
+    await page.goto(base)
+    await tap('machine-build-box')
+    await tap('open-about')
+    await see('112 GB free of 466 GB')
+    await see('2.1.301')
+    await see('github')
+    await see('me@example.com')
+    await see('#14: started')
+    await shot('20-about')
+    await tap('restart')
+    await see('Tap again to restart')
+    if (sent('restart')) throw new Error('restarted on the first tap')
+    await tap('restart')
+    await until(() => sent('restart'), 'the restart')
+    await see('Restarting Afterhours on build-box')
+    await tap('open-instructions')
+    await see('Use pnpm, not npm.')
+    await tap('instructions-edit')
+    await replace('instructions-field', '# Shop web\n\n- Use pnpm.\n- Ask before adding a dependency.\n')
+    await tap('instructions-save')
+    await until(() => sent('claude.md', r => r.folder === '/home/me/code/shop/web' && r.text.includes('Ask before adding a dependency.')), 'the new CLAUDE.md')
+    await see('Saved CLAUDE.md.')
+    await see('Ask before adding a dependency.')
+    await shot('21-claude-md')
+    await page.goto(base)
+    await tap('machine-build-box')
+    await tap('open-usage')
+    // 30 points in the last hour, 62% used, the reset 90 minutes away: it runs out first.
+    await see('At this rate you reach it at')
+    await visible('usage-chart')
+    await shot('22-usage')
+    await tap('usage-window-sevenDay')
+    await see('At this rate it lasts until it resets')
+    await tap('hold-until-reset')
+    await until(() => sent('job', r => r.action === 'edit' && r.job === 15 && r.options?.atReset === true), 'the hold')
+    await see('wait until')
+    await page.goto(base)
+    await tap('machine-build-box')
+    await tap('open-audit')
+    await see('Queued a task')
+    await see('Restarted Afterhours')
+    await shot('23-activity')
+  })
+
+  await check('a risky command says why; a device invited by QR code pairs; a lost device removed everywhere', async () => {
+    const active = m.state.active!
+    const risky = 'rm -rf build && git push --force origin main'
+    m.ask(
+      { code: 'perm3', job: active.id, kind: 'permission', tool: 'Bash', detail: risky, payload: null, createdAt: Date.now(), expiresAt: Date.now() + 900_000 },
+      { type: 'permission', job: active, code: 'perm3', tool: 'Bash', detail: risky, minutes: 15 },
+      `🔐 #${active.id} wants to use Bash`,
+    )
+    await page.goto(`${base}/inbox`)
+    await visible('risk-perm3')
+    await see('Deletes files and folders, recursively')
+    await see('Rewrites history on the remote (force push)')
+    await shot('24-risk')
+    await tap('deny-perm3')
+    await until(() => sent('answer', r => r.code === 'perm3' && r.decision === 'deny'), 'the deny')
+    await page.goto(base)
+    await tap('machine-build-box')
+    await tap('open-devices')
+    await tap('invite-role-operator')
+    await tap('invite-create')
+    await visible('invite-qr')
+    const link = await page.$eval('[data-testid="invite-link"]', el => el.textContent ?? '')
+    if (parsePairingLink(link).machine !== m.id) throw new Error(`not a pairing link for build-box: ${link}`)
+    await shot('25-invite')
+    // Another phone pairs with that link.
+    const store = new Map<string, string>()
+    const phone = new Hub({
+      storage: { getSecret: async k => store.get(k) ?? null, setSecret: async (k, v) => void store.set(k, v), get: async k => store.get(k) ?? null, set: async (k, v) => void store.set(k, v) },
+      defaultName: 'Lost phone',
+      platform: 'test',
+      app: 'afterhours-e2e/0',
+    })
+    await phone.init()
+    const paired = await phone.pair(link)
+    phone.close()
+    if (paired.role !== 'operator') throw new Error(`paired as ${paired.role}`)
+    // It shows up while the invite is open.
+    await visible('device-Another device', 15_000)
+    await tap('invite-done')
+    await page.goto(`${base}/settings`)
+    await tap('settings-lost')
+    await visible('lost-Another device')
+    await tap('lost-remove-Another device')
+    await see('Tap again to remove')
+    await tap('lost-remove-Another device')
+    await until(() => sent('devices.remove', r => r.device !== m.devices()[0]), 'the removal')
+    await see('Removed Another device from build-box.')
+    await shot('26-lost-device')
+  })
+
+  await check('a queued task moves to another machine; a new one goes to any free machine', async () => {
+    const m2 = fakeMachine({ relay: relay.url, name: 'laptop', sample: false })
+    try {
+      await page.goto(`${base}/pair`)
+      await typeInto('pair-link', m2.offer('operator'))
+      await tap('pair-go')
+      await see('Paired with laptop')
+      await page.goto(base)
+      await see('Running now')
+      const last = m.state.queued.at(-1)!
+      if (last.id === 15 || last.id === 21) throw new Error(`#${last.id} is needed later`)
+      await tap('machine-build-box')
+      await tap(`job-${last.id}`)
+      await tap('task-move')
+      await see(`Move #${last.id} from build-box to`)
+      await tap('new-submit')
+      await until(() => m2.requests.find(r => r.type === 'queue' && r.prompt === last.prompt.trim() && r.folder === last.folder), 'the task on laptop')
+      await until(() => sent('job', r => r.action === 'remove' && r.job === last.id), 'the task off build-box')
+      await see('Moved to laptop as #21.')
+      await shot('27-moved')
+      await page.goto(`${base}/new`)
+      await tap('new-machine-free')
+      // build-box is running a task: laptop is the free one.
+      await tap('folder-web')
+      await typeInto('new-prompt', 'Try the free machine')
+      await tap('new-submit')
+      await until(() => m2.requests.find(r => r.type === 'queue' && r.prompt === 'Try the free machine'), 'the task on the free machine')
+      await page.goto(base)
+      await tap('machine-laptop')
+      await tap('forget')
+      await tap('forget')
+      await until(async () => !(await page.evaluate(() => localStorage.getItem('afterhours.machines') ?? '')).includes(m2.id), 'laptop forgotten')
+      await until(() => m2.requests.find(r => r.type === 'devices.remove'), 'laptop told to forget this device')
+      await visible('home')
+      await gone('machine-laptop')
+    } finally {
+      m2.stop()
+    }
+  })
+
+  await check('after a reload the machine is still paired and comes back online; what finished while you were away', async () => {
+    // As if the app was last left two hours ago (#12 finished 90 minutes ago).
+    const left = await page.evaluateOnNewDocument(() => localStorage.setItem('afterhours.leftAt', String(Date.now() - 2 * 3_600_000)))
+    await page.goto(base)
+    await page.removeScriptToEvaluateOnNewDocument(left.identifier)
     await see('build-box')
     await see('Working')
+    await visible('away')
+    await see('1 done since')
     await shot('13-home')
     await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }])
     await Bun.sleep(300)
     await shot('14-home-dark')
     await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'light' }])
+    await tap('away-clear')
+    await gone('away')
   })
 
   await check('the queue: run one next, remove another (asking once more first)', async () => {
@@ -327,7 +500,7 @@ try {
     await tap('job-15')
     await tap('task-remove')
     await see('Tap again to remove')
-    if (sent('job', r => r.action === 'remove')) throw new Error('removed on the first tap')
+    if (sent('job', r => r.action === 'remove' && r.job === 15)) throw new Error('removed on the first tap')
     await tap('task-remove')
     await until(() => sent('job', r => r.action === 'remove' && r.job === 15), 'the removal')
     await visible('task-prompt')

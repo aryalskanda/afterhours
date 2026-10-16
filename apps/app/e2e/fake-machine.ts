@@ -151,6 +151,10 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
   let failing = 0
   const state: FakeMachine['state'] = { paused: false, active: null, queued: [], recent: [], approvals: [] }
   const details = new Map<number, { plan: string | null; answer: string | null }>()
+  // Older finished tasks, for All tasks and search.
+  const history: JobInfo[] = []
+  const memories = new Map<string, string>([['/home/me/code/shop/web', '# Shop web\n\n- Use pnpm, not npm.\n- Run pnpm test before you commit.\n']])
+  const audit: { at: number; device: string | null; action: string; detail: string | null; ok: boolean }[] = []
 
   if (o.sample !== false) {
     state.active = job(14, { status: 'running', phase: 'working', startedAt: now() - 12 * 60_000, branch: 'afterhours/14-dark-mode', contextPct: 38 })
@@ -171,6 +175,25 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     ]
     details.set(12, { plan: SAMPLE_PLAN, answer: SAMPLE_ANSWER })
     details.set(14, { plan: SAMPLE_PLAN, answer: null })
+    const older: [string, JobInfo['status'], string | null][] = [
+      ['Update the README badges', 'done', null],
+      ['Fix the 50% off coupon bug', 'failed', null],
+      ['Add a dark mode toggle', 'done', 'The toggle is in **Settings → Appearance**.'],
+      ['Bump the dependencies', 'cancelled', null],
+      ['Write tests for the cart', 'done', null],
+      ['Speed up the product page', 'done', null],
+      ['Add a sitemap', 'done', null],
+      ['Translate the footer', 'done', null],
+      ['Remove the old analytics', 'done', null],
+      ['Add rate limiting to the API', 'done', null],
+      ['Set up the project', 'done', null],
+    ]
+    older.forEach(([prompt, status, answer], i) => {
+      const id = 11 - i
+      const finishedAt = now() - (i + 2) * 86_400_000
+      history.push(job(id, { status, prompt, createdAt: finishedAt - 3_600_000, startedAt: finishedAt - 1_800_000, finishedAt, error: status === 'failed' ? 'The tests failed.' : null }))
+      if (answer) details.set(id, { plan: null, answer })
+    })
   }
 
   const machine = (): MachineInfo => ({ id, name, os: 'Linux', arch: 'arm64', version: '0.2.0', protocol: PROTOCOL })
@@ -188,7 +211,30 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     policy: { allowedRoots: ['/home/me/code'], allowBypass: false, allowScreens: true, allowTyping: true },
     defaults: { plan: true, review: false, mode: 'auto', model: 'sonnet', effort: 'high', isolate: true },
     models: ['opus', 'sonnet', 'haiku'],
-    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi', 'rules', 'plan.mode', 'queue.edit', 'schedule', 'budget', 'branch', 'open', 'attachments', 'commands', 'group'],
+    features: [
+      'transcript',
+      'timeline',
+      'diff',
+      'files',
+      'activity',
+      'peek.ansi',
+      'rules',
+      'plan.mode',
+      'queue.edit',
+      'schedule',
+      'budget',
+      'branch',
+      'open',
+      'attachments',
+      'commands',
+      'group',
+      'history',
+      'health',
+      'claude',
+      'limits.history',
+      'audit',
+      'invite',
+    ],
   })
 
   const host: Host = new Host({
@@ -215,6 +261,9 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
 
   function handle(session: HostSession, r: Request): void {
     requests.push(r)
+    if (['queue', 'answer', 'control', 'job', 'say', 'restart', 'claude.md', 'pair.offer', 'devices.remove', 'branch', 'command'].includes(r.type)) {
+      audit.unshift({ at: now(), device: session.hello.name, action: r.type, detail: 'job' in r && typeof r.job === 'number' ? `#${r.job}` : null, ok: true })
+    }
     switch (r.type) {
       case 'sync':
         session.subscribed = true
@@ -265,16 +314,13 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
         const hits = all.filter(p => !r.query || p.includes(r.query))
         return reply(session, r, { ok: true, data: hits.map(path => ({ path, name: path.split('/').pop(), isRepo: true })) })
       }
-      case 'chats':
-        return reply(session, r, {
-          ok: true,
-          data: {
-            more: false,
-            chats: [
-              { session: '3f0c2a9e-0000-4000-8000-000000000001', folder: '/home/me/code/shop/web', title: 'Refactor the checkout', lastPrompt: 'Make the checkout faster', lastReply: 'I moved the **price lookup** out of the loop.', updatedAt: now() - 600_000, model: 'claude-sonnet-5-5', mode: 'auto', where: 'VS Code', busy: false, running: false, limited: false },
-            ],
-          },
-        })
+      case 'chats': {
+        const words = (r.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+        const chats = [
+          { session: '3f0c2a9e-0000-4000-8000-000000000001', folder: '/home/me/code/shop/web', title: 'Refactor the checkout', lastPrompt: 'Make the checkout faster', lastReply: 'I moved the **price lookup** out of the loop.', updatedAt: now() - 600_000, model: 'claude-sonnet-5-5', mode: 'auto', where: 'VS Code', busy: false, running: false, limited: false },
+        ].filter(c => words.every(w => `${c.title} ${c.lastPrompt} ${c.lastReply}`.toLowerCase().includes(w)))
+        return reply(session, r, { ok: true, data: { more: false, chats } })
+      }
       case 'peek': {
         const text = r.ansi
           ? '\x1b[32m⏺\x1b[0m Editing \x1b[1msrc/theme.ts\x1b[22m\n  ⎿  Added \x1b[32m24\x1b[39m lines\n\n\x1b[38;5;208m✻\x1b[0m Working… \x1b[2m(2m 10s · esc to interrupt)\x1b[22m'
@@ -324,8 +370,68 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
             ],
           },
         })
-      case 'jobs':
-        return reply(session, r, { ok: true, data: { active: state.active, queued: state.queued, recent: state.recent } })
+      case 'jobs': {
+        const words = (r.query ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+        const hits = [...state.recent, ...history]
+          .filter(j => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled')
+          .sort((a, b) => b.id - a.id)
+          .filter(j => (r.before === undefined || j.id < r.before) && (!r.status || j.status === r.status))
+          .filter(j => words.every(w => `${j.prompt} ${details.get(j.id)?.answer ?? ''}`.toLowerCase().includes(w)))
+        const limit = Math.min(r.recent ?? 20, 8)
+        return reply(session, r, { ok: true, data: { active: state.active, queued: state.queued, recent: hits.slice(0, limit), more: hits.length > limit } })
+      }
+      case 'health':
+        return reply(session, r, {
+          ok: true,
+          data: {
+            version: '0.2.0',
+            uptimeSec: 3 * 86_400 + 4 * 3_600,
+            claudeVersion: '2.1.301',
+            os: 'Linux arm64',
+            diskFreeBytes: 120e9,
+            diskTotalBytes: 500e9,
+            battery: null,
+            load: 0.42,
+            ...(session.role === 'owner' ? { logs: ['10:02:11 #14: started (sonnet, high)', '10:02:15 #14: plan approved for you', '10:09:40 remote: Test phone allowed npm test'] } : {}),
+          },
+        })
+      case 'restart':
+        if (session.role !== 'owner') return reply(session, r, { ok: false, code: 'forbidden', error: 'This needs an owner.' })
+        return reply(session, r, { ok: true, text: `Restarting Afterhours on ${name}.` })
+      case 'claude': {
+        const text = r.folder ? memories.get(r.folder) : undefined
+        return reply(session, r, {
+          ok: true,
+          data: {
+            version: '2.1.301',
+            ...(session.role === 'owner' ? { account: { email: 'me@example.com', organization: null } } : {}),
+            mcp: [
+              { name: 'github', scope: 'user', type: 'http' },
+              { name: 'postgres', scope: 'project', type: 'stdio' },
+            ],
+            memory: r.folder ? { path: `${r.folder}/CLAUDE.md`, exists: text !== undefined, ...(text !== undefined ? { text } : {}) } : null,
+          },
+        })
+      }
+      case 'claude.md':
+        if (session.role === 'viewer') return reply(session, r, { ok: false, code: 'forbidden', error: 'This device is a viewer here; that needs operator.' })
+        memories.set(r.folder, r.text)
+        return reply(session, r, { ok: true, text: 'Saved CLAUDE.md.' })
+      case 'limits.history': {
+        // The 5-hour limit climbing 30 points in the last hour, the weekly one slowly over days.
+        const samples = []
+        for (let min = 60; min >= 5; min -= 5) samples.push({ at: now() - min * 60_000, fiveHour: Math.round(60 - min / 2), sevenDay: 18 })
+        for (let h = 7 * 24; h >= 2; h -= 6) samples.push({ at: now() - h * 3_600_000, fiveHour: (h * 7) % 80, sevenDay: Math.round(18 - h / 12) })
+        return reply(session, r, { ok: true, data: { samples: samples.sort((a, b) => a.at - b.at) } })
+      }
+      case 'audit':
+        if (session.role !== 'owner') return reply(session, r, { ok: false, code: 'forbidden', error: 'This needs an owner.' })
+        return reply(session, r, { ok: true, data: { entries: audit.slice(0, r.limit ?? 200) } })
+      case 'pair.offer': {
+        if (session.role !== 'owner') return reply(session, r, { ok: false, code: 'forbidden', error: 'This needs an owner.' })
+        const offer = host.openOffer({ role: r.role, autoApprove: true })
+        return reply(session, r, { ok: true, data: { link: offer.link, expires: offer.expires } })
+      }
       case 'files': {
         if (session.role === 'viewer') return reply(session, r, { ok: false, code: 'forbidden', error: 'This device is a viewer here; that needs operator.' })
         if (r.query !== undefined) {

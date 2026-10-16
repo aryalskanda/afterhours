@@ -100,10 +100,24 @@ describe('the hub', () => {
     const h = await hub()
     await h.pair(machine.offer('viewer'))
     await until(() => h.getState().machines[0]?.status === 'connected')
+    const storage = memory()
+    const h2 = await hub(storage)
+    await h2.pair(machine.offer('operator'))
+    await until(() => h2.getState().machines[0]?.status === 'connected')
     await h.forget(machine.id)
     expect(h.getState().machines).toEqual([])
-    expect(machine.devices()).toEqual([])
+    expect(machine.devices()).toEqual([h2.getState().deviceId])
     expect(machine.requests.some(r => r.type === 'devices.remove')).toBe(true)
+    // Gone from this device at once, and so is what waited to go to it.
+    await h2.queueLater('elsewhere', { type: 'queue', folder: '/x', prompt: 'Not this one' })
+    machine.stop()
+    await until(() => h2.getState().machines[0]?.status !== 'connected')
+    await h2.queueLater(machine.id, { type: 'queue', folder: '/home/me/code/shop/web', prompt: 'Later' })
+    const forgetting = h2.forget(machine.id)
+    expect(h2.getState().machines).toEqual([])
+    await forgetting
+    expect(JSON.parse(storage.data.get('afterhours.machines')!)).toEqual([])
+    expect(h2.getState().outbox.map(x => x.body.prompt)).toEqual(['Not this one'])
   })
 
   test('a device the machine removed shows as removed', async () => {
@@ -134,6 +148,37 @@ describe('prompts kept on this device', () => {
     await again.removeSaved('Write release notes')
     expect(again.draftFor('m1')).toBeNull()
     expect(again.getState().saved).toEqual(['Run the tests and fix what fails'])
+  })
+
+  test('while you were away: from when you last left, after a real absence', async () => {
+    const storage = memory()
+    let now = 1_000_000
+    const make = async () => {
+      const h = new Hub({ storage, defaultName: 'Test phone', platform: 'test', app: 'afterhours-test/0', now: () => now })
+      hubs.push(h)
+      await h.init()
+      return h
+    }
+    const first = await make()
+    expect(first.getState().away).toBeNull()
+    first.leave()
+    now += 60_000
+    first.wake()
+    // A minute in another app isn't being away.
+    expect(first.getState().away).toBeNull()
+    first.leave()
+    const left = now
+    now += 3_600_000
+    first.wake()
+    expect(first.getState().away).toBe(left)
+    first.dismissAway()
+    expect(first.getState().away).toBeNull()
+    // Closed in the background: the next start remembers when.
+    first.leave()
+    const closed = now
+    first.close()
+    now += 86_400_000
+    expect((await make()).getState().away).toBe(closed)
   })
 
   test('the outbox sends what waited once the machine is there; what it refuses stays, with why', async () => {

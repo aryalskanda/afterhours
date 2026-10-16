@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { basename, clock, duration, effortLabel, minutes, plainReply, modelLabel, nextAt, parseTimeOfDay, permissionsLabel, phaseLabel, planLabel, roleLabel, shortPath, timeOfDay, whenLabel, withoutEmoji } from './format'
+import { basename, bytes, clock, duration, effortLabel, minutes, plainReply, modelLabel, nextAt, parseTimeOfDay, permissionsLabel, phaseLabel, planLabel, roleLabel, shortPath, timeOfDay, whenLabel, withoutEmoji } from './format'
 
 describe('notices without their emoji', () => {
   test('the emoji the machine starts a sentence with goes', () => {
@@ -77,4 +77,14 @@ test('replies without the bot’s emoji', () => {
   expect(plainReply("✅ Approved #14's request.")).toBe("Approved #14's request.")
   expect(plainReply('❌ Declined #14’s plan.')).toBe('Declined #14’s plan.')
   expect(plainReply('Queued #21.')).toBe('Queued #21.')
+})
+
+describe('sizes', () => {
+  test('as df -h counts them', () => {
+    expect(bytes(512)).toBe('512 bytes')
+    expect(bytes(850_000)).toBe('830 KB')
+    expect(bytes(2.4 * 1024 * 1024)).toBe('2.4 MB')
+    expect(bytes(120e9)).toBe('112 GB')
+    expect(bytes(2e12)).toBe('1.8 TB')
+  })
 })

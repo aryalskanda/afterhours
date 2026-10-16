@@ -1007,6 +1007,7 @@ export class Runner {
     const now = this.d.now()
     if (payload?.rate_limits) {
       this.saveLimits({ ...this.limits(), ...windowsFromStatusline(payload.rate_limits), updatedAt: now })
+      this.sampleLimits(now)
     }
     let job = this.d.store.getJob(jobId)
     if (job && (job.status === 'running' || job.status === 'held')) {
@@ -1021,6 +1022,16 @@ export class Runner {
     return [`cq #${jobId}`, job ? modeLabel(job) : null, five !== null && five !== undefined ? `5h ${Math.round(five)}%` : null]
       .filter(Boolean)
       .join(' · ')
+  }
+
+  /** Keeps the limits over time (a point when they move a percent, or every 10 minutes), for forecasts. */
+  private sampleLimits(now: number): void {
+    const l = this.limits()
+    const five = l.fiveHour?.usedPct ?? null
+    const week = l.sevenDay?.usedPct ?? null
+    const last = this.d.store.lastLimitSample()
+    const moved = !last || Math.abs((five ?? 0) - (last.fiveHour ?? 0)) >= 1 || Math.abs((week ?? 0) - (last.sevenDay ?? 0)) >= 1
+    if (moved || now - last.at >= 600_000) this.d.store.addLimitSample(now, five, week)
   }
 
   // --- approvals ------------------------------------------------------------------
