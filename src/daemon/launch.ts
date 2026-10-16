@@ -62,6 +62,8 @@ export interface ArgvOptions {
   prompt: string
   name?: string
   remoteControl?: boolean
+  /** Extra folders the session may read (an app's uploads). */
+  addDirs?: string[]
 }
 
 export function claudeArgv(job: Job, o: ArgvOptions): string[] {
@@ -79,6 +81,7 @@ export function claudeArgv(job: Job, o: ArgvOptions): string[] {
   ]
   if (job.execMode === 'bypassPermissions') argv.push('--allow-dangerously-skip-permissions')
   if (o.name) argv.push('--name', o.name)
+  for (const dir of o.addDirs ?? []) argv.push('--add-dir', dir)
   if (o.remoteControl) argv.push(`--remote-control=cq-${job.id}`)
   // `--` so a prompt that starts with "-" is never read as a flag.
   argv.push('--', o.prompt)

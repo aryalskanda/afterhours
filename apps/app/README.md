@@ -19,6 +19,13 @@ The app for your Afterhours machines, on iPhone, Android and the web. The deskto
   - Answer: Claude's final answer and the plan, rendered, and every notice about the task.
   While it runs, message Claude from under the conversation. A queued task can be edited, moved, or run next; one waiting for a busy conversation can take it over or use a copy. A finished task on its own branch can be merged into your checkout, opened as a pull request (owners), or thrown away. Follow up in the same conversation, or open it in VS Code on the machine.
 - **New task**: the machine, a folder (recent ones, or search), the prompt, then plan or not, permission mode, model, effort, its own branch, run next; when it starts (now, at a time or every day, when the 5-hour limit resets, after another task finishes well) and a time limit. It starts from what you used last time on that machine. What the machine doesn't allow isn't offered.
+  - Type `/` for the project's slash commands and skills, `@` for a file in the folder.
+  - Attach photos (sent as JPEG) and files; Claude is told to read them.
+  - Your saved prompts and the machine's recent ones, one tap away; what you were writing is kept until it's queued.
+  - Try it three ways: the same prompt as three tasks on their own branches (three models, or one model three times), then Compare them and keep one (merged; the others thrown away).
+  - With the machine offline, the task waits on the device and goes out when it's back.
+- **A diff**: tap a line to comment; the comments go to Claude as a follow-up in the same conversation.
+- **Read aloud**: Claude's answers and questions, in the system's voice.
 - **Chats**: your Claude Code conversations on a machine. Read one whole, tool calls included, and write into it.
 - **Settings**: this device's name and key, app lock and Face ID before Allow, machines, about.
 

@@ -15,6 +15,7 @@ import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
 import { suggestionLabel, usableSuggestions } from './rules'
 import { toolName, toolSummary } from './tools'
+import { withAttachments } from './uploads'
 import { costOf, readTranscript, usageOf } from './transcript'
 
 /** A tool call starting or ending in the running task, for apps watching it live. */
@@ -60,6 +61,8 @@ export interface RunnerDeps {
   activity?: (a: ToolActivity) => void
   /** Whether a folder is one the machine shares with apps (extra folders a rule may allow). */
   allowedDir?: (dir: string) => boolean
+  /** Where apps' attachments are kept; a task with some may read there. */
+  uploadsDir?: string
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -383,9 +386,11 @@ export class Runner {
       claudePath: this.d.claudePath,
       settingsPath,
       sessionArgs,
-      prompt: promptOverride ?? job.prompt,
+      // Attachments are named in the first prompt only; a restart says "continue".
+      prompt: promptOverride ?? (job.launches === 0 ? withAttachments(job.prompt, job.attachments) : job.prompt),
       name: isNew ? sessionName(job.prompt) : undefined,
       remoteControl: config.remoteControl,
+      addDirs: job.attachments?.length && this.d.uploadsDir ? [this.d.uploadsDir] : undefined,
     })
     const startHead = job.launches === 0 ? await this.d.git.head(cwd) : job.startHead
     const startTree = job.launches === 0 ? await this.d.git.snapshot(cwd) : job.startTree

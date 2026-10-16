@@ -43,6 +43,8 @@ export interface RemoteDeps {
   git: RouterDeps['git']
   /** Opens a conversation in VS Code on this machine's screen. */
   openInVsCode?: (sessionId: string) => boolean
+  uploadsDir: string
+  claudeDir: string
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
@@ -89,6 +91,8 @@ export class Remote {
       resolvedBy: this.resolvedBy,
       git: d.git,
       openInVsCode: d.openInVsCode,
+      uploadsDir: d.uploadsDir,
+      claudeDir: d.claudeDir,
       now: d.now,
       log: d.log,
     })

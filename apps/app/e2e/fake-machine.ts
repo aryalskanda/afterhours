@@ -188,7 +188,7 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     policy: { allowedRoots: ['/home/me/code'], allowBypass: false, allowScreens: true, allowTyping: true },
     defaults: { plan: true, review: false, mode: 'auto', model: 'sonnet', effort: 'high', isolate: true },
     models: ['opus', 'sonnet', 'haiku'],
-    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi', 'rules', 'plan.mode', 'queue.edit', 'schedule', 'budget', 'branch', 'open'],
+    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi', 'rules', 'plan.mode', 'queue.edit', 'schedule', 'budget', 'branch', 'open', 'attachments', 'commands', 'group'],
   })
 
   const host: Host = new Host({
@@ -254,6 +254,8 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
           afterJob: o.afterJob ?? null,
           repeatDaily: o.repeatDaily ?? null,
           maxMinutes: o.maxMinutes ?? null,
+          attachments: o.attachments?.map(p => p.slice(p.lastIndexOf('/') + 1)) ?? null,
+          group: o.group ?? null,
         })
         state.queued = [...state.queued, j]
         return reply(session, r, { ok: true, text: `Queued #${j.id}.`, data: { job: j } })
@@ -310,8 +312,27 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
         if (!SAMPLE_CHANGES.some(f => f.path === r.file)) return reply(session, r, { ok: false, code: 'not-found', error: `#${r.job} didn't change ${r.file}.` })
         return reply(session, r, { ok: true, data: { path: r.file, patch: SAMPLE_PATCH, binary: false, truncated: false } })
       }
+      case 'upload':
+        return reply(session, r, { ok: true, text: 'Uploaded.', data: { path: `/home/me/.afterhours/uploads/2026-10-16/ab12cd34-${r.name.replace(/[^A-Za-z0-9._-]+/g, '-')}` } })
+      case 'commands':
+        return reply(session, r, {
+          ok: true,
+          data: {
+            commands: [
+              { name: 'review', description: 'Review the diff for bugs', scope: 'project', kind: 'command' },
+              { name: 'release-notes', description: 'Write release notes from the log', scope: 'user', kind: 'skill' },
+            ],
+          },
+        })
+      case 'jobs':
+        return reply(session, r, { ok: true, data: { active: state.active, queued: state.queued, recent: state.recent } })
       case 'files': {
         if (session.role === 'viewer') return reply(session, r, { ok: false, code: 'forbidden', error: 'This device is a viewer here; that needs operator.' })
+        if (r.query !== undefined) {
+          const all = ['src/settings/index.tsx', 'src/settings/Appearance.tsx', 'src/theme.ts', 'README.md']
+          const q = r.query.replace(/^\.$/, '').toLowerCase()
+          return reply(session, r, { ok: true, data: { root: '/home/me/code/shop/web', path: '', entries: all.filter(p => p.toLowerCase().includes(q)).map(p => ({ name: p.split('/').pop(), path: p, kind: 'file', size: null })) } })
+        }
         if (r.read) return reply(session, r, { ok: true, data: { root: '/home/me/code/shop/web', path: r.path, file: { path: r.path, kind: 'text', size: 120, text: "import { Group } from '../ui'\nimport { Appearance } from './Appearance'\n\nexport function Settings() {\n  return <Group><Appearance /></Group>\n}\n", truncated: false } } })
         return reply(session, r, { ok: true, data: { root: '/home/me/code/shop/web', path: r.path ?? '', entries: [{ name: 'src', path: 'src', kind: 'dir', size: null }] } })
       }

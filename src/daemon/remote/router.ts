@@ -26,6 +26,8 @@ import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type ChatSource } from '../chats'
 import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
 import { oneLine } from '../format'
+import { slashCommands } from '../slash'
+import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
 import type { FolderMap } from '../folders'
 import { taskStart, type Runner } from '../runner'
@@ -52,6 +54,9 @@ export const FEATURES = [
   'budget',
   'branch',
   'open',
+  'attachments',
+  'commands',
+  'group',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -83,10 +88,12 @@ const NEEDS: Record<RequestType, Role> = {
   files: 'operator',
   branch: 'operator',
   open: 'operator',
+  upload: 'operator',
+  commands: 'viewer',
 }
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 /** Requests that change something: audited, and answered from memory when retried. */
-const CHANGES = new Set<RequestType>(['queue', 'answer', 'control', 'job', 'say', 'keys', 'chat.write', 'devices.remove', 'devices.rename', 'command', 'branch', 'open'])
+const CHANGES = new Set<RequestType>(['queue', 'answer', 'control', 'job', 'say', 'keys', 'chat.write', 'devices.remove', 'devices.rename', 'command', 'branch', 'open', 'upload'])
 
 export interface RouterDeps {
   runner: Runner
@@ -106,6 +113,10 @@ export interface RouterDeps {
   git: Pick<typeof gitModule, 'snapshot' | 'changes' | 'patch' | 'show' | 'treeOf' | 'top' | 'mergeBranch' | 'discardBranch' | 'pullRequest'>
   /** Opens a conversation in VS Code on this machine's screen; false when it has none. */
   openInVsCode?: (sessionId: string) => boolean
+  /** Where apps' attachments are kept. */
+  uploadsDir: string
+  /** Claude Code's folder (~/.claude): your own slash commands and skills. */
+  claudeDir: string
   now: () => number
   log: (line: string) => void
 }
@@ -170,6 +181,8 @@ function auditDetail(r: Request): string | null {
       return r.text.trim().split(/\s+/)[0] ?? null
     case 'branch':
       return `${r.action} #${r.job}`
+    case 'upload':
+      return `${Math.round((r.data.length * 3) / 4 / 1024)} KB`
     case 'open':
       return r.job !== undefined ? `#${r.job}` : (r.session?.slice(0, 8) ?? null)
     default:
@@ -408,6 +421,15 @@ export class Router {
         return this.files(r, roots)
       case 'branch':
         return this.branch(r, session.role, roots)
+      case 'upload': {
+        const saved = saveUpload(this.d.uploadsDir, r.name, r.data, this.d.now())
+        return 'error' in saved ? { ok: false, code: 'invalid', error: saved.error } : { ok: true, text: 'Uploaded.', data: { path: saved.path } }
+      }
+      case 'commands': {
+        const folder = resolve(expandHome(r.folder))
+        if (!isAllowed(folder, roots) || !isDir(folder)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
+        return { ok: true, data: { commands: slashCommands(folder, await this.d.git.top(folder), this.d.claudeDir) } }
+      }
       case 'open': {
         const job = r.job !== undefined ? store.getJob(r.job) : null
         if (r.job !== undefined && !job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
@@ -633,6 +655,9 @@ export class Router {
     const plan = o.plan ?? d.plan
     const when = this.schedule(o, null)
     if (typeof when === 'string') return { ok: false, code: 'invalid', error: when }
+    // Attachments: only files apps uploaded, and still there.
+    const attachments = o.attachments ?? []
+    if (attachments.some(p => !isUpload(this.d.uploadsDir, p))) return { ok: false, code: 'invalid', error: 'An attachment is gone; add it again.' }
     const spec: JobSpec = {
       projectDir,
       prompt: r.prompt,
@@ -648,6 +673,8 @@ export class Router {
       front: o.front,
       source: 'remote',
       ...when,
+      attachments: attachments.length ? attachments : null,
+      group: o.group ?? null,
     }
     const refusal = this.guard(spec)
     if (refusal) return { ok: false, code: 'policy', error: refusal }

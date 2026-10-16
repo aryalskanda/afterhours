@@ -10,6 +10,7 @@ import { hub, useMachine, useNow } from '../../../../../../../src/app-state'
 import { Changes } from '../../../../../../../src/components/Changes'
 import { Conversation, type ConversationMeta, type Pending } from '../../../../../../../src/components/Conversation'
 import { Markdown } from '../../../../../../../src/components/Markdown'
+import { ReadAloud } from '../../../../../../../src/components/ReadAloud'
 import { Block, Button, ConfirmRow, EmptyState, Group, HStack, LoadingRows, Note, Page, Row, Segmented, StatusDot, TextArea, Txt } from '../../../../../../../src/components/ui'
 import { useAction } from '../../../../../../../src/components/useAction'
 import { useLoad } from '../../../../../../../src/components/useLoad'
@@ -259,7 +260,7 @@ export default function TaskScreen() {
       {shown === 'answer' ? (
         <>
           {detail?.answer ? (
-            <Group header="Claude’s answer" testID="task-answer">
+            <Group header="Claude’s answer" right={<ReadAloud text={detail.answer} testID="read-answer" />} testID="task-answer">
               <Block>
                 <Markdown text={detail.answer} />
               </Block>

@@ -77,6 +77,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     sleep: async () => {},
     reopenInVsCode: sid => reopened.push(sid),
     activity: a => activity.push(a),
+    uploadsDir: '/tmp/cqhome/uploads',
   })
   const spec = (over: Partial<JobSpec> = {}): JobSpec => ({
     projectDir: project,
@@ -1011,5 +1012,16 @@ describe('steering from an app', () => {
     expect(j.window.input).toContain('Escape')
     await h.runner.go()
     expect(h.store.getJob(j.id)!.maxMinutes).toBeNull()
+  })
+})
+
+describe('attachments', () => {
+  test('the first launch names them and lets the session read the uploads folder; a restart doesn’t repeat them', async () => {
+    const h = setup()
+    const job = h.runner.enqueue({ ...h.spec({ plan: false, prompt: 'Why does it crash?' }), attachments: ['/tmp/cqhome/uploads/2026-10-16/ab-crash.png'] })
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(job.id)!.argv
+    expect(argv.at(-1)).toBe('Why does it crash?\n\nAttached from the phone (read it):\n- /tmp/cqhome/uploads/2026-10-16/ab-crash.png')
+    expect(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2)).toEqual(['--add-dir', '/tmp/cqhome/uploads'])
   })
 })

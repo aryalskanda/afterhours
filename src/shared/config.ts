@@ -17,6 +17,8 @@ export const paths = {
   logs: join(CQ_HOME, 'logs'),
   log: join(CQ_HOME, 'logs', 'cqd.log'),
   jobs: join(CQ_HOME, 'jobs'),
+  /** Photos and files apps attach to tasks (kept 14 days). */
+  uploads: join(CQ_HOME, 'uploads'),
   bin: join(CQ_HOME, 'bin'),
   binary: join(CQ_HOME, 'bin', 'cq'),
   hookScript: join(CQ_HOME, 'bin', 'cq-hook'),

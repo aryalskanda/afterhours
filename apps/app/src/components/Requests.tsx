@@ -13,6 +13,7 @@ import { supports, type Need } from '../lib/state'
 import { mono, useTheme } from '../theme'
 import { countdown } from './bits'
 import { Markdown } from './Markdown'
+import { ReadAloud } from './ReadAloud'
 import { Block, Button, Group, HStack, Note, Row, Segmented, TextArea, Txt } from './ui'
 
 type Answer = { decision: 'allow' | 'deny' | 'answer'; text?: string | null; rule?: number; mode?: ExecMode }
@@ -251,7 +252,11 @@ function QuestionCard(props: Props) {
   const picked = answers[step]
   const check = <Ionicons name="checkmark" size={wide ? 15 : 19} color={c.accent} />
   return (
-    <Group testID={`request-${code}`} footer={countdown(need.approval.expiresAt, now, 'Claude decides')}>
+    <Group
+      testID={`request-${code}`}
+      footer={countdown(need.approval.expiresAt, now, 'Claude decides')}
+      right={<ReadAloud text={[q.question, ...(q.options ?? []).map((o, i) => `Option ${i + 1}: ${o.label}. ${o.description ?? ''}`)].join('\n')} testID={`read-${code}`} />}
+    >
       <Block>
         <From need={need} extra={questions.length > 1 ? `${step + 1} of ${questions.length}` : null} />
         <Txt v="headline">{q.question}</Txt>

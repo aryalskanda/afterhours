@@ -3,11 +3,11 @@
 
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useMemo, useState } from 'react'
-import { hub, useMachine, useNow } from '../../../../../src/app-state'
+import { hub, useHub, useMachine, useNow } from '../../../../../src/app-state'
 import { LimitRow, statusColor, TaskRow } from '../../../../../src/components/bits'
 import { Block, Button, ConfirmButton, ConfirmRow, EmptyState, Group, GroupAction, HStack, Note, Page, Row, StatusDot, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
-import { clock, roleLabel, shortPath, statusLabel } from '../../../../../src/lib/format'
+import { clock, oneLine, roleLabel, shortPath, statusLabel } from '../../../../../src/lib/format'
 import { needsYou } from '../../../../../src/lib/state'
 import { useTheme } from '../../../../../src/theme'
 
@@ -20,6 +20,8 @@ export default function MachineScreen() {
   const queue = useAction()
   const [refreshing, setRefreshing] = useState(false)
   const needs = useMemo(() => (m ? needsYou([m]) : []), [m])
+  const { outbox } = useHub()
+  const waiting = outbox.filter(x => x.machine === id)
 
   if (!m) {
     return (
@@ -103,6 +105,20 @@ export default function MachineScreen() {
         {canAct ? <Row testID="machine-new" title="New task here" tone="accent" onPress={() => router.push({ pathname: '/new', params: { machine: m.id } })} /> : null}
       </Group>
       {queue.outcome ? <Note ok={queue.outcome.ok} text={queue.outcome.text} /> : null}
+
+      {waiting.length > 0 ? (
+        <Group header="Waiting on this device" footer={m.status === 'connected' ? undefined : `Sent when ${m.name} is back.`} testID="outbox">
+          {waiting.map(w => (
+            <Row
+              key={w.id}
+              title={oneLine(w.body.prompt, 120)}
+              titleLines={2}
+              subtitle={w.error ? <Txt v="footnote" tone="danger">{w.error}</Txt> : undefined}
+              trailing={<Button small kind="plain" title="Cancel" onPress={() => hub.cancelOutgoing(w.id)} testID={`outbox-cancel-${w.id}`} />}
+            />
+          ))}
+        </Group>
+      ) : null}
 
       <Group header="Usage">
         <LimitRow label="5-hour limit" window={m.limits.fiveHour} />

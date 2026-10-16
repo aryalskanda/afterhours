@@ -42,6 +42,8 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     maxMinutes: job.maxMinutes,
     activeMs: job.activeMs,
     branchNote: job.branchNote,
+    attachments: job.attachments?.map(p => p.slice(p.lastIndexOf('/') + 1)) ?? null,
+    group: job.group,
   }
 }
 

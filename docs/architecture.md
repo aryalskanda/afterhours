@@ -151,6 +151,8 @@ The protocol and the crypto get an external review before a public launch.
 | `job {remove\|top\|edit\|move}`, `say`, `keys` | operator | Queue order and a queued task's prompt and options; typing and keys in the running task (if the machine allows typing) |
 | `branch {job, merge\|discard\|pr}` | operator (`pr`: owner) | A finished task's own branch: merged into the checkout (only when it has nothing uncommitted, and only if it merges cleanly), thrown away, or pushed and opened as a pull request with `gh` |
 | `open {job\|session}` | operator | Opens the conversation in VS Code on the machine's screen |
+| `upload {name, data}` | operator | A photo or file (base64, up to 5 MB) for a task: kept under `~/.afterhours/uploads` for 14 days. A task queued with `attachments` names them in its first prompt and may read that folder (`--add-dir`) |
+| `commands {folder}` | viewer | The slash commands and skills a folder's tasks can use: the project's (`.claude/commands`, `.claude/skills`, here or at the repo's top) and yours (`~/.claude`) |
 | `chat.write {session, text}` | operator | Write into a conversation: typed in if the queue runs it, else a task continues it |
 | `devices`, `devices.remove`, `devices.rename` | owner | Paired devices |
 | `command {text}` | owner | Any text command (`help`), under the same rules |

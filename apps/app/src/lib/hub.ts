@@ -70,6 +70,9 @@ export interface HubState {
   fingerprint: string
   machines: MachineState[]
   prefs: Prefs
+  /** Prompts you saved, newest first. */
+  saved: string[]
+  outbox: Outgoing[]
   /** The latest live event that needs you, for a banner. */
   attention: Attention | null
 }
@@ -84,7 +87,33 @@ export interface HubOptions {
   now?: () => number
 }
 
-const KEYS = { identity: 'afterhours.identity', machines: 'afterhours.machines', name: 'afterhours.deviceName', prefs: 'afterhours.prefs', choices: 'afterhours.choices' }
+const KEYS = {
+  identity: 'afterhours.identity',
+  machines: 'afterhours.machines',
+  name: 'afterhours.deviceName',
+  prefs: 'afterhours.prefs',
+  choices: 'afterhours.choices',
+  saved: 'afterhours.savedPrompts',
+  drafts: 'afterhours.drafts',
+  outbox: 'afterhours.outbox',
+}
+
+/** A prompt you were writing, kept per machine until it's queued. */
+export interface Draft {
+  prompt: string
+  folder: string | null
+  at: number
+}
+
+/** A task to queue on a machine that was offline, sent when it's back. */
+export interface Outgoing {
+  id: string
+  machine: string
+  body: Extract<RequestBody, { type: 'queue' }>
+  at: number
+  /** Why the last try didn't go through. */
+  error?: string
+}
 
 export class Hub {
   private client: AppClient | null = null
@@ -104,7 +133,10 @@ export class Hub {
     machines: [],
     prefs: { lockApp: false, confirmAllow: false, browserNotifications: false },
     attention: null,
+    saved: [],
+    outbox: [],
   }
+  private drafts: Record<string, Draft> = {}
 
   constructor(private readonly o: HubOptions) {}
 
@@ -150,10 +182,13 @@ export class Hub {
       const machines = JSON.parse((await s.get(KEYS.machines)) ?? '[]') as SavedMachine[]
       const prefs = { ...this.state.prefs, ...(JSON.parse((await s.get(KEYS.prefs)) ?? '{}') as Partial<Prefs>) }
       this.choices = JSON.parse((await s.get(KEYS.choices)) ?? '{}') as Record<string, Choices>
+      this.drafts = JSON.parse((await s.get(KEYS.drafts)) ?? '{}') as Record<string, Draft>
+      const saved = JSON.parse((await s.get(KEYS.saved)) ?? '[]') as string[]
+      const outbox = JSON.parse((await s.get(KEYS.outbox)) ?? '[]') as Outgoing[]
       const id = peerId(identity.publicKey)
       this.client = new AppClient({ identity, device: { name, platform: this.o.platform, app: this.o.app }, socket: this.o.socket, log: this.o.log })
       this.startedAt = this.now()
-      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs })
+      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox })
       for (const m of machines) this.connect(m)
     } catch (err) {
       this.set({ ready: true, error: err instanceof Error ? err.message : String(err) })
@@ -163,7 +198,10 @@ export class Hub {
   private connect(m: SavedMachine): void {
     const conn = this.client!.connect({ id: m.id, name: m.name, relay: m.relay }, { lastSeq: m.lastSeq })
     this.conns.set(m.id, conn)
-    conn.on('status', (status, detail) => this.updateMachine(m.id, x => withStatus(x, status, detail)))
+    conn.on('status', (status, detail) => {
+      this.updateMachine(m.id, x => withStatus(x, status, detail))
+      if (status === 'connected') void this.flush(m.id)
+    })
     conn.on('snapshot', snapshot => {
       this.updateMachine(m.id, x => applySnapshot(x, snapshot))
       this.saveSoon()
@@ -283,6 +321,67 @@ export class Hub {
   async rememberChoices(id: string, choices: Choices): Promise<void> {
     this.choices = { ...this.choices, [id]: choices }
     await this.o.storage.set(KEYS.choices, JSON.stringify(this.choices))
+  }
+
+  // --- prompts: saved, drafts, and tasks waiting for an offline machine ---------------------------
+
+  async savePrompt(text: string): Promise<void> {
+    const clean = text.trim()
+    if (!clean) return
+    const saved = [clean, ...this.state.saved.filter(x => x !== clean)].slice(0, 50)
+    this.set({ saved })
+    await this.o.storage.set(KEYS.saved, JSON.stringify(saved))
+  }
+
+  async removeSaved(text: string): Promise<void> {
+    const saved = this.state.saved.filter(x => x !== text)
+    this.set({ saved })
+    await this.o.storage.set(KEYS.saved, JSON.stringify(saved))
+  }
+
+  draftFor(machine: string): Draft | null {
+    return this.drafts[machine] ?? null
+  }
+
+  /** Keeps what you're writing for a machine; null when it was queued. */
+  async saveDraft(machine: string, draft: Draft | null): Promise<void> {
+    const { [machine]: _old, ...rest } = this.drafts
+    this.drafts = draft && draft.prompt.trim() ? { ...rest, [machine]: draft } : rest
+    await this.o.storage.set(KEYS.drafts, JSON.stringify(this.drafts))
+  }
+
+  /** Queues a task on a machine that's offline as soon as it's back. */
+  async queueLater(machine: string, body: Outgoing['body']): Promise<void> {
+    const item: Outgoing = { id: `${this.now()}-${Math.random().toString(36).slice(2, 8)}`, machine, body, at: this.now() }
+    await this.setOutbox([...this.state.outbox, item])
+    if (this.conns.get(machine)?.status === 'connected') void this.flush(machine)
+  }
+
+  async cancelOutgoing(id: string): Promise<void> {
+    await this.setOutbox(this.state.outbox.filter(x => x.id !== id))
+  }
+
+  private async setOutbox(outbox: Outgoing[]): Promise<void> {
+    this.set({ outbox })
+    await this.o.storage.set(KEYS.outbox, JSON.stringify(outbox))
+  }
+
+  private flushing = new Set<string>()
+
+  /** Sends what waited for this machine, oldest first; what it refuses stays, with its reason. */
+  private async flush(machine: string): Promise<void> {
+    if (this.flushing.has(machine)) return
+    this.flushing.add(machine)
+    try {
+      for (const item of this.state.outbox.filter(x => x.machine === machine && !x.error)) {
+        const r = await this.request(machine, item.body, { timeoutMs: 20_000 })
+        if (r.ok) await this.setOutbox(this.state.outbox.filter(x => x.id !== item.id))
+        else if (r.code) await this.setOutbox(this.state.outbox.map(x => (x.id === item.id ? { ...x, error: r.error ?? 'It was refused.' } : x)))
+        else break // offline again: the next connection tries
+      }
+    } finally {
+      this.flushing.delete(machine)
+    }
   }
 
   dismissAttention(id: number): void {

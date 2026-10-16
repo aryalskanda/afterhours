@@ -5,6 +5,7 @@ import { ChatInfo, DeviceInfo, Event, JobInfo } from '@afterhours/protocol'
 import { z } from 'zod'
 
 export { DiffSummary, FilePatch, FilesResult, TaskDetail, TranscriptPage } from '@afterhours/protocol'
+import { SlashCommand } from '@afterhours/protocol'
 
 export const ChatList = z.object({ chats: z.array(ChatInfo), more: z.boolean() })
 export const FolderList = z.array(z.object({ path: z.string(), name: z.string(), isRepo: z.boolean().optional() }))
@@ -14,6 +15,10 @@ export const ScreenText = z.object({ job: z.number(), text: z.string() }).nullab
 export const DeviceList = z.array(DeviceInfo)
 /** `queue` and `chat.write`: the task that was queued. */
 export const Queued = z.object({ job: JobInfo })
+/** `commands`: the slash commands and skills a folder's tasks can use. */
+export const SlashCommandList = z.object({ commands: z.array(SlashCommand) })
+/** `upload`: where the file was put on the machine. */
+export const Uploaded = z.object({ path: z.string() })
 /** `timeline`: every notice about one task. */
 export const Timeline = z.object({ events: z.array(Event) })
 

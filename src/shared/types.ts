@@ -79,6 +79,10 @@ export interface Job {
   planVersions: { at: number; text: string }[] | null
   /** What became of its own branch: "Merged into main", "Discarded", a pull request's link. */
   branchNote: string | null
+  /** Files uploaded for it (paths under the uploads folder); Claude is told to read them. */
+  attachments: string[] | null
+  /** Tasks queued together to compare. */
+  group: string | null
 }
 
 export interface Usage {
@@ -107,6 +111,8 @@ export interface JobSpec {
   afterJob?: number | null
   repeatDaily?: number | null
   maxMinutes?: number | null
+  attachments?: string[] | null
+  group?: string | null
 }
 
 export type ApprovalKind = 'permission' | 'question' | 'review' | 'trust'

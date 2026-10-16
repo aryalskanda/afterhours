@@ -148,6 +148,8 @@ const COLUMNS = {
   activeMs: 'active_ms',
   planVersions: 'plan_versions',
   branchNote: 'branch_note',
+  attachments: 'attachments',
+  group: 'job_group',
 } as const satisfies Record<keyof Job, string>
 
 const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved'])
@@ -172,8 +174,10 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'active_ms', 'INTEGER NOT NULL DEFAULT 0'],
   ['jobs', 'plan_versions', 'TEXT'],
   ['jobs', 'branch_note', 'TEXT'],
+  ['jobs', 'attachments', 'TEXT'],
+  ['jobs', 'job_group', 'TEXT'],
 ]
-const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions'])
+const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments'])
 
 type Row = Record<string, string | number | null>
 type SqlValue = string | number | null
@@ -239,8 +243,8 @@ export class Store {
       .query<Row, SqlValue[]>(
         `INSERT INTO jobs (position, status, project_dir, prompt, plan, review, exec_mode, model, effort,
                            session_policy, session_id, takeover_at, isolate, source, created_at,
-                           not_before, after_job, repeat_daily, max_minutes)
-         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+                           not_before, after_job, repeat_daily, max_minutes, attachments, job_group)
+         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
       .get(
         position,
@@ -261,6 +265,8 @@ export class Store {
         spec.afterJob ?? null,
         spec.repeatDaily ?? null,
         spec.maxMinutes ?? null,
+        spec.attachments?.length ? JSON.stringify(spec.attachments) : null,
+        spec.group ?? null,
       )
     if (!row) throw new Error('failed to insert job')
     return toJob(row)

@@ -98,6 +98,8 @@ function machine() {
       runCommand(text, { runner, store, config: () => config, saveConfig: c => (config = c), now: Date.now, source: 'remote', guard, chats }),
     version: '0.1.0-test',
     git,
+    uploadsDir: join(dir, 'uploads'),
+    claudeDir: join(dir, 'claude'),
     log: () => {},
     now: Date.now,
     identityPath: join(dir, 'identity.json'),
@@ -594,5 +596,43 @@ describe('steering', () => {
     expect(await conn.request({ type: 'open', job: job.id })).toMatchObject({ ok: false, code: 'invalid' })
     m.store.updateJob(job.id, { sessionId: '3f0c2a9e-0000-4000-8000-000000000009' })
     expect(await conn.request({ type: 'open', job: job.id })).toMatchObject({ ok: false, code: 'failed', error: 'build-box has no screen to open it on.' })
+  })
+})
+
+describe('prompts', () => {
+  test('an upload comes back as a path; a task names its attachments, and only real uploads', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const up = await conn.request({ type: 'upload', name: '../../Screen Shot 1.png', data: Buffer.from('png bytes').toString('base64') })
+    expect(up.ok).toBe(true)
+    const path = (up.data as { path: string }).path
+    expect(path.startsWith(join(dir, 'uploads'))).toBe(true)
+    expect(path.endsWith('-Screen-Shot-1.png')).toBe(true)
+    expect(require('node:fs').readFileSync(path, 'utf8')).toBe('png bytes')
+    const queued = await conn.request({ type: 'queue', folder: m.project, prompt: 'Why does this crash?', options: { attachments: [path], group: 'try-3' } })
+    expect(queued.ok).toBe(true)
+    expect(m.store.queued()[0]).toMatchObject({ attachments: [path], group: 'try-3' })
+    expect((queued.data as { job: { attachments: string[] } }).job.attachments).toEqual([path.slice(path.lastIndexOf('/') + 1)])
+    expect(await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { attachments: ['/etc/hosts'] } })).toMatchObject({ ok: false, code: 'invalid' })
+    const viewer = await pairedApp(m, { role: 'viewer' })
+    expect(await viewer.conn.request({ type: 'upload', name: 'a.txt', data: 'aGk=' })).toMatchObject({ ok: false, code: 'forbidden' })
+  })
+
+  test('slash commands and skills: the project’s and yours, only in shared folders', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'viewer' })
+    const fs = require('node:fs')
+    fs.mkdirSync(join(m.project, '.claude', 'commands', 'frontend'), { recursive: true })
+    fs.writeFileSync(join(m.project, '.claude', 'commands', 'review.md'), '---\ndescription: Review the diff for bugs\n---\nLook at...')
+    fs.writeFileSync(join(m.project, '.claude', 'commands', 'frontend', 'component.md'), '# Make a component\nWith tests.')
+    fs.mkdirSync(join(dir, 'claude', 'skills', 'release-notes'), { recursive: true })
+    fs.writeFileSync(join(dir, 'claude', 'skills', 'release-notes', 'SKILL.md'), '---\nname: release-notes\ndescription: Write release notes from the log\n---\n')
+    const r = await conn.request({ type: 'commands', folder: m.project })
+    expect((r.data as { commands: unknown[] }).commands).toEqual([
+      { name: 'frontend:component', description: 'Make a component', scope: 'project', kind: 'command' },
+      { name: 'review', description: 'Review the diff for bugs', scope: 'project', kind: 'command' },
+      { name: 'release-notes', description: 'Write release notes from the log', scope: 'user', kind: 'skill' },
+    ])
+    expect(await conn.request({ type: 'commands', folder: m.outside })).toMatchObject({ ok: false, code: 'policy' })
   })
 })

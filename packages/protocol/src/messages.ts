@@ -108,6 +108,10 @@ export const JobInfo = z.object({
   activeMs: z.number().nullable().optional(),
   /** What became of its own branch: merged, discarded, a pull request's link. */
   branchNote: z.string().nullable().optional(),
+  /** The names of files attached to it. */
+  attachments: z.array(z.string()).nullable().optional(),
+  /** Tasks queued together to compare. */
+  group: z.string().nullable().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -265,6 +269,10 @@ export const QueueOptions = z.object({
   repeatDaily: z.number().int().min(0).max(1439).optional(),
   /** Stop it after this many minutes of work. */
   maxMinutes: z.number().int().min(1).max(1440).optional(),
+  /** Files uploaded for it (the paths `upload` gave back); Claude is told to read them. */
+  attachments: z.array(z.string().max(4096)).max(10).optional(),
+  /** Tasks queued together to compare, e.g. the same prompt three ways. */
+  group: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
 })
 export type QueueOptions = z.infer<typeof QueueOptions>
 
@@ -333,6 +341,10 @@ export const Request = z.discriminatedUnion('type', [
    * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
    * reads a file; `query` searches file names.
    */
+  /** A photo or file for a task's prompt, base64 (up to about 5 MB). Gives back its path on the machine. */
+  withId({ type: z.literal('upload'), name: z.string().min(1).max(200), data: z.string().min(1).max(7_000_000) }),
+  /** The slash commands and skills a folder's tasks can use, the project's and yours. */
+  withId({ type: z.literal('commands'), folder: z.string().min(1).max(4096) }),
   /** A finished task's own branch: merge it into the checkout, throw it away, or open a pull request. */
   withId({ type: z.literal('branch'), job: z.number().int(), action: z.enum(['merge', 'discard', 'pr']) }),
   /** Opens a task's or a chat's conversation on the machine's screen, in VS Code. */
@@ -522,6 +534,16 @@ export const FileContent = z.object({
   truncated: z.boolean(),
 })
 export type FileContent = z.infer<typeof FileContent>
+
+/** One of the answers to a `commands` request. */
+export const SlashCommand = z.object({
+  /** Typed after the slash: `review`, `frontend:component`. */
+  name: z.string(),
+  description: z.string(),
+  scope: z.enum(['project', 'user']),
+  kind: z.enum(['command', 'skill']),
+})
+export type SlashCommand = z.infer<typeof SlashCommand>
 
 /** The answer to a `files` request: a folder's entries, search hits, or a file. */
 export const FilesResult = z.object({

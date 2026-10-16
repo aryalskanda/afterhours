@@ -30,7 +30,8 @@ import { Remote, type RemoteStatus } from './remote'
 import { allowedRoots, isAllowed } from './remote/router'
 import { Runner, type HookPayload, type ToolActivity } from './runner'
 import { deliverToInbox } from './inbox'
-import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
+import { CLAUDE_DIR, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
+import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
@@ -89,6 +90,7 @@ export async function runDaemon(): Promise<void> {
 
   const store = new Store(paths.db)
   store.pruneEvents(Date.now() - 30 * 24 * 3600_000)
+  pruneUploads(paths.uploads, Date.now())
   // Hooks that were waiting on these lost their connection when the daemon stopped.
   store.expirePendingApprovals(Date.now())
 
@@ -124,6 +126,7 @@ export async function runDaemon(): Promise<void> {
     activity: a => onActivity(a),
     // Folders an "allow" rule from an app may add: only ones the machine shares with apps.
     allowedDir: dir => isAllowed(dir, allowedRoots(config)),
+    uploadsDir: paths.uploads,
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
@@ -181,6 +184,8 @@ export async function runDaemon(): Promise<void> {
     version: VERSION,
     git,
     openInVsCode: sessionId => openInVsCode(sessionId, log),
+    uploadsDir: paths.uploads,
+    claudeDir: CLAUDE_DIR,
     log,
     now: Date.now,
   })

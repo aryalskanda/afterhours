@@ -1,16 +1,17 @@
 // New task: pick the machine and the folder, write the prompt, choose how it runs. It starts from
 // what you chose last time on that machine, and offers only what the machine allows.
 
-import type { Effort, ExecMode } from '@afterhours/protocol'
+import type { Effort, ExecMode, FileEntry, SlashCommand } from '@afterhours/protocol'
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { Platform, View } from 'react-native'
 import { chatCache, hub, useHub, useNow } from '../src/app-state'
-import { Block, Button, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Segmented, SwitchRow, TextArea, Txt } from '../src/components/ui'
+import { Block, Button, EmptyState, FieldRow, Group, GroupAction, HStack, LoadingRows, Note, Page, Row, Segmented, SwitchRow, TextArea, Txt } from '../src/components/ui'
 import { basename, clock, effortLabel, minutes, modelLabel, nextAt, oneLine, parseTimeOfDay, shortPath, timeOfDay } from '../src/lib/format'
 import type { Choices } from '../src/lib/hub'
-import { FolderList, Queued, UNREADABLE, type FolderHit } from '../src/lib/results'
+import { fileSize, MAX_ATTACHMENT_BYTES, pickFiles, pickPhotos, type Picked } from '../src/lib/attach'
+import { FilesResult, FolderList, Queued, SlashCommandList, UNREADABLE, Uploaded, type FolderHit } from '../src/lib/results'
 import { supports } from '../src/lib/state'
 import { HeaderButton } from '../src/navigation'
 import { useTheme } from '../src/theme'
@@ -75,8 +76,78 @@ export default function NewTask() {
   const [after, setAfter] = useState<number | null>(null)
   const [limit, setLimit] = useState<number | null>(null)
   const now = useNow(30_000)
-  const [outcome, setOutcome] = useState<{ ok: boolean; text: string; job?: number } | null>(null)
+  const [outcome, setOutcome] = useState<{ ok: boolean; text: string; job?: number; group?: string } | null>(null)
   const [sending, setSending] = useState(false)
+  const [progress, setProgress] = useState<string | null>(null)
+  // Attachments, and what you type as `/` or `@` turned into suggestions.
+  const [files, setFiles] = useState<Picked[]>([])
+  const [pickError, setPickError] = useState<string | null>(null)
+  const [cursor, setCursor] = useState(0)
+  const [commands, setCommands] = useState<{ folder: string; list: SlashCommand[] } | null>(null)
+  const [mentions, setMentions] = useState<FileEntry[]>([])
+  // The same prompt three ways, each on its own branch, to compare.
+  const [threeWays, setThreeWays] = useState(false)
+  const [ways, setWays] = useState<'models' | 'same'>('models')
+  const [restored, setRestored] = useState(false)
+  const { saved } = useHub()
+
+  // What you were writing here last time, until it's queued.
+  useEffect(() => {
+    if (!machineId || restored || session) return
+    setRestored(true)
+    const draft = hub.draftFor(machineId)
+    if (draft && !prompt) {
+      setPrompt(draft.prompt)
+      if (pickedFolder === undefined && draft.folder) setPickedFolder(draft.folder)
+    }
+  }, [machineId, restored, session, prompt, pickedFolder])
+  useEffect(() => {
+    if (!machineId || !restored || session) return
+    const timer = setTimeout(() => void hub.saveDraft(machineId, { prompt, folder, at: Date.now() }), 600)
+    return () => clearTimeout(timer)
+  }, [machineId, restored, session, prompt, folder])
+
+  // The word you're typing: `/name` at the very start, or `@path` anywhere.
+  const before = prompt.slice(0, cursor)
+  const token = /(?:^|\s)([@/][^\s]*)$/.exec(before)?.[1] ?? null
+  const slash = token?.startsWith('/') && before === token ? token.slice(1).toLowerCase() : null
+  const mention = token?.startsWith('@') ? token.slice(1) : null
+  const mFeatures = machines.find(x => x.id === machineId)?.features ?? []
+  const canMention = mFeatures.includes('files') && machines.find(x => x.id === machineId)?.role !== 'viewer'
+
+  useEffect(() => {
+    if (slash === null || !machineId || !folder || !mFeatures.includes('commands') || commands?.folder === folder) return
+    void hub.request(machineId, { type: 'commands', folder }, { timeoutMs: 10_000 }).then(r => {
+      const parsed = r.ok ? SlashCommandList.safeParse(r.data) : null
+      setCommands({ folder, list: parsed?.success ? parsed.data.commands : [] })
+    })
+  }, [slash, machineId, folder, commands?.folder, mFeatures])
+
+  useEffect(() => {
+    if (mention === null || !machineId || !folder || !canMention) {
+      setMentions([])
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      const r = await hub.request(machineId, { type: 'files', folder, query: mention || '.' }, { timeoutMs: 10_000 })
+      const parsed = r.ok ? FilesResult.safeParse(r.data) : null
+      if (!cancelled) setMentions(parsed?.success ? (parsed.data.entries ?? []).slice(0, 6) : [])
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [mention, machineId, folder, canMention])
+
+  /** Puts `text` where the word being typed is, and a space after it. */
+  const complete = (text: string) => {
+    if (!token) return
+    const start = cursor - token.length
+    const next = `${prompt.slice(0, start)}${text} ${prompt.slice(cursor)}`
+    setPrompt(next)
+    setCursor(start + text.length + 1)
+  }
 
   // Folders: the recent ones, or what matches what you type.
   useEffect(() => {
@@ -151,38 +222,73 @@ export default function NewTask() {
           : undefined
   const whenReady = whenNow === 'now' || whenNow === 'reset' || (whenNow === 'time' && atMinutes !== null) || (whenNow === 'after' && after !== null)
   const canQueue = Boolean(folder && prompt.trim()) && !sending && whenReady
+  const online = m.status === 'connected'
+  const variants = threeWays && !session ? (ways === 'models' && models.length >= 3 ? models.slice(0, 3) : [choices.model, choices.model, choices.model]) : [choices.model]
+  const suggestions =
+    slash !== null
+      ? (commands?.list ?? []).filter(x => x.name.toLowerCase().includes(slash)).slice(0, 6)
+      : []
+  const recent = [...new Set(m.recent.map(j => j.prompt.trim()))].filter(p => p && !saved.includes(p)).slice(0, 5)
 
   const submit = async () => {
     if (!folder || sending) return
     setSending(true)
     try {
-      const r = await hub.request(m.id, {
-        type: 'queue',
-        folder,
-        prompt: prompt.trim(),
-        options: {
-          plan: choices.plan,
-          review: choices.review,
-          mode,
-          model: choices.model,
-          effort: choices.effort,
-          ...(session ? { session } : { isolate: choices.isolate }),
-          front,
-          ...(whenNow === 'time' && atMinutes !== null ? (daily ? { repeatDaily: atMinutes } : { notBefore: nextAt(atMinutes, Date.now()) }) : {}),
-          ...(whenNow === 'reset' ? { atReset: true } : {}),
-          ...(whenNow === 'after' && after !== null ? { afterJob: after } : {}),
-          ...(limit ? { maxMinutes: limit } : {}),
-        },
+      const group = variants.length > 1 ? `try-${Date.now().toString(36)}` : undefined
+      const options = (model: string) => ({
+        plan: choices.plan,
+        review: choices.review,
+        mode,
+        model,
+        effort: choices.effort,
+        ...(session ? { session } : { isolate: group ? true : choices.isolate }),
+        front,
+        ...(whenNow === 'time' && atMinutes !== null ? (daily ? { repeatDaily: atMinutes } : { notBefore: nextAt(atMinutes, Date.now()) }) : {}),
+        ...(whenNow === 'reset' ? { atReset: true } : {}),
+        ...(whenNow === 'after' && after !== null ? { afterJob: after } : {}),
+        ...(limit ? { maxMinutes: limit } : {}),
+        ...(group ? { group } : {}),
       })
-      if (!r.ok) {
-        setOutcome({ ok: false, text: r.error ?? 'It didn’t go through.' })
+      // Offline: it waits on this device and goes out when the machine is back.
+      if (!online) {
+        if (files.length > 0) {
+          setOutcome({ ok: false, text: `Attachments need ${m.name} online.` })
+          return
+        }
+        for (const model of variants) await hub.queueLater(m.id, { type: 'queue', folder, prompt: prompt.trim(), options: options(model) })
+        await hub.saveDraft(m.id, null)
+        setOutcome({ ok: true, text: `It goes to ${m.name} when it’s back.` })
         return
       }
-      const queued = Queued.safeParse(r.data)
+      const attachments: string[] = []
+      for (const [i, f] of files.entries()) {
+        setProgress(`Uploading ${files.length > 1 ? `${i + 1} of ${files.length}` : f.name}…`)
+        const up = await hub.request(m.id, { type: 'upload', name: f.name, data: f.base64 }, { timeoutMs: 120_000 })
+        const parsed = up.ok ? Uploaded.safeParse(up.data) : null
+        if (!parsed?.success) {
+          setOutcome({ ok: false, text: up.error ?? `${f.name} didn’t upload.` })
+          return
+        }
+        attachments.push(parsed.data.path)
+      }
+      setProgress(null)
+      const ids: number[] = []
+      for (const model of variants) {
+        const r = await hub.request(m.id, { type: 'queue', folder, prompt: prompt.trim(), options: { ...options(model), ...(attachments.length ? { attachments } : {}) } })
+        if (!r.ok) {
+          setOutcome({ ok: false, text: r.error ?? 'It didn’t go through.' })
+          return
+        }
+        const queued = Queued.safeParse(r.data)
+        if (queued.success) ids.push(queued.data.job.id)
+      }
       await hub.rememberChoices(m.id, { ...choices, mode, folder: session ? choices.folder : folder })
-      setOutcome({ ok: true, text: r.text ?? 'Queued.', job: queued.success ? queued.data.job.id : undefined })
+      await hub.saveDraft(m.id, null)
+      const text = ids.length > 1 ? `Queued ${ids.slice(0, -1).map(id => `#${id}`).join(', ')} and #${ids.at(-1)} to compare.` : `Queued #${ids[0]}.`
+      setOutcome({ ok: true, text, job: ids.length === 1 ? ids[0] : undefined, group })
     } finally {
       setSending(false)
+      setProgress(null)
     }
   }
 
@@ -205,6 +311,17 @@ export default function NewTask() {
               onPress={() => {
                 if (router.canGoBack()) router.back()
                 router.push({ pathname: '/machine/[id]/task/[job]', params: { id: m.id, job: String(job) } })
+              }}
+            />
+          ) : null}
+          {outcome.group ? (
+            <Button
+              flex
+              title="Compare"
+              testID="new-compare"
+              onPress={() => {
+                if (router.canGoBack()) router.back()
+                router.push({ pathname: '/machine/[id]/compare', params: { id: m.id, group: outcome.group! } })
               }}
             />
           ) : null}
@@ -241,7 +358,7 @@ export default function NewTask() {
           ))}
         </Group>
       ) : null}
-      {m.status !== 'connected' ? <Note text={`${m.name} is offline. The task is sent when it’s back.`} /> : null}
+      {m.status !== 'connected' ? <Note text={`${m.name} is offline. The task waits on this device and goes out when it’s back.`} /> : null}
 
       <Group header="Folder" footer={!session && !folder && policy ? `${m.name} lets apps use ${policy.allowedRoots.map(r => shortPath(r, 40)).join(', ')}.` : undefined}>
         {session ? (
@@ -265,9 +382,88 @@ export default function NewTask() {
       </Group>
       {!session && !folder && hits === null ? <LoadingRows count={2} /> : null}
 
-      <Group header="Prompt">
-        <TextArea placeholder="What should Claude do?" value={prompt} onChangeText={setPrompt} minHeight={140} testID="new-prompt" />
+      <Group
+        header="Prompt"
+        right={prompt.trim() && !saved.includes(prompt.trim()) ? <GroupAction title="Save" onPress={() => hub.savePrompt(prompt)} testID="new-save-prompt" /> : undefined}
+        footer={supports(m, 'commands') || canMention ? 'Type / for the project’s commands and skills, @ for a file.' : undefined}
+      >
+        <TextArea
+          placeholder="What should Claude do?"
+          value={prompt}
+          onChangeText={setPrompt}
+          onSelectionChange={e => setCursor(e.nativeEvent.selection.start)}
+          minHeight={140}
+          testID="new-prompt"
+        />
+        {suggestions.map(s => (
+          <Row key={s.name} title={`/${s.name}`} subtitle={s.description || (s.kind === 'skill' ? 'A skill' : 'A command')} value={s.scope === 'user' ? 'Yours' : undefined} onPress={() => complete(`/${s.name}`)} testID={`suggest-/${s.name}`} />
+        ))}
+        {mention !== null
+          ? mentions.map(f => <Row key={f.path} title={<Txt mono v="subhead">{f.path}</Txt>} onPress={() => complete(`@${f.path}`)} testID={`suggest-@${f.path}`} />)
+          : null}
       </Group>
+
+      {!prompt.trim() && (saved.length > 0 || recent.length > 0) ? (
+        <Group header="Saved and recent" testID="new-prompts">
+          {saved.slice(0, 5).map(p => (
+            <Row
+              key={`s:${p}`}
+              title={p}
+              titleLines={2}
+              onPress={() => setPrompt(p)}
+              trailing={<Button small kind="plain" title="Remove" onPress={() => hub.removeSaved(p)} />}
+              testID={`saved-${saved.indexOf(p)}`}
+            />
+          ))}
+          {recent.map((p, i) => (
+            <Row key={`r:${p}`} title={<Txt tone="soft">{p}</Txt>} titleLines={2} onPress={() => setPrompt(p)} testID={`recent-${i}`} />
+          ))}
+        </Group>
+      ) : null}
+
+      {supports(m, 'attachments') ? (
+        <Group header="Attachments" footer={files.length > 0 ? 'Claude is told to read them. They stay on the machine for two weeks.' : undefined} testID="new-attachments">
+          {files.map((f, i) => (
+            <Row
+              key={`${f.name}-${i}`}
+              title={f.name}
+              value={fileSize(f.size)}
+              trailing={<Button small kind="plain" title="Remove" onPress={() => setFiles(list => list.filter((_, k) => k !== i))} testID={`attachment-remove-${i}`} />}
+            />
+          ))}
+          <Block>
+            <HStack>
+              <Button
+                small
+                kind="gray"
+                title="Photo"
+                testID="attach-photo"
+                onPress={async () => {
+                  setPickError(null)
+                  const picked = await pickPhotos().catch(err => (setPickError(String(err?.message ?? err)), []))
+                  const ok = picked.filter(f => f.size <= MAX_ATTACHMENT_BYTES)
+                  if (ok.length < picked.length) setPickError('Over 5 MB: left out.')
+                  setFiles(list => [...list, ...ok].slice(0, 10))
+                }}
+              />
+              <Button
+                small
+                kind="gray"
+                title="File"
+                testID="attach-file"
+                onPress={async () => {
+                  setPickError(null)
+                  const picked = await pickFiles().catch(err => (setPickError(String(err?.message ?? err)), []))
+                  const ok = picked.filter(f => f.size <= MAX_ATTACHMENT_BYTES)
+                  if (ok.length < picked.length) setPickError('Over 5 MB: left out.')
+                  setFiles(list => [...list, ...ok].slice(0, 10))
+                }}
+              />
+            </HStack>
+          </Block>
+        </Group>
+      ) : null}
+      {pickError ? <Note ok={false} text={pickError} /> : null}
 
       <Group header="Plan" footer={HOW.find(h => h.value === how)?.hint}>
         <Block>
@@ -293,6 +489,22 @@ export default function NewTask() {
       <Group>
         {!session ? <SwitchRow title="Own git branch" subtitle="For a new conversation, in a git folder" value={choices.isolate} onChange={v => change({ ...choices, isolate: v })} /> : null}
         <SwitchRow title="Run next" value={front} onChange={setFront} />
+        {!session && supports(m, 'group') ? (
+          <SwitchRow title="Try it three ways" subtitle="Three tasks, each on its own branch, to compare" value={threeWays} onChange={setThreeWays} testID="new-three" />
+        ) : null}
+        {threeWays && !session ? (
+          <Block>
+            <Segmented
+              options={[
+                { value: 'models' as const, label: models.length >= 3 ? models.slice(0, 3).map(modelLabel).join(', ') : 'Three models' },
+                { value: 'same' as const, label: `${modelLabel(choices.model)} three times` },
+              ]}
+              value={ways}
+              onChange={setWays}
+              testID="new-ways"
+            />
+          </Block>
+        ) : null}
       </Group>
 
       {supports(m, 'schedule') ? (
@@ -336,6 +548,7 @@ export default function NewTask() {
         </Group>
       ) : null}
 
+      {progress ? <Note text={progress} /> : null}
       {outcome && !outcome.ok ? <Note ok={false} text={outcome.text} /> : null}
       {wide ? (
         <HStack style={{ justifyContent: 'flex-end' }}>
