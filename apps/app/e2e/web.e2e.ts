@@ -59,6 +59,8 @@ try {
   })
 
   await check('allowing a permission; an answer that fails can be sent again', async () => {
+    await see('You allowed this 14 times before.')
+    await see('Always allow commands starting with npm test in this project')
     m.failAnswers(1)
     await tap('allow-perma')
     await see('the queue is busy')
@@ -93,8 +95,11 @@ try {
     await see('Review the plan')
     await see('src/settings/Appearance.tsx')
     await shot('08-review')
+    await tap('previous-revie')
+    await see('Add a dark stylesheet')
+    await tap('plan-mode-revie-auto')
     await tap('approve-revie')
-    await until(() => sent('answer', r => r.code === 'revie' && r.decision === 'allow'), 'the approval')
+    await until(() => sent('answer', r => r.code === 'revie' && r.decision === 'allow' && r.mode === 'auto'), 'the approval, in auto mode')
     await gone('request-revie')
     await see('Nothing needs you')
   })
@@ -178,6 +183,76 @@ try {
     await tap('chat-send')
     await until(() => sent('chat.write', r => r.text === 'Also cache the result'), 'the message')
     await shot('12-chat')
+  })
+
+  await check('steering: a message to the running task, an edit, a rule, a quoted step, a branch merged', async () => {
+    await page.goto(`${base}/machine/${m.id}/task/14`)
+    await see('I’ll look at how the settings page is built first.')
+    await typeInto('task-message', 'Also add a test')
+    await tap('task-message-send')
+    await until(() => sent('say', r => r.text === 'Also add a test' && r.job === 14), 'the message')
+    await see('Claude reads it when its current step ends')
+    await shot('12b-message')
+
+    await page.goto(`${base}/machine/${m.id}/task/15`)
+    await see('It starts when it’s its turn.')
+    await tap('task-edit')
+    await d.replace('task-edit-prompt', 'Fix the flaky checkout test, and the one in cart')
+    await tap('task-edit-model-opus')
+    await tap('task-edit-save')
+    await until(() => sent('job', r => r.action === 'edit' && r.prompt === 'Fix the flaky checkout test, and the one in cart' && r.options?.model === 'opus'), 'the edit')
+
+    // A permission allowed with Claude Code's own rule.
+    m.ask(
+      { code: 'permb', job: 14, kind: 'permission', tool: 'Bash', detail: 'npm test', payload: null, createdAt: Date.now(), expiresAt: Date.now() + 900_000, suggestions: [{ label: 'Always allow commands starting with npm test in this project' }] },
+      { type: 'permission', job: m.state.active!, code: 'permb', tool: 'Bash', detail: 'npm test', minutes: 15, suggestions: ['Always allow commands starting with npm test in this project'] },
+      '🔐 #14 wants to use Bash',
+    )
+    // A plan to change: a tapped step is quoted.
+    m.ask(
+      { code: 'reviq', job: 15, kind: 'review', plan: '1. Rewrite the checkout\n2. Ship it', payload: null, createdAt: Date.now() },
+      { type: 'plan_review', job: m.state.queued.find(j => j.id === 15)!, code: 'reviq', plan: '1. Rewrite the checkout\n2. Ship it' },
+      '📝 #15 plan ready for your review',
+    )
+    await page.goto(`${base}/inbox`)
+    await tap('rule-permb-0')
+    await until(() => sent('answer', r => r.code === 'permb' && r.decision === 'allow' && r.rule === 0), 'the rule')
+    await tap('quote-0')
+    await tap('send-changes-reviq')
+    await until(() => sent('answer', r => r.code === 'reviq' && r.decision === 'deny' && (r.text ?? '').startsWith('> Rewrite the checkout')), 'the quoted change')
+
+    await page.goto(`${base}/machine/${m.id}/task/12`)
+    await see('afterhours/12-csv-export')
+    await tap('branch-merge')
+    await see('Tap again to merge')
+    await tap('branch-merge')
+    await until(() => sent('branch', r => r.job === 12 && r.action === 'merge'), 'the merge')
+    await see('Merged afterhours/12-csv-export into main.')
+    await tap('task-open')
+    await until(() => sent('open', r => r.job === 12), 'open on the computer')
+    await shot('12c-branch')
+  })
+
+  await check('a task for later, every day, with a time limit; the machine’s commands', async () => {
+    await page.goto(`${base}/new?machine=${m.id}`)
+    // The folder it used last time on this machine is already picked.
+    await see('~/code/shop/web')
+    await typeInto('new-prompt', 'Run the nightly checks')
+    await tap('new-when-time')
+    await typeInto('new-at', '2:30 am')
+    await see('At ')
+    await tap('new-daily')
+    await see('Every day at 2:30 AM')
+    await tap('new-limit-30')
+    await shot('12d-later')
+    await tap('new-submit')
+    await until(() => sent('queue', r => r.prompt === 'Run the nightly checks' && r.options?.repeatDaily === 150 && r.options?.maxMinutes === 30), 'the scheduled task')
+
+    await page.goto(`${base}/machine/${m.id}/console`)
+    await see('Commands: status')
+    await typeInto('console-input', 'status')
+    await tap('console-send')
+    await see('Did status.')
   })
 
   await check('after a reload the machine is still paired and comes back online', async () => {

@@ -96,6 +96,18 @@ export const JobInfo = z.object({
   costUsd: z.number().nullable().optional(),
   /** Tokens the task's conversation used, counted from its transcript when it finished. */
   usage: Usage.nullable().optional(),
+  /** Waits in the queue until then. */
+  notBefore: z.number().nullable().optional(),
+  /** Waits until that task has finished well. */
+  afterJob: z.number().int().nullable().optional(),
+  /** Queued again each day at this time (minutes after midnight, the machine's time). */
+  repeatDaily: z.number().int().nullable().optional(),
+  /** Stopped when it has worked this long. */
+  maxMinutes: z.number().int().nullable().optional(),
+  /** How long it has worked, waits for a usage limit aside. */
+  activeMs: z.number().nullable().optional(),
+  /** What became of its own branch: merged, discarded, a pull request's link. */
+  branchNote: z.string().nullable().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -148,8 +160,14 @@ export const ApprovalInfo = z.object({
   questions: z.array(Question).optional(),
   /** Plan reviews: the plan. */
   plan: z.string().nullable().optional(),
+  /** Plan reviews: the version Claude showed before this one, when it revised it. */
+  previousPlan: z.string().nullable().optional(),
   /** Folder trust: the folder. */
   folder: z.string().optional(),
+  /** Permissions: Claude Code's own ways to stop asking ("Always allow npm test in this project"). */
+  suggestions: z.array(z.object({ label: z.string() })).optional(),
+  /** Permissions: how many times this same request was allowed before. */
+  allowedBefore: z.number().int().optional(),
 })
 export type ApprovalInfo = z.infer<typeof ApprovalInfo>
 
@@ -165,8 +183,17 @@ export type PolicyInfo = z.infer<typeof PolicyInfo>
 export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('started'), job: JobInfo }),
   z.object({ type: z.literal('plan_approved'), job: JobInfo, choice: z.string() }),
-  z.object({ type: z.literal('plan_review'), job: JobInfo, code: z.string(), plan: z.string().nullable() }),
-  z.object({ type: z.literal('permission'), job: JobInfo, code: z.string(), tool: z.string(), detail: z.string(), minutes: z.number() }),
+  z.object({ type: z.literal('plan_review'), job: JobInfo, code: z.string(), plan: z.string().nullable(), previousPlan: z.string().nullable().optional() }),
+  z.object({
+    type: z.literal('permission'),
+    job: JobInfo,
+    code: z.string(),
+    tool: z.string(),
+    detail: z.string(),
+    minutes: z.number(),
+    suggestions: z.array(z.string()).optional(),
+    allowedBefore: z.number().int().optional(),
+  }),
   z.object({ type: z.literal('question'), job: JobInfo, code: z.string(), questions: z.array(Question), minutes: z.number() }),
   z.object({ type: z.literal('trust'), job: JobInfo, code: z.string() }),
   z.object({ type: z.literal('limit'), job: JobInfo, at: z.number().nullable(), window: z.string().optional() }),
@@ -228,6 +255,16 @@ export const QueueOptions = z.object({
   isolate: z.boolean().optional(),
   takeover: z.boolean().optional(),
   front: z.boolean().optional(),
+  /** Not before this time (ms). */
+  notBefore: z.number().optional(),
+  /** When the 5-hour limit resets (the machine knows when). */
+  atReset: z.boolean().optional(),
+  /** Only after this task has finished well. */
+  afterJob: z.number().int().optional(),
+  /** Again every day at this time: minutes after midnight, the machine's time. */
+  repeatDaily: z.number().int().min(0).max(1439).optional(),
+  /** Stop it after this many minutes of work. */
+  maxMinutes: z.number().int().min(1).max(1440).optional(),
 })
 export type QueueOptions = z.infer<typeof QueueOptions>
 
@@ -238,10 +275,29 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('sync'), since: z.number().int().min(0).optional() }),
   withId({ type: z.literal('snapshot') }),
   withId({ type: z.literal('queue'), folder: z.string().min(1).max(4096), prompt: z.string().min(1).max(100_000), options: QueueOptions.optional() }),
-  withId({ type: z.literal('answer'), code: z.string().min(1).max(32), decision: z.enum(['allow', 'deny', 'answer']), text: Text(20_000).nullable().optional() }),
+  /**
+   * `rule`: allow, and apply that one of the request's `suggestions` so Claude Code stops asking.
+   * `mode`: approve a plan and work on in this mode.
+   */
+  withId({
+    type: z.literal('answer'),
+    code: z.string().min(1).max(32),
+    decision: z.enum(['allow', 'deny', 'answer']),
+    text: Text(20_000).nullable().optional(),
+    rule: z.number().int().min(0).max(9).optional(),
+    mode: ExecMode.optional(),
+  }),
   /** Acts on the running task; `job` makes sure it's still the one you meant. */
   withId({ type: z.literal('control'), action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover']), job: z.number().int().optional() }),
-  withId({ type: z.literal('job'), action: z.enum(['remove', 'top']), job: z.number().int() }),
+  /** A queued task: remove it, run it next, change it (`prompt`, `options`), or move it to place `to` (0 = next). */
+  withId({
+    type: z.literal('job'),
+    action: z.enum(['remove', 'top', 'edit', 'move']),
+    job: z.number().int(),
+    prompt: z.string().min(1).max(100_000).optional(),
+    options: QueueOptions.optional(),
+    to: z.number().int().min(0).optional(),
+  }),
   withId({ type: z.literal('jobs'), recent: z.number().int().min(0).max(100).optional() }),
   /** One task in full: its plan and Claude's final answer. */
   withId({ type: z.literal('task'), job: z.number().int() }),
@@ -277,6 +333,10 @@ export const Request = z.discriminatedUnion('type', [
    * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
    * reads a file; `query` searches file names.
    */
+  /** A finished task's own branch: merge it into the checkout, throw it away, or open a pull request. */
+  withId({ type: z.literal('branch'), job: z.number().int(), action: z.enum(['merge', 'discard', 'pr']) }),
+  /** Opens a task's or a chat's conversation on the machine's screen, in VS Code. */
+  withId({ type: z.literal('open'), job: z.number().int().optional(), session: z.string().max(64).optional() }),
   withId({
     type: z.literal('files'),
     job: z.number().int().optional(),
@@ -373,6 +433,8 @@ export const TaskDetail = z.object({
   job: JobInfo,
   plan: z.string().nullable(),
   answer: z.string().nullable(),
+  /** Earlier versions of the plan, oldest first, when Claude revised it. */
+  plans: z.array(z.object({ at: z.number(), text: z.string() })).optional(),
 })
 export type TaskDetail = z.infer<typeof TaskDetail>
 

@@ -13,6 +13,7 @@ import type { FolderMap } from '../src/daemon/folders'
 import type { Notice } from '../src/daemon/notify'
 import { Remote } from '../src/daemon/remote'
 import { RemoteDb } from '../src/daemon/remote/db'
+import { FEATURES } from '../src/daemon/remote/router'
 import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { git } from '../src/daemon/system'
@@ -375,7 +376,8 @@ describe('seeing the work', () => {
   test('the snapshot lists what this machine can do', async () => {
     const m = machine()
     const app = await pairedApp(m)
-    expect(app.snapshots[0]!.features).toEqual(['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi'])
+    expect(app.snapshots[0]!.features).toEqual(FEATURES)
+    expect(FEATURES).toContain('transcript')
   })
 
   test('a task’s conversation, a page at a time, only in shared folders', async () => {
@@ -480,5 +482,117 @@ describe('seeing the work', () => {
     m.remote.activity({ job: 4, at: 1, phase: 'start', tool: 'Bash', detail: 'npm test' })
     await until(() => seen.length === 1)
     expect(seen[0]).toEqual({ type: 'activity', job: 4, at: 1, phase: 'start', tool: 'Bash', detail: 'npm test' })
+  })
+})
+
+describe('steering', () => {
+  const base = { plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'remote' }
+  const sh = (cwd: string, ...args: string[]) => {
+    const r = Bun.spawnSync(['git', '-C', cwd, ...args], { stdout: 'pipe', stderr: 'pipe' })
+    if (r.exitCode !== 0) throw new Error(r.stderr.toString())
+    return r.stdout.toString().trim()
+  }
+
+  test('answers: only a rule Claude Code offered; plan modes under the machine’s rules', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'x' }, Date.now())
+    m.store.addApproval('perma', job.id, 'permission', { tool: 'Bash', input: { command: 'ls' } }, Date.now())
+    expect(await conn.request({ type: 'answer', code: 'perma', decision: 'allow', rule: 0 })).toMatchObject({ ok: false, code: 'invalid' })
+    m.store.addApproval('plana', job.id, 'review', {}, Date.now())
+    expect(await conn.request({ type: 'answer', code: 'plana', decision: 'allow', mode: 'bypassPermissions' })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await conn.request({ type: 'answer', code: 'plana', decision: 'allow', mode: 'plan' })).toMatchObject({ ok: false, code: 'invalid' })
+    expect(await conn.request({ type: 'answer', code: 'plana', decision: 'allow', mode: 'acceptEdits' })).toMatchObject({ ok: true })
+    expect(m.store.getJob(job.id)!.execMode).toBe('acceptEdits')
+  })
+
+  test('a queued task can be changed and moved; not one that started', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const a = m.store.addJob({ ...base, projectDir: m.project, prompt: 'A' }, Date.now())
+    const b = m.store.addJob({ ...base, projectDir: m.project, prompt: 'B' }, Date.now())
+    const c = m.store.addJob({ ...base, projectDir: m.project, prompt: 'C' }, Date.now())
+    const edited = await conn.request({ type: 'job', action: 'edit', job: b.id, prompt: 'B, but better', options: { model: 'opus', effort: 'max', maxMinutes: 30 } })
+    expect(edited.ok).toBe(true)
+    expect(m.store.getJob(b.id)).toMatchObject({ prompt: 'B, but better', model: 'opus', effort: 'max', maxMinutes: 30 })
+    expect(await conn.request({ type: 'job', action: 'edit', job: b.id, options: { mode: 'bypassPermissions' } })).toMatchObject({ ok: false, code: 'policy' })
+    await conn.request({ type: 'job', action: 'move', job: c.id, to: 0 })
+    expect(m.store.queued().map(j => j.prompt)).toEqual(['C', 'A', 'B, but better'])
+    await conn.request({ type: 'job', action: 'move', job: c.id, to: 9 })
+    expect(m.store.queued().map(j => j.id)).toEqual([a.id, b.id, c.id])
+    m.store.updateJob(a.id, { status: 'running' })
+    expect(await conn.request({ type: 'job', action: 'edit', job: a.id, prompt: 'too late' })).toMatchObject({ ok: false, code: 'gone' })
+  })
+
+  test('scheduling: at a time, at the limit reset, after another task, every day', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const at = Date.now() + 3_600_000
+    const timed = await conn.request({ type: 'queue', folder: m.project, prompt: 'At a time', options: { notBefore: at } })
+    expect((timed.data as { job: { notBefore: number } }).job.notBefore).toBe(at)
+    expect(await conn.request({ type: 'queue', folder: m.project, prompt: 'Far', options: { notBefore: Date.now() + 30 * 86_400_000 } })).toMatchObject({ ok: false, code: 'invalid' })
+    expect(await conn.request({ type: 'queue', folder: m.project, prompt: 'Reset', options: { atReset: true } })).toMatchObject({ ok: false, code: 'invalid' })
+    const resets = Date.now() + 2 * 3_600_000
+    m.store.kvSet('limits', { fiveHour: { usedPct: 91, resetsAt: resets } })
+    const reset = await conn.request({ type: 'queue', folder: m.project, prompt: 'Reset', options: { atReset: true } })
+    expect((reset.data as { job: { notBefore: number } }).job.notBefore).toBe(resets)
+    expect(await conn.request({ type: 'queue', folder: m.project, prompt: 'After', options: { afterJob: 999 } })).toMatchObject({ ok: false, code: 'invalid' })
+    const first = (timed.data as { job: { id: number } }).job.id
+    const after = await conn.request({ type: 'queue', folder: m.project, prompt: 'After', options: { afterJob: first } })
+    expect((after.data as { job: { afterJob: number } }).job.afterJob).toBe(first)
+    const daily = await conn.request({ type: 'queue', folder: m.project, prompt: 'Nightly', options: { repeatDaily: 150 } })
+    const next = new Date((daily.data as { job: { notBefore: number } }).job.notBefore)
+    expect([next.getHours(), next.getMinutes()]).toEqual([2, 30])
+  })
+
+  test('a branch task is merged into a clean checkout or thrown away; a pull request needs an owner', async () => {
+    const m = machine()
+    sh(m.project, 'init', '-q', '-b', 'main')
+    sh(m.project, 'config', 'user.email', 't@example.com')
+    sh(m.project, 'config', 'user.name', 'T')
+    require('node:fs').writeFileSync(join(m.project, 'app.js'), 'console.log(1)\n')
+    sh(m.project, 'add', '-A')
+    sh(m.project, 'commit', '-q', '-m', 'init')
+    const branchTask = async (id: number) => {
+      const wt = (await git.worktree(m.project, id, 'Add dark mode'))!
+      require('node:fs').writeFileSync(join(wt.dir, `dark-${id}.css`), 'body { background: #000 }\n')
+      await git.commitAll(wt.dir, `Afterhours #${id}`)
+      const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'Add dark mode' }, Date.now())
+      return m.store.updateJob(job.id, { status: 'done', branch: wt.branch, workDir: wt.dir, finishedAt: Date.now() })
+    }
+    const operator = await pairedApp(m, { role: 'operator' })
+    const one = await branchTask(101)
+    expect(await operator.conn.request({ type: 'branch', job: one.id, action: 'pr' })).toMatchObject({ ok: false, code: 'forbidden' })
+    // Your checkout has uncommitted changes: nothing is merged.
+    require('node:fs').writeFileSync(join(m.project, 'app.js'), 'console.log(2)\n')
+    expect(await operator.conn.request({ type: 'branch', job: one.id, action: 'merge' })).toMatchObject({ ok: false, error: expect.stringContaining('uncommitted') })
+    sh(m.project, 'checkout', '--', 'app.js')
+    const merged = await operator.conn.request({ type: 'branch', job: one.id, action: 'merge' })
+    expect(merged).toMatchObject({ ok: true, text: `Merged ${one.branch} into main.` })
+    expect(sh(m.project, 'log', '-1', '--format=%s')).toBe(`Merge Afterhours #${one.id}: Add dark mode`)
+    expect(require('node:fs').existsSync(join(m.project, 'dark-101.css'))).toBe(true)
+    expect(sh(m.project, 'branch', '--list', one.branch!)).toBe('')
+    expect(m.store.getJob(one.id)!.branchNote).toBe(`Merged ${one.branch} into main.`)
+
+    const two = await branchTask(102)
+    expect(await operator.conn.request({ type: 'branch', job: two.id, action: 'discard' })).toMatchObject({ ok: true })
+    expect(sh(m.project, 'branch', '--list', two.branch!)).toBe('')
+    expect(require('node:fs').existsSync(two.workDir!)).toBe(false)
+    expect(require('node:fs').existsSync(join(m.project, 'dark-102.css'))).toBe(false)
+
+    const owner = await pairedApp(m, { role: 'owner' })
+    const three = await branchTask(103)
+    expect(await owner.conn.request({ type: 'branch', job: three.id, action: 'pr' })).toMatchObject({ ok: false, code: 'failed' })
+    const plain = m.store.addJob({ ...base, projectDir: m.project, prompt: 'In place' }, Date.now())
+    expect(await owner.conn.request({ type: 'branch', job: plain.id, action: 'merge' })).toMatchObject({ ok: false, code: 'invalid' })
+  })
+
+  test('opening a conversation on the computer needs a screen there', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { role: 'operator' })
+    const job = m.store.addJob({ ...base, projectDir: m.project, prompt: 'x' }, Date.now())
+    expect(await conn.request({ type: 'open', job: job.id })).toMatchObject({ ok: false, code: 'invalid' })
+    m.store.updateJob(job.id, { sessionId: '3f0c2a9e-0000-4000-8000-000000000009' })
+    expect(await conn.request({ type: 'open', job: job.id })).toMatchObject({ ok: false, code: 'failed', error: 'build-box has no screen to open it on.' })
   })
 })

@@ -75,6 +75,17 @@ function vsCodeRunning(): boolean {
  * Opens a conversation in the VS Code that's running, so it shows what a task did with it. Does
  * nothing without a desktop (a server, VS Code connected over SSH) or without VS Code open.
  */
+/** Opens a conversation in VS Code on this machine's screen, starting VS Code if it isn't running. */
+export function openInVsCode(sessionId: string, log: (line: string) => void): boolean {
+  if (!hasDisplay()) return false
+  const url = `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`
+  const opener = isMac ? ['open', url] : Bun.which('xdg-open') ? ['xdg-open', url] : null
+  if (!opener) return false
+  Bun.spawn(opener, { stdout: 'ignore', stderr: 'ignore' })
+  log(`opened chat ${sessionId} in VS Code, as an app asked`)
+  return true
+}
+
 export function reopenInVsCode(sessionId: string, log: (line: string) => void): void {
   if (!hasDisplay() || !vsCodeRunning()) return
   const url = `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`

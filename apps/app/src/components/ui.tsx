@@ -67,7 +67,8 @@ export function Page(props: { title?: string; action?: ReactNode; sheet?: boolea
       style={{ flex: 1, backgroundColor: c.page }}
       contentContainerStyle={{ paddingTop: top, paddingBottom: 56, paddingHorizontal: m.pageX, alignItems: !wide ? 'stretch' : props.sheet ? 'center' : 'flex-start' }}
       keyboardShouldPersistTaps="handled"
-      keyboardDismissMode="on-drag"
+      // On the web a scroll (a browser keeping the caret in view) would blur the field you type in.
+      keyboardDismissMode={Platform.OS === 'web' ? 'none' : 'on-drag'}
       refreshControl={props.onRefresh ? <RefreshControl refreshing={props.refreshing ?? false} onRefresh={props.onRefresh} tintColor={c.soft} /> : undefined}
     >
       <View style={{ width: '100%', maxWidth: props.sheet ? Math.min(m.maxWidth, 640) : m.maxWidth, gap: m.gap }}>
@@ -249,7 +250,7 @@ export function SwitchRow(props: { title: string; subtitle?: string; value: bool
 type Kind = 'filled' | 'tinted' | 'gray' | 'plain' | 'danger' | 'dangerFilled'
 
 /** A button. Filled for a screen's main action; tinted or plain for the rest. Waits for async work. */
-export function Button(props: { title: string; onPress: () => unknown; kind?: Kind; small?: boolean; disabled?: boolean; flex?: boolean; testID?: string }) {
+export function Button(props: { title: string; onPress: () => unknown; kind?: Kind; small?: boolean; disabled?: boolean; flex?: boolean; lines?: number; testID?: string }) {
   const { c, t, m, wide } = useTheme()
   const [busy, setBusy] = useState(false)
   const kind = props.kind ?? 'filled'
@@ -286,7 +287,7 @@ export function Button(props: { title: string; onPress: () => unknown; kind?: Ki
       {busy ? (
         <ActivityIndicator color={fg} size="small" />
       ) : (
-        <Text numberOfLines={1} style={[props.small ? t.subhead : t.headline, { color: fg, fontWeight: '600' }]}>
+        <Text numberOfLines={props.lines ?? 1} style={[props.small ? t.subhead : t.headline, { color: fg, fontWeight: '600', textAlign: 'center' }]}>
           {props.title}
         </Text>
       )}
@@ -322,7 +323,8 @@ export function ConfirmButton(props: { title: string; confirm: string; onConfirm
 }
 
 /** A destructive row (red, on its own) that asks once more on itself. */
-export function ConfirmRow(props: { title: string; confirm: string; onConfirm: () => unknown; testID?: string }) {
+/** A row that asks once more before acting: red for what can't be undone, `accent` for the rest. */
+export function ConfirmRow(props: { title: string; confirm: string; onConfirm: () => unknown; tone?: 'danger' | 'accent'; testID?: string }) {
   const [armed, setArmed] = useState(false)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
@@ -333,7 +335,7 @@ export function ConfirmRow(props: { title: string; confirm: string; onConfirm: (
   return (
     <Row
       testID={props.testID}
-      tone="danger"
+      tone={props.tone ?? 'danger'}
       bold={armed}
       title={armed ? props.confirm : props.title}
       disabled={busy}

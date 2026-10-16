@@ -112,6 +112,55 @@ export function roleLabel(role: Role): string {
   return { owner: 'Owner', operator: 'Operator', viewer: 'Viewer' }[role]
 }
 
+/** 30 → "30 min", 90 → "1 h 30 min", 120 → "2 h". */
+export function minutes(n: number): string {
+  if (n < 60) return `${n} min`
+  const h = Math.floor(n / 60)
+  return n % 60 ? `${h} h ${n % 60} min` : `${h} h`
+}
+
+/** Minutes after midnight as a clock time: 150 → "2:30 AM". */
+export function timeOfDay(min: number): string {
+  const d = new Date(2026, 0, 1, Math.floor(min / 60), min % 60)
+  return time(d)
+}
+
+/** "2:30", "14:30", "2:30 pm", "2pm", "0230" → minutes after midnight; null when it isn't a time. */
+export function parseTimeOfDay(text: string): number | null {
+  const m = /^\s*(\d{1,2})(?::?(\d{2}))?\s*([ap])\.?\s*m?\.?\s*$/i.exec(text) ?? /^\s*(\d{1,2})(?::?(\d{2}))?\s*$/.exec(text)
+  if (!m) return null
+  let h = Number(m[1])
+  const min = m[2] ? Number(m[2]) : 0
+  const half = m[3]?.toLowerCase()
+  if (min > 59) return null
+  if (half) {
+    if (h < 1 || h > 12) return null
+    h = (h % 12) + (half === 'p' ? 12 : 0)
+  } else if (h > 23) {
+    return null
+  }
+  return h * 60 + min
+}
+
+/** The next time the clock shows `min` (minutes after midnight), from `now`. */
+export function nextAt(min: number, now: number): number {
+  const d = new Date(now)
+  d.setHours(Math.floor(min / 60), min % 60, 0, 0)
+  if (d.getTime() <= now) d.setDate(d.getDate() + 1)
+  return d.getTime()
+}
+
+/** When a waiting task starts, in words: "Every day at 2:00 AM", "At Thu 9:00 AM", "After #14". */
+export function whenLabel(j: Pick<JobInfo, 'notBefore' | 'afterJob' | 'repeatDaily'>, now: number): string | null {
+  const parts: string[] = []
+  if (j.repeatDaily !== null && j.repeatDaily !== undefined) parts.push(`Every day at ${timeOfDay(j.repeatDaily)}`)
+  else if (j.notBefore && j.notBefore > now) parts.push(`At ${clock(j.notBefore, now)}`)
+  if (j.afterJob !== null && j.afterJob !== undefined) parts.push(`after #${j.afterJob}`)
+  if (parts.length === 0) return null
+  const text = parts.join(', ')
+  return text[0]!.toUpperCase() + text.slice(1)
+}
+
 /** 1234 → "1.2k", 3400000 → "3.4M". */
 export function tokens(n: number): string {
   if (n < 1000) return String(Math.round(n))
@@ -132,6 +181,15 @@ export function oneLine(text: string, max = 120): string {
 }
 
 const isEmoji = (cp: number) => (cp >= 0x2190 && cp <= 0x2bff) || cp >= 0x1f000
+
+/** A reply without the emoji the bot puts in it ("✅ Approved #14's request." → "Approved #14's request."). */
+export function plainReply(text: string): string {
+  return [...text]
+    .filter(ch => !isEmoji(ch.codePointAt(0) ?? 0) && ch !== '\uFE0F')
+    .join('')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
 
 /** The machine words its notices like the Telegram bot, emoji first; the app shows an icon instead. */
 export function withoutEmoji(text: string): string {

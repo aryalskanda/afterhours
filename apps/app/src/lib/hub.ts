@@ -58,6 +58,8 @@ export interface Attention {
   machineName: string
   text: string
   type: string
+  /** The request it announces, so answering it (anywhere) takes the banner down. */
+  code?: string
 }
 
 export interface HubState {
@@ -171,10 +173,14 @@ export class Hub {
     conn.on('event', e => {
       this.updateMachine(m.id, x => applyEvent(x, e))
       this.saveSoon()
+      // A request answered anywhere: its banner goes.
+      const shown = this.state.attention
+      if (e.notice.type === 'resolved' && shown?.machine === m.id && shown.code === e.notice.code) this.set({ attention: null })
       // Replayed history isn't news; only what happens while the app is open gets a banner.
       if (wantsAttention(e.notice) && e.at >= this.startedAt - 5_000 && this.now() - e.at < 120_000) {
         const machine = this.state.machines.find(x => x.id === m.id)
-        this.set({ attention: { id: ++this.attentionSeq, machine: m.id, machineName: machine?.name ?? m.name, text: e.text, type: e.notice.type } })
+        const code = 'code' in e.notice && typeof e.notice.code === 'string' ? e.notice.code : undefined
+        this.set({ attention: { id: ++this.attentionSeq, machine: m.id, machineName: machine?.name ?? m.name, text: e.text, type: e.notice.type, ...(code ? { code } : {}) } })
       }
     })
   }

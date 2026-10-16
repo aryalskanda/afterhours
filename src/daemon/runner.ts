@@ -13,6 +13,7 @@ import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOpt
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
+import { suggestionLabel, usableSuggestions } from './rules'
 import { toolName, toolSummary } from './tools'
 import { costOf, readTranscript, usageOf } from './transcript'
 
@@ -57,6 +58,8 @@ export interface RunnerDeps {
   reopenInVsCode?: (sessionId: string) => void
   /** Tool calls as they happen, for apps watching the task. */
   activity?: (a: ToolActivity) => void
+  /** Whether a folder is one the machine shares with apps (extra folders a rule may allow). */
+  allowedDir?: (dir: string) => boolean
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -81,6 +84,8 @@ type HookResponse = Record<string, unknown>
 interface Resolution {
   status: 'allowed' | 'denied' | 'answered' | 'expired'
   answer: string | null
+  /** Allowed with one of the request's suggestions applied (its index). */
+  rule?: number
 }
 
 /** In-memory state for the job being supervised. Rebuilt from the database after a restart. */
@@ -110,6 +115,9 @@ interface Runtime {
   promptSeenAt?: number
   /** When you last typed or pressed keys into the session (say, keys), to tell who ended a limit wait. */
   saidAt?: number
+  /** Work time not yet written to the job, and when it was last counted. */
+  unsaved?: number
+  countedAt?: number
 }
 
 const NUDGE =
@@ -229,11 +237,50 @@ export class Runner {
 
   private async startNext(): Promise<void> {
     if (this.paused) return
-    const next = this.d.store.queued()[0]
-    if (!next) return
+    const now = this.d.now()
     const blockedUntil = this.limits().blockedUntil
-    if (blockedUntil && this.d.now() < blockedUntil) return
-    await this.launch(next)
+    if (blockedUntil && now < blockedUntil) return
+    for (const job of this.d.store.queued()) {
+      // Scheduled for later: it keeps its place, and the next one may go first.
+      if (job.notBefore && now < job.notBefore) continue
+      if (job.afterJob !== null) {
+        const before = this.d.store.getJob(job.afterJob)
+        if (before && (before.status === 'queued' || before.status === 'running' || before.status === 'held')) continue
+        if (!before || before.status !== 'done') {
+          const reason = `#${job.afterJob} ${before ? (before.status === 'failed' ? 'failed' : 'was cancelled') : 'is gone'}, so #${job.id}, which waited for it, didn't start`
+          const dropped = this.d.store.updateJob(job.id, { status: 'cancelled', finishedAt: now, error: reason })
+          this.d.notify({ type: 'failed', job: dropped, reason })
+          this.scheduleRepeat(dropped)
+          continue
+        }
+      }
+      await this.launch(job)
+      return
+    }
+  }
+
+  /** A daily task queues its next run when this one ends, however it ended. */
+  private scheduleRepeat(job: Job): void {
+    if (job.repeatDaily === null) return
+    const next = new Date(this.d.now())
+    next.setHours(Math.floor(job.repeatDaily / 60), job.repeatDaily % 60, 0, 0)
+    if (next.getTime() <= this.d.now()) next.setDate(next.getDate() + 1)
+    const again = this.enqueue({
+      projectDir: job.projectDir,
+      prompt: job.prompt,
+      plan: job.plan,
+      review: job.review,
+      execMode: job.execMode,
+      model: job.model,
+      effort: job.effort,
+      sessionPolicy: job.sessionPolicy === 'session' ? 'continue' : job.sessionPolicy,
+      isolate: job.isolate,
+      source: job.source,
+      notBefore: next.getTime(),
+      repeatDaily: job.repeatDaily,
+      maxMinutes: job.maxMinutes,
+    })
+    this.d.log(`#${job.id} repeats daily: #${again.id} is queued for ${next.toISOString()}`)
   }
 
   private runtime(job: Job): Runtime {
@@ -466,6 +513,23 @@ export class Runner {
       rt.retry = undefined
       rt.lastActivity = now
     }
+
+    // Work time, usage-limit waits aside; a task with a time limit stops when it's used up.
+    if (job.phase !== 'limited') {
+      rt.unsaved = (rt.unsaved ?? 0) + Math.max(0, Math.min(now - (rt.countedAt ?? now), 60_000))
+      const worked = job.activeMs + rt.unsaved
+      const over = job.maxMinutes !== null && worked >= job.maxMinutes * 60_000
+      if (rt.unsaved >= 15_000 || over) {
+        job = this.d.store.updateJob(job.id, { activeMs: worked })
+        rt.unsaved = 0
+      }
+      if (over) {
+        rt.countedAt = now
+        await this.d.tmux.sendKeys(rt.window, 'Escape')
+        return this.hold(job, `it worked ${job.maxMinutes} minute${job.maxMinutes === 1 ? '' : 's'}, its time limit`)
+      }
+    }
+    rt.countedAt = now
 
     if (job.phase === 'limited') return this.handleLimit(job, rt)
     // rt.plan alone: Claude entered plan mode by itself in a non-plan job.
@@ -703,6 +767,7 @@ export class Runner {
     }
     const next = this.paused ? null : (this.d.store.queued()[0] ?? null)
     this.d.notify({ type: 'done', job: done, diff, next })
+    this.scheduleRepeat(done)
   }
 
   // --- hooks ------------------------------------------------------------------------
@@ -784,7 +849,11 @@ export class Runner {
     if (tool === 'ExitPlanMode') {
       // Claude Code doesn't let hooks approve a plan; handlePlan answers the dialog with keystrokes.
       const plan = payload.tool_input?.plan
-      if (typeof plan === 'string') this.d.store.updateJob(job.id, { planText: plan })
+      if (typeof plan === 'string') {
+        // A revised plan: the one before stays, for comparing (the last five).
+        const versions = job.planText && job.planText !== plan ? [...(job.planVersions ?? []), { at: this.d.now(), text: job.planText }].slice(-5) : job.planVersions
+        this.d.store.updateJob(job.id, { planText: plan, planVersions: versions })
+      }
       rt.plan ??= { since: this.d.now(), attempts: 0 }
       return {}
     }
@@ -798,17 +867,26 @@ export class Runner {
     }
     const config = this.d.config()
     const code = this.newCode()
-    this.d.store.addApproval(code, job.id, 'permission', { tool, input: payload.tool_input }, this.d.now())
+    const suggestions = usableSuggestions(payload.permission_suggestions, dir => this.d.allowedDir?.(dir) ?? false)
+    this.d.store.addApproval(code, job.id, 'permission', { tool, input: payload.tool_input, ...(suggestions.length > 0 ? { suggestions } : {}) }, this.d.now())
+    const detail = permissionDetail(tool, payload.tool_input)
     this.d.notify({
       type: 'permission',
       job,
       code,
       tool,
-      detail: permissionDetail(tool, payload.tool_input),
+      detail,
       minutes: Math.round(config.timeouts.approvalSec / 60),
+      ...(suggestions.length > 0 ? { suggestions: suggestions.map(s => suggestionLabel(s, job.launchSpec?.cwd ?? job.projectDir)) } : {}),
+      allowedBefore: this.d.store.countAllowed(tool, detail, permissionDetail),
     })
     const r = await this.wait(code, config.timeouts.approvalSec)
     rt.lastActivity = this.d.now()
+    const rule = r.rule !== undefined ? suggestions[r.rule] : undefined
+    if (r.status === 'allowed' && rule) {
+      this.d.log(`#${job.id}: ${code} allowed with a rule: ${suggestionLabel(rule)}`)
+      return permissionDecision({ behavior: 'allow', updatedPermissions: [rule] })
+    }
     if (r.status === 'allowed') return permissionDecision({ behavior: 'allow' })
     const message =
       r.status === 'denied'
@@ -965,16 +1043,20 @@ export class Runner {
     })
   }
 
-  /** Your reply to a 🔐/❓/📝 message. Returns the text to send back. */
-  answer(code: string, decision: 'allow' | 'deny' | 'answer', text: string | null): string {
+  /**
+   * Your reply to a 🔐/❓/📝 message. Returns the text to send back. `rule`: allow with that suggestion
+   * applied. `mode`: approve a plan and work on in that mode.
+   */
+  answer(code: string, decision: 'allow' | 'deny' | 'answer', text: string | null, o: { rule?: number; mode?: ExecMode } = {}): string {
     const approval = this.d.store.getApproval(code.toLowerCase())
     if (!approval) return `No request with code ${code}.`
     if (approval.status !== 'pending') return `${code} was already ${approval.status}.`
     if (decision === 'answer' && approval.kind !== 'question') return `${code} needs y or n, not an answer.`
     if (decision !== 'answer' && approval.kind === 'question') return `${code} is a question: reply a ${code} <answer>.`
     const status = decision === 'answer' ? 'answered' : decision === 'allow' ? 'allowed' : 'denied'
+    if (status === 'allowed' && o.mode && approval.kind === 'review') this.d.store.updateJob(approval.jobId, { execMode: o.mode })
     this.d.store.resolveApproval(approval.code, status, text, this.d.now())
-    this.waiters.get(approval.code)?.({ status, answer: text })
+    this.waiters.get(approval.code)?.({ status, answer: text, ...(status === 'allowed' && o.rule !== undefined ? { rule: o.rule } : {}) })
     const verb = { permission: 'request', question: 'question', review: 'plan', trust: 'folder' }[approval.kind]
     if (status === 'answered') return `Sent your answer to #${approval.jobId}.`
     return `${status === 'allowed' ? '✅ Approved' : '❌ Declined'} #${approval.jobId}'s ${verb}.`
@@ -995,6 +1077,8 @@ export class Runner {
   }
 
   private async resumeHeld(job: Job): Promise<string> {
+    // You chose to let it go on past its time limit: the limit is lifted.
+    if (job.maxMinutes !== null && job.holdReason?.endsWith('its time limit')) job = this.d.store.updateJob(job.id, { maxMinutes: null })
     const rt = this.runtime(job)
     const pane = await this.d.tmux.pane(rt.window)
     const alive = pane !== null && !pane.dead
@@ -1089,9 +1173,10 @@ export class Runner {
       this.waiters.get(a.code)?.({ status: 'expired', answer: null })
     }
     const ending = job.launches > 0 ? await this.endState(job) : {}
-    this.d.store.updateJob(job.id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now(), ...ending })
+    const cancelled = this.d.store.updateJob(job.id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now(), ...ending })
     this.runtimes.delete(job.id)
     this.limitNotified.delete(job.id)
+    this.scheduleRepeat(cancelled)
     // A usage limit, if any, still applies: the next job waits for the same reset.
   }
 

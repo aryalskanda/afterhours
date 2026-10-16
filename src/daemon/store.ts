@@ -141,6 +141,13 @@ const COLUMNS = {
   contextPct: 'context_pct',
   costUsd: 'cost_usd',
   usage: 'usage',
+  notBefore: 'not_before',
+  afterJob: 'after_job',
+  repeatDaily: 'repeat_daily',
+  maxMinutes: 'max_minutes',
+  activeMs: 'active_ms',
+  planVersions: 'plan_versions',
+  branchNote: 'branch_note',
 } as const satisfies Record<keyof Job, string>
 
 const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved'])
@@ -158,8 +165,15 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'context_pct', 'REAL'],
   ['jobs', 'cost_usd', 'REAL'],
   ['jobs', 'usage', 'TEXT'],
+  ['jobs', 'not_before', 'INTEGER'],
+  ['jobs', 'after_job', 'INTEGER'],
+  ['jobs', 'repeat_daily', 'INTEGER'],
+  ['jobs', 'max_minutes', 'INTEGER'],
+  ['jobs', 'active_ms', 'INTEGER NOT NULL DEFAULT 0'],
+  ['jobs', 'plan_versions', 'TEXT'],
+  ['jobs', 'branch_note', 'TEXT'],
 ]
-const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage'])
+const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions'])
 
 type Row = Record<string, string | number | null>
 type SqlValue = string | number | null
@@ -224,8 +238,9 @@ export class Store {
     const row = this.db
       .query<Row, SqlValue[]>(
         `INSERT INTO jobs (position, status, project_dir, prompt, plan, review, exec_mode, model, effort,
-                           session_policy, session_id, takeover_at, isolate, source, created_at)
-         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+                           session_policy, session_id, takeover_at, isolate, source, created_at,
+                           not_before, after_job, repeat_daily, max_minutes)
+         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
       .get(
         position,
@@ -242,6 +257,10 @@ export class Store {
         spec.isolate ? 1 : 0,
         spec.source,
         now,
+        spec.notBefore ?? null,
+        spec.afterJob ?? null,
+        spec.repeatDaily ?? null,
+        spec.maxMinutes ?? null,
       )
     if (!row) throw new Error('failed to insert job')
     return toJob(row)
@@ -316,6 +335,16 @@ export class Store {
   lastJob(): Job | null {
     const row = this.db.query<Row, []>('SELECT * FROM jobs ORDER BY id DESC LIMIT 1').get()
     return row ? toJob(row) : null
+  }
+
+  /** Puts a queued job at place `index` (0 = next), renumbering the queue. */
+  moveTo(id: number, index: number): void {
+    const queue = this.queued().filter(j => j.id !== id)
+    const job = this.getJob(id)
+    if (!job || job.status !== 'queued') return
+    queue.splice(Math.max(0, Math.min(index, queue.length)), 0, job)
+    const set = this.db.query<Row, [number, number]>('UPDATE jobs SET position = ? WHERE id = ?')
+    this.db.transaction(() => queue.forEach((j, i) => set.run(i + 1, j.id)))()
   }
 
   moveToFront(id: number): void {
@@ -442,6 +471,23 @@ export class Store {
       )
       .run(code, jobId, kind, JSON.stringify(payload ?? null), now)
     return this.getApproval(code)!
+  }
+
+  /** How many times a permission with this same tool and detail was allowed (the last 1000 asked). */
+  countAllowed(tool: string, detail: string, describe: (tool: string, input: unknown) => string): number {
+    const rows = this.db
+      .query<{ payload: string | null }, []>(`SELECT payload FROM approvals WHERE kind = 'permission' AND status = 'allowed' ORDER BY created_at DESC LIMIT 1000`)
+      .all()
+    let n = 0
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(r.payload ?? '{}') as { tool?: string; input?: unknown }
+        if (p.tool === tool && describe(tool, p.input) === detail) n++
+      } catch {
+        // An unreadable payload counts for nothing.
+      }
+    }
+    return n
   }
 
   getApproval(code: string): Approval | null {

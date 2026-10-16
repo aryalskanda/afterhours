@@ -911,3 +911,105 @@ describe('watching a task', () => {
     expect(h.store.getJob(j.id)!.contextPct).toBe(57)
   })
 })
+
+describe('steering from an app', () => {
+  const npmTest = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test:*' }], behavior: 'allow', destination: 'localSettings' }
+
+  test('a permission offers Claude Code’s own rule; allowing with it hands the rule back', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    const asked = h.runner.onHook('PermissionRequest', j.id, {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test -- --watch=false' },
+      permission_suggestions: [npmTest, { type: 'setMode', mode: 'bypassPermissions', destination: 'session' }],
+    })
+    await Bun.sleep(0)
+    const notice = lastNotice(h, 'permission')
+    expect(notice.suggestions).toEqual(['Always allow commands starting with npm test in this project'])
+    expect(notice.allowedBefore).toBe(0)
+    expect(h.runner.answer(notice.code, 'allow', null, { rule: 0 })).toContain('Approved')
+    expect(await asked).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedPermissions: [npmTest] } } })
+  })
+
+  test('the same request again says how often it was allowed', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    for (let i = 0; i < 3; i++) {
+      const asked = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
+      await Bun.sleep(0)
+      const notice = lastNotice(h, 'permission')
+      expect(notice.allowedBefore).toBe(i)
+      h.runner.answer(notice.code, 'allow', null)
+      expect(await asked).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
+    }
+  })
+
+  test('approving a plan with a mode works on in that mode; a revised plan keeps the one before', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true })
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'First plan' } })
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'Second plan' } })
+    expect(h.store.getJob(j.id)).toMatchObject({ planText: 'Second plan', planVersions: [{ at: h.now(), text: 'First plan' }] })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    const review = lastNotice(h, 'plan_review')
+    h.runner.answer(review.code, 'allow', null, { mode: 'acceptEdits' })
+    expect(h.store.getJob(j.id)!.execMode).toBe('acceptEdits')
+    await h.runner.tick()
+    // The dialog has no "accept edits" option: approve with manual edits, then switch.
+    expect(j.window.input).toEqual(['2'])
+  })
+
+  test('a task scheduled for later keeps its place while the next one runs', async () => {
+    const h = setup()
+    const later = h.runner.enqueue({ ...h.spec({ plan: false, prompt: 'Later' }), notBefore: h.now() + 3_600_000 })
+    const now = h.runner.enqueue(h.spec({ plan: false, prompt: 'Now' }))
+    await h.runner.tick()
+    expect(h.store.getJob(now.id)!.status).toBe('running')
+    expect(h.store.getJob(later.id)!.status).toBe('queued')
+  })
+
+  test('a task waiting on another starts after it, and is dropped if that one fails', async () => {
+    const h = setup()
+    const first = await startJob(h, { plan: false })
+    const second = h.runner.enqueue({ ...h.spec({ plan: false, prompt: 'Then this' }), afterJob: first.id })
+    await finishTurn(h, first)
+    await h.runner.tick()
+    expect(h.store.getJob(second.id)!.status).toBe('running')
+
+    const h2 = setup()
+    const a = await startJob(h2, { plan: false })
+    const b = h2.runner.enqueue({ ...h2.spec({ plan: false }), afterJob: a.id })
+    await h2.runner.skip()
+    await h2.runner.tick()
+    expect(h2.store.getJob(b.id)).toMatchObject({ status: 'cancelled', error: expect.stringContaining(`#${a.id} was cancelled`) })
+    expect(lastNotice(h2, 'failed').job.id).toBe(b.id)
+  })
+
+  test('a daily task queues its next run when it ends', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, prompt: 'Nightly tests' })
+    h.store.updateJob(j.id, { repeatDaily: 2 * 60 })
+    await finishTurn(h, j)
+    const next = h.store.queued().find(x => x.prompt === 'Nightly tests')!
+    expect(next.repeatDaily).toBe(120)
+    const at = new Date(next.notBefore!)
+    expect([at.getHours(), at.getMinutes()]).toEqual([2, 0])
+    expect(next.notBefore! > h.now() && next.notBefore! <= h.now() + 86_400_000).toBe(true)
+  })
+
+  test('a time limit stops the task when it’s used up; continuing lifts it', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    h.store.updateJob(j.id, { maxMinutes: 1 })
+    for (let i = 0; i < 7; i++) {
+      h.advance(10_000)
+      await h.runner.onHook('PostToolUse', j.id, { tool_name: 'Bash', tool_input: { command: 'ls' } })
+      await h.runner.tick()
+    }
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'held', holdReason: 'it worked 1 minute, its time limit' })
+    expect(j.window.input).toContain('Escape')
+    await h.runner.go()
+    expect(h.store.getJob(j.id)!.maxMinutes).toBeNull()
+  })
+})

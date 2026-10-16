@@ -5,6 +5,7 @@ import type { Config } from '../../shared/config'
 import type { Approval, Job, LimitState } from '../../shared/types'
 import type { Chat } from '../chats'
 import { permissionDetail, type Notice, type Question } from '../notify'
+import { suggestionLabel, type PermissionUpdate } from '../rules'
 import type { Conversation } from '../sessions'
 
 /** `brief`: prompts cut to 500 characters, for the lists sent on every change. */
@@ -35,6 +36,12 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     contextPct: job.contextPct,
     costUsd: job.costUsd,
     usage: job.usage,
+    notBefore: job.notBefore,
+    afterJob: job.afterJob,
+    repeatDaily: job.repeatDaily,
+    maxMinutes: job.maxMinutes,
+    activeMs: job.activeMs,
+    branchNote: job.branchNote,
   }
 }
 
@@ -56,16 +63,21 @@ export function chatInfo(c: Conversation & Partial<Pick<Chat, 'where' | 'busy' |
 }
 
 /** A pending request with what an app needs to show it, and when it's settled without you. */
-export function approvalInfo(a: Approval, o: { job: Job | null; timeouts: Config['timeouts'] }): ApprovalInfo {
-  const payload = (a.payload ?? {}) as { tool?: string; input?: unknown; questions?: Question[]; dir?: string }
+export function approvalInfo(a: Approval, o: { job: Job | null; timeouts: Config['timeouts']; allowedBefore?: number }): ApprovalInfo {
+  const payload = (a.payload ?? {}) as { tool?: string; input?: unknown; questions?: Question[]; dir?: string; suggestions?: PermissionUpdate[] }
   const seconds = { permission: o.timeouts.approvalSec, question: o.timeouts.questionSec, review: o.timeouts.reviewSec, trust: o.timeouts.approvalSec }[a.kind]
   const info: ApprovalInfo = { code: a.code, job: a.jobId, kind: a.kind, payload: a.payload, createdAt: a.createdAt, expiresAt: a.createdAt + seconds * 1000 }
   if (a.kind === 'permission' && payload.tool) {
     info.tool = payload.tool
     info.detail = permissionDetail(payload.tool, payload.input)
+    if (payload.suggestions?.length) info.suggestions = payload.suggestions.map(s => ({ label: suggestionLabel(s, o.job?.launchSpec?.cwd ?? o.job?.projectDir ?? null) }))
+    if (o.allowedBefore !== undefined) info.allowedBefore = o.allowedBefore
   }
   if (a.kind === 'question') info.questions = payload.questions ?? []
-  if (a.kind === 'review') info.plan = o.job?.planText ?? null
+  if (a.kind === 'review') {
+    info.plan = o.job?.planText ?? null
+    info.previousPlan = o.job?.planVersions?.at(-1)?.text ?? null
+  }
   if (a.kind === 'trust') info.folder = payload.dir ?? o.job?.projectDir
   return info
 }
@@ -82,7 +94,7 @@ export function limitsInfo(l: LimitState): LimitsInfo {
 export function wireNotice(n: Notice): WireNotice {
   switch (n.type) {
     case 'plan_review':
-      return { type: n.type, job: jobInfo(n.job), code: n.code, plan: n.job.planText }
+      return { type: n.type, job: jobInfo(n.job), code: n.code, plan: n.job.planText, previousPlan: n.job.planVersions?.at(-1)?.text ?? null }
     case 'done':
       return { type: n.type, job: jobInfo(n.job), diff: n.diff, next: n.next ? jobInfo(n.next, { brief: true }) : null }
     case 'session_limit':

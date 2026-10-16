@@ -65,6 +65,20 @@ export interface Job {
   costUsd: number | null
   /** Tokens the conversation used, counted from its transcript when the task ended. */
   usage: Usage | null
+  /** Waits in the queue until this time (ms). */
+  notBefore: number | null
+  /** Waits until that job is done; cancelled if it fails. */
+  afterJob: number | null
+  /** Queued again every day at this time: minutes after midnight, this machine's time. */
+  repeatDaily: number | null
+  /** Held when it has worked this long (minutes). */
+  maxMinutes: number | null
+  /** How long it has worked so far, usage-limit waits aside (ms). */
+  activeMs: number
+  /** Earlier versions of the plan, oldest first, when Claude revised it. */
+  planVersions: { at: number; text: string }[] | null
+  /** What became of its own branch: "Merged into main", "Discarded", a pull request's link. */
+  branchNote: string | null
 }
 
 export interface Usage {
@@ -89,6 +103,10 @@ export interface JobSpec {
   takeover?: boolean
   front?: boolean
   source: string
+  notBefore?: number | null
+  afterJob?: number | null
+  repeatDaily?: number | null
+  maxMinutes?: number | null
 }
 
 export type ApprovalKind = 'permission' | 'question' | 'review' | 'trust'

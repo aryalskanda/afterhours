@@ -23,7 +23,18 @@ export type Notice =
   | { type: 'started'; job: Job }
   | { type: 'plan_approved'; job: Job; choice: string }
   | { type: 'plan_review'; job: Job; code: string }
-  | { type: 'permission'; job: Job; code: string; tool: string; detail: string; minutes: number }
+  | {
+      type: 'permission'
+      job: Job
+      code: string
+      tool: string
+      detail: string
+      minutes: number
+      /** Claude Code's ways to stop asking, in words; the app may apply one. */
+      suggestions?: string[]
+      /** How many times this same request was allowed before. */
+      allowedBefore?: number
+    }
   | { type: 'question'; job: Job; code: string; questions: Question[]; minutes: number }
   | { type: 'trust'; job: Job; code: string }
   | { type: 'limit'; job: Job; at: number | null; window?: string }

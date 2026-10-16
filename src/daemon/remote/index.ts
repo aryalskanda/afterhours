@@ -41,6 +41,8 @@ export interface RemoteDeps {
   now: () => number
   /** Reading tasks' changes: git trees, diffs and files. */
   git: RouterDeps['git']
+  /** Opens a conversation in VS Code on this machine's screen. */
+  openInVsCode?: (sessionId: string) => boolean
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
@@ -86,6 +88,7 @@ export class Remote {
       removeDevice: (id, by) => this.removeDevice(id, by),
       resolvedBy: this.resolvedBy,
       git: d.git,
+      openInVsCode: d.openInVsCode,
       now: d.now,
       log: d.log,
     })

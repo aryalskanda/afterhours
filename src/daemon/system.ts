@@ -210,6 +210,62 @@ export const git = {
     return r.code === 0 ? r.out.trim() : null
   },
 
+  /**
+   * Merges a task's branch into whatever your checkout has checked out, as a merge commit, then
+   * removes its worktree and branch. Only into a checkout with nothing uncommitted, and only if it
+   * merges cleanly (otherwise nothing changes).
+   */
+  async mergeBranch(projectDir: string, branch: string, worktree: string | null, message: string): Promise<{ ok: boolean; text: string }> {
+    const top = await topLevel(projectDir)
+    if (!top) return { ok: false, text: `${projectDir} isn't a git repo any more.` }
+    if (worktree && existsSync(worktree)) await git.commitAll(worktree, message)
+    const dirty = await gitText(['-C', top, 'status', '--porcelain', '--untracked-files=no'])
+    if (dirty.code !== 0) return { ok: false, text: 'Git couldn’t read your checkout.' }
+    if (dirty.out.trim()) return { ok: false, text: 'Your checkout has uncommitted changes. Commit or stash them, then merge.' }
+    const current = (await gitText(['-C', top, 'branch', '--show-current'])).out.trim()
+    if (!current) return { ok: false, text: 'Your checkout isn’t on a branch, so there’s nothing to merge into.' }
+    if (current === branch) return { ok: false, text: `Your checkout is on ${branch} already.` }
+    const named = (await gitText(['-C', top, 'config', 'user.email'])).out.trim() !== ''
+    const identity = named ? [] : ['-c', `user.name=${BRAND.name}`, '-c', `user.email=${BRAND.slug}@localhost`]
+    const merge = await gitText(['-C', top, ...identity, 'merge', '--no-ff', '--no-edit', '-m', message, branch], { timeoutMs: 120_000 })
+    if (merge.code !== 0) {
+      await gitText(['-C', top, 'merge', '--abort'])
+      return { ok: false, text: `${branch} doesn’t merge cleanly into ${current}. Merge it on the computer.` }
+    }
+    await git.discardBranch(projectDir, branch, worktree, { merged: true })
+    return { ok: true, text: `Merged ${branch} into ${current}.` }
+  },
+
+  /** Removes a task's worktree and its branch (merged: only if git agrees it's merged). */
+  async discardBranch(projectDir: string, branch: string, worktree: string | null, o: { merged?: boolean } = {}): Promise<{ ok: boolean; text: string }> {
+    const top = await topLevel(projectDir)
+    if (!top) return { ok: false, text: `${projectDir} isn't a git repo any more.` }
+    if (worktree && existsSync(worktree)) {
+      const root = (await topLevel(worktree)) ?? worktree
+      await gitText(['-C', top, 'worktree', 'remove', '--force', root])
+    }
+    await gitText(['-C', top, 'worktree', 'prune'])
+    const del = await gitText(['-C', top, 'branch', o.merged ? '-d' : '-D', branch])
+    return del.code === 0 ? { ok: true, text: `Removed ${branch}.` } : { ok: false, text: `Couldn’t remove ${branch}.` }
+  },
+
+  /** Pushes a task's branch to `origin` and opens a pull request with GitHub's `gh`. */
+  async pullRequest(dir: string, branch: string, title: string, body: string): Promise<{ ok: boolean; text: string; url?: string }> {
+    const gh = Bun.which('gh')
+    if (!gh) return { ok: false, text: 'GitHub’s gh isn’t installed on this machine.' }
+    const top = await topLevel(dir)
+    if (!top) return { ok: false, text: 'The task’s folder isn’t a git repo any more.' }
+    const remote = await gitText(['-C', top, 'remote', 'get-url', 'origin'])
+    if (remote.code !== 0) return { ok: false, text: 'The repo has no origin to push to.' }
+    const push = await gitText(['-C', top, 'push', '-u', 'origin', branch], { timeoutMs: 120_000 })
+    if (push.code !== 0) return { ok: false, text: `Couldn’t push ${branch} to origin.` }
+    const proc = Bun.spawn([gh, 'pr', 'create', '--head', branch, '--title', title, '--body', body], { cwd: top, env: cleanEnv(), stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+    if (code !== 0) return { ok: false, text: `gh couldn’t open the pull request: ${err.trim().split('\n')[0] ?? 'unknown error'}` }
+    const url = out.trim().split('\n').pop() ?? ''
+    return { ok: true, text: `Opened ${url}`, url }
+  },
+
   /** Commits everything changed in a task's worktree, so its branch holds the work. */
   async commitAll(dir: string, message: string): Promise<boolean> {
     await run(['git', '-C', dir, 'add', '-A'])

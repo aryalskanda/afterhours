@@ -103,6 +103,11 @@ index 1a2b3c4..5d6e7f8 100644
      </Group>
 `
 
+export const SAMPLE_PREVIOUS_PLAN = `## Plan
+
+1. Add a dark stylesheet
+2. Check it by hand`
+
 export const SAMPLE_ANSWER = `Done. The toggle is in **Settings → Appearance**.
 
 - Theme store: \`src/theme.ts\`
@@ -160,6 +165,8 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
         summary: 'Added CSV export',
         usage: { input: 3_100, output: 18_400, cacheRead: 1_240_000, cacheWrite: 96_000 },
         costUsd: 1.84,
+        branch: 'afterhours/12-csv-export',
+        session: '3f0c2a9e-0000-4000-8000-000000000012',
       }),
     ]
     details.set(12, { plan: SAMPLE_PLAN, answer: SAMPLE_ANSWER })
@@ -181,7 +188,7 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     policy: { allowedRoots: ['/home/me/code'], allowBypass: false, allowScreens: true, allowTyping: true },
     defaults: { plan: true, review: false, mode: 'auto', model: 'sonnet', effort: 'high', isolate: true },
     models: ['opus', 'sonnet', 'haiku'],
-    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi'],
+    features: ['transcript', 'timeline', 'diff', 'files', 'activity', 'peek.ansi', 'rules', 'plan.mode', 'queue.edit', 'schedule', 'budget', 'branch', 'open'],
   })
 
   const host: Host = new Host({
@@ -235,7 +242,19 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
       }
       case 'queue': {
         if (!r.folder.startsWith('/home/me/code')) return reply(session, r, { ok: false, code: 'policy', error: `${r.folder} is outside the folders this machine lets apps use.` })
-        const j = job(++nextJob, { prompt: r.prompt, folder: r.folder, mode: r.options?.mode ?? 'auto', model: r.options?.model ?? 'sonnet', effort: r.options?.effort ?? 'high', plan: r.options?.plan ?? true })
+        const o = r.options ?? {}
+        const j = job(++nextJob, {
+          prompt: r.prompt,
+          folder: r.folder,
+          mode: o.mode ?? 'auto',
+          model: o.model ?? 'sonnet',
+          effort: o.effort ?? 'high',
+          plan: o.plan ?? true,
+          notBefore: o.atReset ? now() + 5_400_000 : (o.notBefore ?? null),
+          afterJob: o.afterJob ?? null,
+          repeatDaily: o.repeatDaily ?? null,
+          maxMinutes: o.maxMinutes ?? null,
+        })
         state.queued = [...state.queued, j]
         return reply(session, r, { ok: true, text: `Queued #${j.id}.`, data: { job: j } })
       }
@@ -302,6 +321,29 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
         roles.delete(r.device)
         host.unlink(r.device)
         return reply(session, r, { ok: true, text: 'Removed.' })
+      case 'job': {
+        const j = state.queued.find(x => x.id === r.job)
+        if (r.action === 'top' || r.action === 'remove') {
+          if (r.action === 'remove') state.queued = state.queued.filter(x => x.id !== r.job)
+          return reply(session, r, { ok: true, text: r.action === 'top' ? `#${r.job} is next.` : `Removed #${r.job}.` })
+        }
+        if (!j) return reply(session, r, { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue.` })
+        if (r.action === 'move') {
+          const rest = state.queued.filter(x => x.id !== r.job)
+          rest.splice(Math.min(r.to ?? 0, rest.length), 0, j)
+          state.queued = rest
+          return reply(session, r, { ok: true, text: `#${r.job} moved.` })
+        }
+        const edited = { ...j, ...(r.prompt ? { prompt: r.prompt } : {}), ...(r.options?.model ? { model: r.options.model } : {}), ...(r.options?.effort ? { effort: r.options.effort } : {}) }
+        state.queued = state.queued.map(x => (x.id === r.job ? edited : x))
+        return reply(session, r, { ok: true, text: `Changed #${r.job}.`, data: { job: edited } })
+      }
+      case 'branch':
+        return reply(session, r, { ok: true, text: r.action === 'merge' ? 'Merged afterhours/12-csv-export into main.' : r.action === 'discard' ? 'Threw away afterhours/12-csv-export.' : 'Opened https://github.com/me/shop/pull/7' })
+      case 'open':
+        return reply(session, r, { ok: true, text: `Opened in VS Code on ${name}.` })
+      case 'command':
+        return reply(session, r, { ok: true, text: r.text === 'help' ? 'Commands: status, q <folder>: <prompt>, go, pause, stop, skip, limits' : `Did ${r.text}.` })
       case 'control':
         if (r.action === 'pause') state.paused = true
         if (r.action === 'go') state.paused = false
@@ -342,8 +384,28 @@ export function askSamples(m: FakeMachine): void {
   const active = m.state.active ?? job(14, { status: 'running', phase: 'working' })
   const at = now()
   m.ask(
-    { code: 'perma', job: active.id, kind: 'permission', tool: 'Bash', detail: 'npm test -- --watch=false\n(Run the tests once)', payload: null, createdAt: at, expiresAt: at + 15 * 60_000 },
-    { type: 'permission', job: active, code: 'perma', tool: 'Bash', detail: 'npm test -- --watch=false\n(Run the tests once)', minutes: 15 },
+    {
+      code: 'perma',
+      job: active.id,
+      kind: 'permission',
+      tool: 'Bash',
+      detail: 'npm test -- --watch=false\n(Run the tests once)',
+      payload: null,
+      createdAt: at,
+      expiresAt: at + 15 * 60_000,
+      suggestions: [{ label: 'Always allow commands starting with npm test in this project' }],
+      allowedBefore: 14,
+    },
+    {
+      type: 'permission',
+      job: active,
+      code: 'perma',
+      tool: 'Bash',
+      detail: 'npm test -- --watch=false\n(Run the tests once)',
+      minutes: 15,
+      suggestions: ['Always allow commands starting with npm test in this project'],
+      allowedBefore: 14,
+    },
     `🔐 #${active.id} wants to use Bash`,
   )
   const questions = [
@@ -357,8 +419,8 @@ export function askSamples(m: FakeMachine): void {
     `❓ #${active.id} asks`,
   )
   m.ask(
-    { code: 'revie', job: 15, kind: 'review', plan: SAMPLE_PLAN, payload: null, createdAt: at + 2 },
-    { type: 'plan_review', job: job(15, { status: 'held', prompt: 'Fix the flaky checkout test' }), code: 'revie', plan: SAMPLE_PLAN },
+    { code: 'revie', job: 15, kind: 'review', plan: SAMPLE_PLAN, previousPlan: SAMPLE_PREVIOUS_PLAN, payload: null, createdAt: at + 2 },
+    { type: 'plan_review', job: job(15, { status: 'held', prompt: 'Fix the flaky checkout test' }), code: 'revie', plan: SAMPLE_PLAN, previousPlan: SAMPLE_PREVIOUS_PLAN },
     '📝 #15 plan ready for your review',
   )
 }

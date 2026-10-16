@@ -70,10 +70,14 @@ describe('the hub', () => {
     await until(() => needsYou(h.getState().machines).length === 3)
     const needs = needsYou(h.getState().machines)
     expect(needs.map(n => n.approval.kind)).toEqual(['permission', 'question', 'review'])
-    expect(h.getState().attention?.type).toBe('plan_review')
+    expect(h.getState().attention).toMatchObject({ type: 'plan_review', code: 'revie' })
     const r = await h.request(machine.id, { type: 'answer', code: 'perma', decision: 'allow' })
     expect(r.ok).toBe(true)
     await until(() => needsYou(h.getState().machines).length === 2)
+    // Answering another request leaves the banner; answering its own takes it down.
+    expect(h.getState().attention?.code).toBe('revie')
+    await h.request(machine.id, { type: 'answer', code: 'revie', decision: 'allow' })
+    await until(() => h.getState().attention === null)
   })
 
   test('machines and where they left off survive a restart', async () => {

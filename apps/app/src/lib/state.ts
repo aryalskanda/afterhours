@@ -120,11 +120,20 @@ export function approvalFromNotice(n: Notice, at: number): ApprovalInfo | null {
   const base = { createdAt: at, expiresAt: at + minutes * 60_000, payload: null }
   switch (n.type) {
     case 'permission':
-      return { ...base, code: n.code, job: n.job.id, kind: 'permission', tool: n.tool, detail: n.detail }
+      return {
+        ...base,
+        code: n.code,
+        job: n.job.id,
+        kind: 'permission',
+        tool: n.tool,
+        detail: n.detail,
+        ...(n.suggestions ? { suggestions: n.suggestions.map(label => ({ label })) } : {}),
+        ...(n.allowedBefore !== undefined ? { allowedBefore: n.allowedBefore } : {}),
+      }
     case 'question':
       return { ...base, code: n.code, job: n.job.id, kind: 'question', questions: n.questions }
     case 'plan_review':
-      return { ...base, code: n.code, job: n.job.id, kind: 'review', plan: n.plan, expiresAt: undefined }
+      return { ...base, code: n.code, job: n.job.id, kind: 'review', plan: n.plan, previousPlan: n.previousPlan ?? null, expiresAt: undefined }
     case 'trust':
       return { ...base, code: n.code, job: n.job.id, kind: 'trust', folder: n.job.folder }
     default:

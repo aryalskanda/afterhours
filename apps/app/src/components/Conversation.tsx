@@ -30,7 +30,23 @@ function merge(items: Map<number, TranscriptItem>, more: TranscriptItem[]): Map<
   return next
 }
 
-export function Conversation(props: { machine: MachineState; job?: number; session?: string; live: boolean; onMeta?: (m: ConversationMeta) => void; testID?: string }) {
+/** A message you sent into the running task, until Claude Code records it. */
+export interface Pending {
+  text: string
+  at: number
+}
+
+const same = (a: string, b: string) => a.replace(/\s+/g, ' ').trim() === b.replace(/\s+/g, ' ').trim()
+
+export function Conversation(props: {
+  machine: MachineState
+  job?: number
+  session?: string
+  live: boolean
+  onMeta?: (m: ConversationMeta) => void
+  pending?: Pending[]
+  testID?: string
+}) {
   const { machine: m, job, session } = props
   const { c } = useTheme()
   const [items, setItems] = useState<Map<number, TranscriptItem>>(new Map())
@@ -104,6 +120,8 @@ export function Conversation(props: { machine: MachineState; job?: number; sessi
 
   const list = [...items.values()].sort((a, b) => a.i - b.i)
   const doing = job !== undefined && props.live ? nowDoing(m, job) : null
+  // Sent but not in the transcript yet: Claude Code records a message when Claude takes it.
+  const waiting = (props.pending ?? []).filter(p => !list.some(i => i.kind === 'you' && (i.at ?? 0) >= p.at - 10_000 && same(i.text, p.text)))
 
   if (!loaded) {
     return error ? <Note ok={false} text={error} /> : <LoadingRows count={3} />
@@ -119,6 +137,16 @@ export function Conversation(props: { machine: MachineState; job?: number; sessi
         {list.length === 0 ? <Txt tone="soft">{props.live ? 'Starting…' : 'Nothing said yet.'}</Txt> : null}
         {list.map((item, k) => (
           <Item key={item.i} item={item} previous={list[k - 1]} live={props.live} />
+        ))}
+        {waiting.map((p, k) => (
+          <View key={`${p.at}-${k}`} style={{ marginTop: 12, alignItems: 'flex-end', gap: 3 }} testID="conversation-pending">
+            <View style={{ backgroundColor: c.fill, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '88%', opacity: 0.6 }}>
+              <Txt>{p.text}</Txt>
+            </View>
+            <Txt v="footnote" tone="faint">
+              Sent · Claude reads it when its current step ends
+            </Txt>
+          </View>
         ))}
         {doing ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }} testID="conversation-now">

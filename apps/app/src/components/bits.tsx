@@ -7,7 +7,7 @@ import { useMemo, useRef } from 'react'
 import { ScrollView, Text, View } from 'react-native'
 import { parseAnsi, type Run } from '../lib/ansi'
 import { useNow } from '../app-state'
-import { basename, clock, duration, oneLine, phaseLabel } from '../lib/format'
+import { basename, clock, duration, oneLine, phaseLabel, whenLabel } from '../lib/format'
 import type { MachineState } from '../lib/state'
 import { mono, tabular, useTheme, type Colors } from '../theme'
 import { Badge, Row, StatusDot, Txt } from './ui'
@@ -77,7 +77,7 @@ export function TaskRow(props: { machine: string; job: JobInfo; position?: numbe
         color={{ held: c.accent, done: c.ok, failed: c.danger, cancelled: c.faint }[j.status as 'held' | 'done' | 'failed' | 'cancelled']}
       />
     )
-  const when = j.finishedAt ? clock(j.finishedAt, now) : j.startedAt ? duration(now - j.startedAt) : clock(j.createdAt, now)
+  const when = j.finishedAt ? clock(j.finishedAt, now) : j.startedAt ? duration(now - j.startedAt) : (whenLabel(j, now) ?? clock(j.createdAt, now))
   return (
     <Row
       testID={`job-${j.id}`}

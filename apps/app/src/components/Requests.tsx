@@ -2,20 +2,20 @@
 // answers the machine directly, and goes once the machine says it's settled. If an answer doesn't
 // get through, it says why and keeps its buttons, to try again.
 
-import { describeAnswers, type QuestionAnswer } from '@afterhours/protocol'
+import { describeAnswers, type ExecMode, type QuestionAnswer } from '@afterhours/protocol'
 import Ionicons from '@expo/vector-icons/Ionicons'
 import * as LocalAuthentication from 'expo-local-authentication'
 import { useState, type ReactNode } from 'react'
 import { Platform, Text, View } from 'react-native'
 import { hub, useHub, useNow } from '../app-state'
-import { basename } from '../lib/format'
-import type { Need } from '../lib/state'
+import { basename, permissionsLabel, plainReply } from '../lib/format'
+import { supports, type Need } from '../lib/state'
 import { mono, useTheme } from '../theme'
 import { countdown } from './bits'
 import { Markdown } from './Markdown'
-import { Block, Button, Group, HStack, Note, Row, TextArea, Txt } from './ui'
+import { Block, Button, Group, HStack, Note, Row, Segmented, TextArea, Txt } from './ui'
 
-type Answer = { decision: 'allow' | 'deny' | 'answer'; text?: string | null }
+type Answer = { decision: 'allow' | 'deny' | 'answer'; text?: string | null; rule?: number; mode?: ExecMode }
 
 type Props = { need: Need; onAnswered?: (text: string) => void }
 
@@ -24,12 +24,19 @@ function useAnswer({ need, onAnswered }: Props) {
   const [error, setError] = useState<string | null>(null)
   const send = async (a: Answer): Promise<boolean> => {
     setError(null)
-    const r = await hub.request(need.machine.id, { type: 'answer', code: need.approval.code, decision: a.decision, text: a.text ?? null })
+    const r = await hub.request(need.machine.id, {
+      type: 'answer',
+      code: need.approval.code,
+      decision: a.decision,
+      text: a.text ?? null,
+      ...(a.rule !== undefined ? { rule: a.rule } : {}),
+      ...(a.mode ? { mode: a.mode } : {}),
+    })
     if (!r.ok) {
       setError(r.error ?? 'It didn’t go through.')
       return false
     }
-    const text = r.text ?? 'Sent.'
+    const text = plainReply(r.text ?? 'Sent.')
     setDone(text)
     onAnswered?.(text)
     return true
@@ -136,19 +143,26 @@ function PermissionCard(props: Props) {
   const [noting, setNoting] = useState(false)
   const [note, setNote] = useState('')
   const a = need.approval
-  const allow = async () => {
+  const allow = async (rule?: number) => {
     if (prefs.confirmAllow && Platform.OS !== 'web' && (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync())) {
       const auth = await LocalAuthentication.authenticateAsync({ promptMessage: `Allow ${a.tool ?? 'this'}?` })
       if (!auth.success) return
     }
-    await send({ decision: 'allow' })
+    await send({ decision: 'allow', ...(rule !== undefined ? { rule } : {}) })
   }
+  const rules = supports(need.machine, 'rules') ? (a.suggestions ?? []) : []
+  const before = a.allowedBefore ?? 0
   return (
     <Group testID={`request-${a.code}`} footer={done ? undefined : countdown(a.expiresAt, now, 'Denied')}>
       <Block>
         <From need={need} />
         <Txt v="headline">{permissionTitle(a.tool)}</Txt>
         {a.detail ? <Code text={a.detail} /> : null}
+        {before >= 2 && !done ? (
+          <Txt v="footnote" tone="soft" testID={`allowed-before-${a.code}`}>
+            You allowed this {before} times before.
+          </Txt>
+        ) : null}
       </Block>
       {noting && !done ? <TextArea placeholder="What should Claude do instead? (optional)" value={note} onChangeText={setNote} autoFocus minHeight={80} /> : null}
       <Answering done={done} error={error}>
@@ -160,9 +174,12 @@ function PermissionCard(props: Props) {
         ) : (
           <>
             <HStack>
-              <Button flex title="Allow" onPress={allow} testID={`allow-${a.code}`} />
+              <Button flex title="Allow" onPress={() => allow()} testID={`allow-${a.code}`} />
               <Button flex kind="danger" title="Deny" onPress={() => send({ decision: 'deny' })} testID={`deny-${a.code}`} />
             </HStack>
+            {rules.map((r, i) => (
+              <Button key={i} small kind="plain" lines={2} title={r.label} onPress={() => allow(i)} testID={`rule-${a.code}-${i}`} />
+            ))}
             <Button small kind="plain" title="Deny and tell Claude why" onPress={() => setNoting(true)} />
           </>
         )}
@@ -312,30 +329,62 @@ function TypedAnswerCard(props: Props) {
 
 function ReviewCard(props: Props) {
   const { need } = props
+  const { c, m } = useTheme()
   const { done, error, send } = useAnswer(props)
   const [open, setOpen] = useState(false)
   const [changing, setChanging] = useState(false)
   const [changes, setChanges] = useState('')
+  const [previous, setPrevious] = useState(false)
   const plan = need.approval.plan ?? ''
   const long = plan.length > 900
+  // How it works once approved: the task's own mode unless you pick another.
+  const modes: ExecMode[] = ['auto', 'acceptEdits', ...(need.machine.policy?.allowBypass ? (['bypassPermissions'] as ExecMode[]) : [])]
+  const own = need.job?.mode && need.job.mode !== 'plan' ? need.job.mode : 'auto'
+  const [mode, setMode] = useState<ExecMode>(modes.includes(own) ? own : 'auto')
+  const choose = supports(need.machine, 'plan.mode')
+  // A tap on a step quotes it in "Ask for changes".
+  const quote = (text: string) => {
+    setChanging(true)
+    setChanges(current => `${current}${current && !current.endsWith('\n') ? '\n' : ''}> ${text}\n`)
+  }
   return (
-    <Group testID={`request-${need.approval.code}`}>
+    <Group testID={`request-${need.approval.code}`} footer={done || changing ? undefined : 'Tap a step to quote it in what you ask to change.'}>
       <Block>
         <From need={need} />
         <Txt v="headline">Review the plan</Txt>
-        <View style={{ maxHeight: long && !open ? 280 : undefined, overflow: 'hidden' }}>{plan ? <Markdown text={plan} /> : <Txt tone="soft">The plan is on the machine.</Txt>}</View>
+        <View style={{ maxHeight: long && !open ? 280 : undefined, overflow: 'hidden' }}>
+          {plan ? <Markdown text={plan} onBlockPress={done ? undefined : quote} /> : <Txt tone="soft">The plan is on the machine.</Txt>}
+        </View>
         {long ? <Button small kind="plain" title={open ? 'Show less' : 'Show the whole plan'} onPress={() => setOpen(!open)} /> : null}
+        {need.approval.previousPlan ? (
+          <>
+            <Button small kind="plain" title={previous ? 'Hide the version before' : 'The version before'} onPress={() => setPrevious(!previous)} testID={`previous-${need.approval.code}`} />
+            {previous ? (
+              <View style={{ backgroundColor: c.fill, borderRadius: m.radius, padding: 10 }}>
+                <Markdown text={need.approval.previousPlan} />
+              </View>
+            ) : null}
+          </>
+        ) : null}
       </Block>
-      {changing && !done ? <TextArea placeholder="What should change?" value={changes} onChangeText={setChanges} autoFocus minHeight={80} /> : null}
+      {changing && !done ? <TextArea placeholder="What should change?" value={changes} onChangeText={setChanges} autoFocus minHeight={80} testID={`changes-${need.approval.code}`} /> : null}
+      {choose && !changing && !done && modes.length > 1 ? (
+        <Block gap={6}>
+          <Txt v="footnote" tone="soft">
+            Once approved
+          </Txt>
+          <Segmented options={modes.map(x => ({ value: x, label: permissionsLabel(x) }))} value={mode} onChange={setMode} testID={`plan-mode-${need.approval.code}`} />
+        </Block>
+      ) : null}
       <Answering done={done} error={error}>
         {changing ? (
           <HStack>
-            <Button flex title="Send" disabled={!changes.trim()} onPress={() => send({ decision: 'deny', text: changes.trim() })} />
+            <Button flex title="Send" disabled={!changes.trim()} onPress={() => send({ decision: 'deny', text: changes.trim() })} testID={`send-changes-${need.approval.code}`} />
             <Button kind="plain" title="Back" onPress={() => setChanging(false)} />
           </HStack>
         ) : (
           <HStack>
-            <Button flex title="Approve" onPress={() => send({ decision: 'allow' })} testID={`approve-${need.approval.code}`} />
+            <Button flex title="Approve" onPress={() => send({ decision: 'allow', ...(choose && mode !== own ? { mode } : {}) })} testID={`approve-${need.approval.code}`} />
             <Button flex kind="tinted" title="Ask for changes" onPress={() => setChanging(true)} />
           </HStack>
         )}

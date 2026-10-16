@@ -125,6 +125,7 @@ export default function MachineScreen() {
           <Row title="See the screen" value={p.allowScreens ? 'Allowed' : 'Off'} />
           <Row title="Type into tasks" value={p.allowTyping ? 'Allowed' : 'Off'} />
           {m.role === 'owner' ? <Row title="Devices" chevron onPress={() => router.push({ pathname: '/machine/[id]/devices', params: { id: m.id } })} testID="open-devices" /> : null}
+          {m.role === 'owner' ? <Row title="Commands" chevron onPress={() => router.push({ pathname: '/machine/[id]/console', params: { id: m.id } })} testID="open-console" /> : null}
         </Group>
       ) : null}
 

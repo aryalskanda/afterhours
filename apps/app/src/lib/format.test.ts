@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { basename, clock, duration, effortLabel, modelLabel, permissionsLabel, phaseLabel, planLabel, roleLabel, shortPath, withoutEmoji } from './format'
+import { basename, clock, duration, effortLabel, minutes, plainReply, modelLabel, nextAt, parseTimeOfDay, permissionsLabel, phaseLabel, planLabel, roleLabel, shortPath, timeOfDay, whenLabel, withoutEmoji } from './format'
 
 describe('notices without their emoji', () => {
   test('the emoji the machine starts a sentence with goes', () => {
@@ -52,4 +52,29 @@ describe('times and labels', () => {
     expect(modelLabel('claude-opus-5-5')).toBe('claude-opus-5-5')
     expect(effortLabel('xhigh')).toBe('X-high')
   })
+})
+
+describe('when a task starts', () => {
+  test('times of day, typed the ways people type them', () => {
+    expect(['2:30', '14:30', '2:30 pm', '2pm', '0230', '12 am', '12:15 PM', '7 a.m.'].map(parseTimeOfDay)).toEqual([150, 870, 870, 840, 150, 0, 735, 420])
+    expect(['25:00', '2:75', '13 pm', 'soon', ''].map(parseTimeOfDay)).toEqual([null, null, null, null, null])
+    expect([timeOfDay(150), timeOfDay(870), timeOfDay(0)]).toEqual(['2:30 AM', '2:30 PM', '12:00 AM'])
+    expect([minutes(30), minutes(90), minutes(120)]).toEqual(['30 min', '1 h 30 min', '2 h'])
+  })
+
+  test('the next 2:30, and a waiting task in words', () => {
+    const now = new Date(2026, 9, 16, 14, 0).getTime()
+    expect(nextAt(150, now)).toBe(new Date(2026, 9, 17, 2, 30).getTime())
+    expect(nextAt(15 * 60, now)).toBe(new Date(2026, 9, 16, 15, 0).getTime())
+    expect(whenLabel({ notBefore: new Date(2026, 9, 16, 17, 0).getTime(), afterJob: null, repeatDaily: null }, now)).toBe('At 5:00 PM')
+    expect(whenLabel({ notBefore: null, afterJob: 14, repeatDaily: null }, now)).toBe('After #14')
+    expect(whenLabel({ notBefore: nextAt(150, now), afterJob: 14, repeatDaily: 150 }, now)).toBe('Every day at 2:30 AM, after #14')
+    expect(whenLabel({ notBefore: now - 1000, afterJob: null, repeatDaily: null }, now)).toBeNull()
+  })
+})
+
+test('replies without the bot’s emoji', () => {
+  expect(plainReply("✅ Approved #14's request.")).toBe("Approved #14's request.")
+  expect(plainReply('❌ Declined #14’s plan.')).toBe('Declined #14’s plan.')
+  expect(plainReply('Queued #21.')).toBe('Queued #21.')
 })

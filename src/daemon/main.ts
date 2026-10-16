@@ -27,12 +27,13 @@ import { runCommand } from './commands'
 import { FolderMap } from './folders'
 import { Notifier } from './notify'
 import { Remote, type RemoteStatus } from './remote'
+import { allowedRoots, isAllowed } from './remote/router'
 import { Runner, type HookPayload, type ToolActivity } from './runner'
 import { deliverToInbox } from './inbox'
 import { findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { Store } from './store'
 import { git } from './system'
-import { hasFullDiskAccess, KeepAwake, reopenInVsCode } from '../platform/desktop'
+import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
 import { isMac, osLabel } from '../platform/os'
 import { Tmux, TMUX_CONF } from './tmux'
 import { SessionWatcher } from './watch'
@@ -121,6 +122,8 @@ export async function runDaemon(): Promise<void> {
     // Only into a VS Code that's running on this desktop: never started just for this.
     reopenInVsCode: sessionId => reopenInVsCode(sessionId, log),
     activity: a => onActivity(a),
+    // Folders an "allow" rule from an app may add: only ones the machine shares with apps.
+    allowedDir: dir => isAllowed(dir, allowedRoots(config)),
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
@@ -177,6 +180,7 @@ export async function runDaemon(): Promise<void> {
     command: (text, guard) => runCommand(text, { ...commandContext('remote'), guard }),
     version: VERSION,
     git,
+    openInVsCode: sessionId => openInVsCode(sessionId, log),
     log,
     now: Date.now,
   })

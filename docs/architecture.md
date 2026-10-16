@@ -145,10 +145,12 @@ The protocol and the crypto get an external review before a public launch.
 | `timeline {job}` | viewer | Every notice about one task (events are kept 14 days) |
 | `diff {job, file}` | viewer | The files a task changed, exactly: git trees of its folder when it started and ended (written to the object store; no commit, ref or index touched), so your own earlier edits aren't in it. With `file`, that file's diff. Only files inside the allowed folders, never secrets |
 | `files {job\|folder, path, query, read}` | operator | Browse, search names and read files inside the allowed folders; never `.env` files, keys, credentials or `.git`, and never through a link that leaves the folder. A finished task's files are read as it left them |
-| `queue {folder, prompt, options}` | operator | Queue a task: plan or not, review, mode, model, effort, conversation, own branch, front |
-| `answer {code, decision, text}` | operator | Answer a permission request, a question, a plan review, a folder-trust prompt |
+| `queue {folder, prompt, options}` | operator | Queue a task: plan or not, review, mode, model, effort, conversation, own branch, front; when it may start (`notBefore`, `atReset`, `afterJob`, `repeatDaily` on the machine's clock) and a work-time limit (`maxMinutes`) |
+| `answer {code, decision, text, rule, mode}` | operator | Answer a permission request, a question, a plan review, a folder-trust prompt. `rule`: allow and apply one of Claude Code's own `permission_suggestions` (allow rules, accepting edits, folders inside the shared ones; never one that skips prompts), returned in the hook's `updatedPermissions` so Claude Code writes it. `mode`: approve a plan and work on in that mode (skipping prompts only if the machine allows it) |
 | `control {action, job}` | operator | go, pause, stop, skip, continue (after a limit), fork, take over. `job` makes sure it's still the running one |
-| `job {remove\|top}`, `say`, `keys` | operator | Queue order; typing and keys in the running task (if the machine allows typing) |
+| `job {remove\|top\|edit\|move}`, `say`, `keys` | operator | Queue order and a queued task's prompt and options; typing and keys in the running task (if the machine allows typing) |
+| `branch {job, merge\|discard\|pr}` | operator (`pr`: owner) | A finished task's own branch: merged into the checkout (only when it has nothing uncommitted, and only if it merges cleanly), thrown away, or pushed and opened as a pull request with `gh` |
+| `open {job\|session}` | operator | Opens the conversation in VS Code on the machine's screen |
 | `chat.write {session, text}` | operator | Write into a conversation: typed in if the queue runs it, else a task continues it |
 | `devices`, `devices.remove`, `devices.rename` | owner | Paired devices |
 | `command {text}` | owner | Any text command (`help`), under the same rules |

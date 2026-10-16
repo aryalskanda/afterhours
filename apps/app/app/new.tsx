@@ -6,11 +6,12 @@ import Ionicons from '@expo/vector-icons/Ionicons'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useState } from 'react'
 import { Platform, View } from 'react-native'
-import { chatCache, hub, useHub } from '../src/app-state'
+import { chatCache, hub, useHub, useNow } from '../src/app-state'
 import { Block, Button, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Segmented, SwitchRow, TextArea, Txt } from '../src/components/ui'
-import { basename, effortLabel, modelLabel, shortPath } from '../src/lib/format'
+import { basename, clock, effortLabel, minutes, modelLabel, nextAt, oneLine, parseTimeOfDay, shortPath, timeOfDay } from '../src/lib/format'
 import type { Choices } from '../src/lib/hub'
 import { FolderList, Queued, UNREADABLE, type FolderHit } from '../src/lib/results'
+import { supports } from '../src/lib/state'
 import { HeaderButton } from '../src/navigation'
 import { useTheme } from '../src/theme'
 
@@ -67,6 +68,13 @@ export default function NewTask() {
   const [searchError, setSearchError] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [front, setFront] = useState(false)
+  // When it starts, and how long it may work.
+  const [when, setWhen] = useState<'now' | 'time' | 'reset' | 'after'>('now')
+  const [at, setAt] = useState('')
+  const [daily, setDaily] = useState(false)
+  const [after, setAfter] = useState<number | null>(null)
+  const [limit, setLimit] = useState<number | null>(null)
+  const now = useNow(30_000)
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string; job?: number } | null>(null)
   const [sending, setSending] = useState(false)
 
@@ -119,7 +127,30 @@ export default function NewTask() {
     setTouched(true)
     setChanged(next)
   }
-  const canQueue = Boolean(folder && prompt.trim()) && !sending
+  const atMinutes = parseTimeOfDay(at)
+  const resetsAt = m.limits.fiveHour?.resetsAt && m.limits.fiveHour.resetsAt > now ? m.limits.fiveHour.resetsAt : null
+  const waitable = [...(m.active ? [m.active] : []), ...m.queued]
+  const whenOptions = [
+    { value: 'now' as const, label: 'Now' },
+    { value: 'time' as const, label: 'Later' },
+    ...(resetsAt ? [{ value: 'reset' as const, label: 'At reset' }] : []),
+    ...(waitable.length > 0 ? [{ value: 'after' as const, label: 'After' }] : []),
+  ]
+  const whenNow = whenOptions.some(o => o.value === when) ? when : 'now'
+  const whenFooter =
+    whenNow === 'time'
+      ? atMinutes === null
+        ? 'Type a time, like 2:30 am.'
+        : daily
+          ? `Every day at ${timeOfDay(atMinutes)}, on ${m.name}’s clock.`
+          : `At ${clock(nextAt(atMinutes, now), now)}.`
+      : whenNow === 'reset' && resetsAt
+        ? `At ${clock(resetsAt, now)}, when the 5-hour limit resets.`
+        : whenNow === 'after'
+          ? 'When that task has finished well. If it fails, this one doesn’t run.'
+          : undefined
+  const whenReady = whenNow === 'now' || whenNow === 'reset' || (whenNow === 'time' && atMinutes !== null) || (whenNow === 'after' && after !== null)
+  const canQueue = Boolean(folder && prompt.trim()) && !sending && whenReady
 
   const submit = async () => {
     if (!folder || sending) return
@@ -137,6 +168,10 @@ export default function NewTask() {
           effort: choices.effort,
           ...(session ? { session } : { isolate: choices.isolate }),
           front,
+          ...(whenNow === 'time' && atMinutes !== null ? (daily ? { repeatDaily: atMinutes } : { notBefore: nextAt(atMinutes, Date.now()) }) : {}),
+          ...(whenNow === 'reset' ? { atReset: true } : {}),
+          ...(whenNow === 'after' && after !== null ? { afterJob: after } : {}),
+          ...(limit ? { maxMinutes: limit } : {}),
         },
       })
       if (!r.ok) {
@@ -259,6 +294,47 @@ export default function NewTask() {
         {!session ? <SwitchRow title="Own git branch" subtitle="For a new conversation, in a git folder" value={choices.isolate} onChange={v => change({ ...choices, isolate: v })} /> : null}
         <SwitchRow title="Run next" value={front} onChange={setFront} />
       </Group>
+
+      {supports(m, 'schedule') ? (
+        <Group header="Start" footer={whenFooter} testID="new-start">
+          <Block>
+            <Segmented options={whenOptions} value={whenNow} onChange={setWhen} testID="new-when" />
+          </Block>
+          {whenNow === 'time' ? <FieldRow label="At" placeholder="2:30 am" value={at} onChangeText={setAt} autoCapitalize="none" autoCorrect={false} testID="new-at" /> : null}
+          {whenNow === 'time' ? <SwitchRow title="Every day" value={daily} onChange={setDaily} testID="new-daily" /> : null}
+          {whenNow === 'after'
+            ? waitable.map(j => (
+                <Row
+                  key={j.id}
+                  title={`#${j.id} ${oneLine(j.prompt, 70)}`}
+                  titleLines={2}
+                  trailing={after === j.id ? check : <View style={{ width: wide ? 15 : 19 }} />}
+                  onPress={() => setAfter(j.id)}
+                  testID={`new-after-${j.id}`}
+                />
+              ))
+            : null}
+        </Group>
+      ) : null}
+
+      {supports(m, 'budget') ? (
+        <Group header="Time limit" footer={limit ? `Stopped after ${minutes(limit)} of work; you can let it go on.` : undefined}>
+          <Block>
+            <Segmented
+              options={[
+                { value: '0', label: 'None' },
+                { value: '15', label: '15 min' },
+                { value: '30', label: '30 min' },
+                { value: '60', label: '1 h' },
+                { value: '120', label: '2 h' },
+              ]}
+              value={String(limit ?? 0)}
+              onChange={v => setLimit(Number(v) || null)}
+              testID="new-limit"
+            />
+          </Block>
+        </Group>
+      ) : null}
 
       {outcome && !outcome.ok ? <Note ok={false} text={outcome.text} /> : null}
       {wide ? (

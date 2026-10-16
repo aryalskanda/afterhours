@@ -4,21 +4,21 @@ The app for your Afterhours machines, on iPhone, Android and the web. The deskto
 
 - **Machines**: each machine you paired: online or not, the running task, the queue, what waits on you, and the 5-hour limit.
 - **Needs you**, with a badge: everything waiting on you, across machines, soonest settled first.
-  - Permissions: the tool and what it wants to do, in full. Allow, Deny, or Deny with a note for Claude.
+  - Permissions: the tool and what it wants to do, in full, and how often you allowed the same before. Allow, Deny, Deny with a note for Claude, or allow with Claude Code's own rule so it stops asking ("Always allow commands starting with npm test in this project").
   - Questions: one at a time, every option in full. Tick several where Claude allows it, or type an answer; Back goes to the previous question.
-  - Plans: rendered. Approve, or Ask for changes.
+  - Plans: rendered, with the version before when Claude revised it. Approve, choosing how it works on (auto, or accepting edits), or Ask for changes; tap a step to quote it.
   - Folder trust.
 - **A machine**:
   - the running task, with Screen (live, in colour, with find and text size), Stop, Skip, Continue now (after a limit), typing and keys;
   - the queue (Run next, Remove);
   - usage limits, recent tasks, Pause and Resume;
-  - the machine's rules, and its devices (owners).
+  - the machine's rules, its devices and its text commands (owners).
 - **A task**: what it was asked and how it runs, how full its context is, its tokens and cost (as Claude Code counts them). Then three views:
   - Activity: the conversation as it happens: what you and Claude said, each tool call in a line (tap it for what came back), and what it's doing right now.
   - Changes: the files it changed, with lines added and removed; each opens its diff, numbered, and the whole file as the task left it.
   - Answer: Claude's final answer and the plan, rendered, and every notice about the task.
-  Follow up in the same conversation.
-- **New task**: the machine, a folder (recent ones, or search), the prompt, then plan or not, permission mode, model, effort, its own branch, run next. It starts from what you used last time on that machine. What the machine doesn't allow isn't offered.
+  While it runs, message Claude from under the conversation. A queued task can be edited, moved, or run next; one waiting for a busy conversation can take it over or use a copy. A finished task on its own branch can be merged into your checkout, opened as a pull request (owners), or thrown away. Follow up in the same conversation, or open it in VS Code on the machine.
+- **New task**: the machine, a folder (recent ones, or search), the prompt, then plan or not, permission mode, model, effort, its own branch, run next; when it starts (now, at a time or every day, when the 5-hour limit resets, after another task finishes well) and a time limit. It starts from what you used last time on that machine. What the machine doesn't allow isn't offered.
 - **Chats**: your Claude Code conversations on a machine. Read one whole, tool calls included, and write into it.
 - **Settings**: this device's name and key, app lock and Face ID before Allow, machines, about.
 
