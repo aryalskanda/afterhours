@@ -85,6 +85,7 @@ export default function Settings() {
 
       <Group>
         <Row title="Notifications" value={notifying ? 'On' : 'Off'} chevron onPress={() => router.push('/notifications')} testID="settings-notifications" />
+        <Row title="Appearance" value={{ system: 'System', light: 'Light', dark: 'Dark' }[s.prefs.appearance]} chevron onPress={() => router.push('/appearance')} testID="settings-appearance" />
         <Row title="Back up and restore" chevron onPress={() => router.push('/backup')} testID="settings-backup" />
       </Group>
 

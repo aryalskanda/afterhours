@@ -31,6 +31,25 @@ try {
     await shot('01-welcome')
   })
 
+  await check('the demo machine: tried without a machine, a request answered, then removed', async () => {
+    await tap('try-demo')
+    await tap('machine-Demo machine')
+    await visible('demo-note')
+    await see('Add a dark mode switch to the settings page')
+    await see('#24 wants to use Bash', 10_000)
+    await page.goto(`${base}/inbox`)
+    await see('Runs the tests')
+    await shot('01b-demo')
+    await tap('allow-demo1')
+    await gone('request-demo1')
+    await page.goto(base)
+    await tap('machine-Demo machine')
+    await tap('forget')
+    await tap('forget')
+    await visible('welcome')
+    if (m.requests.length > 0) throw new Error('the demo reached the real machine')
+  })
+
   await check('pairing by pasting the link, then the machine is online', async () => {
     await tap('pair-first')
     await see('Paste the link')
@@ -636,6 +655,51 @@ try {
     } finally {
       await other.close()
     }
+  })
+
+  await check('a long press offers a task’s other actions: Run next, Remove', async () => {
+    await page.goto(base)
+    await tap('machine-build-box')
+    const [first, second] = m.state.queued.filter(j => j.id !== 21)
+    if (!first || !second) throw new Error('not enough queued tasks')
+    const row = await visible(`job-${first.id}`)
+    const box = (await row.boundingBox())!
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await Bun.sleep(900)
+    await page.mouse.up()
+    await visible('menu-Copy the prompt')
+    await shot('33-menu')
+    await tap('menu-Run next')
+    await until(() => sent('job', r => r.action === 'top' && r.job === first.id), 'run next from the menu')
+    const other = (await (await visible(`job-${second.id}`)).boundingBox())!
+    await page.mouse.move(other.x + other.width / 2, other.y + other.height / 2)
+    await page.mouse.down()
+    await Bun.sleep(900)
+    await page.mouse.up()
+    await tap('menu-Remove')
+    await until(() => sent('job', r => r.action === 'remove' && r.job === second.id), 'remove from the menu')
+  })
+
+  await check('every control has a name a screen reader can say; dark by choice, larger text', async () => {
+    const screens = ['/', `/machine/${m.id}`, `/machine/${m.id}/task/14`, '/new', '/inbox', '/chats', '/settings', '/notifications', '/appearance', '/backup', `/machine/${m.id}/about`, `/machine/${m.id}/usage`, `/machine/${m.id}/devices`, `/machine/${m.id}/tasks`, '/search']
+    const problems: string[] = []
+    for (const path of screens) {
+      await page.goto(`${base}${path}`)
+      await Bun.sleep(1500)
+      for (const u of await d.unnamed()) problems.push(`${path}: ${u}`)
+    }
+    if (problems.length > 0) throw new Error(`no name for:\n    ${problems.join('\n    ')}`)
+    await page.goto(`${base}/appearance`)
+    await tap('appearance-theme-dark')
+    await tap('appearance-size-larger')
+    await until(async () => (await page.evaluate(() => getComputedStyle(document.querySelector('[data-testid="appearance"]')!).backgroundColor)) === 'rgb(14, 19, 32)', 'the dark page')
+    await page.goto(`${base}/machine/${m.id}/task/12`)
+    await see('Add CSV export to reports')
+    await shot('34-dark-larger')
+    await page.goto(`${base}/appearance`)
+    await tap('appearance-theme-system')
+    await tap('appearance-size-default')
   })
 
   await check('a device the machine removed says so', async () => {

@@ -1,5 +1,6 @@
 // Claude writes Markdown. This reads it into a small tree (blocks of styled spans) that the app
-// renders with its own components: headings, emphasis, code, lists, quotes, rules and tables.
+// renders with its own components: headings, emphasis, code, lists, quotes, rules, tables, and
+// images on the web (https only; shown when you ask).
 
 export interface Span {
   text: string
@@ -19,6 +20,7 @@ export type Block =
   | { kind: 'quote'; spans: Span[] }
   | { kind: 'rule' }
   | { kind: 'table'; header: Span[][]; rows: Span[][][] }
+  | { kind: 'image'; alt: string; src: string }
 
 type Flags = Omit<Span, 'text'>
 
@@ -41,6 +43,8 @@ export function inline(text: string): Span[] {
   // Code first: nothing inside a code span is formatted. Then links.
   s = s.replace(/``(.+?)``/g, (_m, code: string) => keep({ text: code.trim(), code: true }))
   s = s.replace(/`([^`\n]+)`/g, (_m, code: string) => keep({ text: code, code: true }))
+  // An image inside a line of text is a link to it.
+  s = s.replace(/!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/g, (_m, alt: string, href: string) => keep({ text: alt || 'image', href }))
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label: string, href: string) => keep({ text: label, href }))
   const out: Span[] = []
   emphasis(s, {}, out, saved)
@@ -119,6 +123,13 @@ export function parse(md: string): Block[] {
       blocks.push({ kind: 'table', header, rows })
       continue
     }
+    const image = /^\s*!\[([^\]\n]*)\]\((https:\/\/[^\s)]+)\)\s*$/.exec(line)
+    if (image) {
+      flush()
+      blocks.push({ kind: 'image', alt: image[1]!.trim(), src: image[2]! })
+      i++
+      continue
+    }
     const heading = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line)
     if (heading) {
       flush()
@@ -165,7 +176,17 @@ export function parse(md: string): Block[] {
 /** The text alone, for previews: "Steps 1. Add a theme store…". */
 export function plainText(md: string): string {
   return parse(md)
-    .map(b => (b.kind === 'code' ? b.text : b.kind === 'rule' ? '' : b.kind === 'table' ? b.rows.map(r => r.map(c => c.map(s => s.text).join('')).join(' · ')).join('\n') : b.spans.map(s => s.text).join('')))
+    .map(b =>
+      b.kind === 'code'
+        ? b.text
+        : b.kind === 'rule'
+          ? ''
+          : b.kind === 'image'
+            ? b.alt
+            : b.kind === 'table'
+              ? b.rows.map(r => r.map(c => c.map(s => s.text).join('')).join(' · ')).join('\n')
+              : b.spans.map(s => s.text).join(''),
+    )
     .filter(Boolean)
     .join('\n')
 }

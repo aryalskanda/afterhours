@@ -1,10 +1,134 @@
-// Claude's Markdown, drawn with the app's own type: headings, emphasis, code, lists, quotes and
-// rules. Tables become one entry per row, which reads better on a phone than a squeezed grid.
+// Claude's Markdown, drawn with the app's own type: headings, emphasis, lists, quotes and rules;
+// code a little coloured, with Copy; images from the web when you ask (never fetched by
+// themselves). Tables are a grid in a wide window, and one entry per row on a phone, which reads
+// better than a squeezed grid.
 
-import { useMemo } from 'react'
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import Ionicons from '@expo/vector-icons/Ionicons'
+import * as Clipboard from 'expo-clipboard'
+import { useMemo, useState } from 'react'
+import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { desktop } from '../desktop'
+import { highlight, type TokenKind } from '../lib/highlight'
 import { parse, type Span } from '../lib/markdown'
-import { mono, useTheme } from '../theme'
+import { mono, useTheme, type Colors } from '../theme'
+
+const plainOf = (spans: Span[]) => spans.map(s => s.text).join('')
+
+function tokenColor(c: Colors, kind: TokenKind): string {
+  return { plain: c.ink, keyword: c.codeKeyword, string: c.codeString, comment: c.codeComment, number: c.codeNumber, added: c.added, removed: c.removed }[kind]
+}
+
+function CodeBlock(props: { lang: string; text: string }) {
+  const { c, t, wide } = useTheme()
+  const [copied, setCopied] = useState(false)
+  const tokens = useMemo(() => highlight(props.text, props.lang), [props.text, props.lang])
+  return (
+    <View style={{ backgroundColor: c.fill, borderRadius: wide ? 6 : 8, overflow: 'hidden' }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 10, paddingTop: 6 }}>
+        <Text style={[t.caption, { color: c.faint }]}>{props.lang}</Text>
+        <Pressable
+          role="button"
+          aria-label={copied ? 'Copied' : 'Copy the code'}
+          hitSlop={10}
+          onPress={async () => {
+            await Clipboard.setStringAsync(props.text)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          }}
+          testID="code-copy"
+        >
+          <Text style={[t.caption, { color: c.soft, fontWeight: '600' }]}>{copied ? 'Copied' : 'Copy'}</Text>
+        </Pressable>
+      </View>
+      <ScrollView horizontal contentContainerStyle={{ paddingHorizontal: 10, paddingTop: 2, paddingBottom: 8 }}>
+        <Text selectable style={{ fontFamily: mono, fontSize: t.subhead.fontSize, lineHeight: t.subhead.lineHeight, color: c.ink }}>
+          {tokens.map((tk, i) =>
+            tk.kind === 'plain' ? (
+              tk.text
+            ) : (
+              <Text key={i} style={{ color: tokenColor(c, tk.kind) }}>
+                {tk.text}
+              </Text>
+            ),
+          )}
+        </Text>
+      </ScrollView>
+    </View>
+  )
+}
+
+/** A wide window's table: columns as wide as their text needs, within reason. */
+function Grid(props: { header: Span[][]; rows: Span[][][] }) {
+  const { c, t } = useTheme()
+  const columns = Math.max(props.header.length, ...props.rows.map(r => r.length))
+  const widths = Array.from({ length: columns }, (_, k) => {
+    const longest = Math.max(plainOf(props.header[k] ?? []).length, ...props.rows.map(r => plainOf(r[k] ?? []).length))
+    return Math.min(320, Math.max(80, longest * 7.5 + 24))
+  })
+  const row = (cells: Span[][], r: number, head: boolean) => (
+    <View key={r} style={{ flexDirection: 'row', borderTopWidth: r === 0 ? 0 : StyleSheet.hairlineWidth, borderTopColor: c.line, backgroundColor: head ? c.fill : undefined }}>
+      {widths.map((w, k) => (
+        <Text key={k} selectable style={[t.subhead, { width: w, paddingHorizontal: 8, paddingVertical: 5, color: c.ink, fontWeight: head ? '600' : '400' }]}>
+          {plainOf(cells[k] ?? [])}
+        </Text>
+      ))}
+    </View>
+  )
+  return (
+    <ScrollView horizontal style={{ borderWidth: StyleSheet.hairlineWidth, borderColor: c.line, borderRadius: 6 }} testID="md-grid">
+      <View>
+        {row(props.header, 0, true)}
+        {props.rows.map((r, i) => row(r, i + 1, false))}
+      </View>
+    </ScrollView>
+  )
+}
+
+/**
+ * An image from the web: shown when you ask (fetching it tells its site you're reading). The
+ * desktop app doesn't load web images at all: it opens them in the browser.
+ */
+function WebImage(props: { alt: string; src: string }) {
+  const { c, t, wide } = useTheme()
+  const [shown, setShown] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const [ratio, setRatio] = useState(16 / 9)
+  let host = props.src
+  try {
+    host = new URL(props.src).host
+  } catch {}
+  if (shown && !failed && !desktop) {
+    return (
+      <Image
+        source={{ uri: props.src }}
+        accessibilityLabel={props.alt || 'An image'}
+        resizeMode="contain"
+        onLoad={e => {
+          const s = (e.nativeEvent as { source?: { width?: number; height?: number } }).source
+          if (s?.width && s.height) setRatio(s.width / s.height)
+        }}
+        onError={() => setFailed(true)}
+        style={{ width: '100%', aspectRatio: ratio, borderRadius: wide ? 6 : 8, backgroundColor: c.fill }}
+      />
+    )
+  }
+  const open = Boolean(desktop) || failed
+  return (
+    <Pressable
+      role="button"
+      aria-label={`${open ? 'Open' : 'Show'} the image ${props.alt}`}
+      onPress={() => (open ? void Linking.openURL(props.src) : setShown(true))}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: wide ? 6 : 8, backgroundColor: c.fill, opacity: pressed ? 0.6 : 1 })}
+      testID="md-image"
+    >
+      <Ionicons name="image-outline" size={18} color={c.soft} />
+      <Text numberOfLines={1} style={[t.subhead, { flex: 1, color: c.ink }]}>
+        {props.alt || 'Image'} <Text style={{ color: c.soft }}>· {host}</Text>
+      </Text>
+      <Text style={[t.subhead, { color: c.accent, fontWeight: '600' }]}>{failed ? 'Couldn’t load: Open' : open ? 'Open' : 'Show'}</Text>
+    </Pressable>
+  )
+}
 
 function Spans(props: { spans: Span[]; heading?: 1 | 2 | 3; soft?: boolean }) {
   const { c, t } = useTheme()
@@ -75,13 +199,9 @@ export function Markdown(props: { text: string; onBlockPress?: (text: string) =>
           </View>
         )
       case 'code':
-        return (
-          <ScrollView key={i} horizontal style={{ backgroundColor: c.fill, borderRadius: wide ? 6 : 8 }} contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}>
-            <Text selectable style={{ fontFamily: mono, fontSize: t.subhead.fontSize, lineHeight: t.subhead.lineHeight, color: c.ink }}>
-              {b.text}
-            </Text>
-          </ScrollView>
-        )
+        return <CodeBlock key={i} lang={b.lang} text={b.text} />
+      case 'image':
+        return <WebImage key={i} alt={b.alt} src={b.src} />
       case 'quote':
         return (
           <View key={i} style={{ borderLeftWidth: 2, borderLeftColor: c.line, paddingLeft: 10 }}>
@@ -91,6 +211,7 @@ export function Markdown(props: { text: string; onBlockPress?: (text: string) =>
       case 'rule':
         return <View key={i} style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.line, marginVertical: 4 }} />
       case 'table':
+        if (wide) return <Grid key={i} header={b.header} rows={b.rows} />
         return (
           <View key={i}>
             {b.rows.map((row, r) => (

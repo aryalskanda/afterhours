@@ -7,7 +7,7 @@ const contents: BackupContents = {
   identity: 'secret-key-material',
   deviceName: 'Old phone',
   machines: [{ id: 'm1', name: 'build-box', relay: 'wss://relay.example.com/v1', role: 'owner', lastSeq: 40, addedAt: 1 }],
-  prefs: { lockApp: true, confirmAllow: false, browserNotifications: false, notify: DEFAULT_NOTIFY },
+  prefs: { lockApp: true, confirmAllow: false, browserNotifications: false, notify: DEFAULT_NOTIFY, appearance: 'dark', textSize: 'larger' },
   saved: ['Run the tests'],
 }
 

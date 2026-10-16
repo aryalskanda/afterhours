@@ -182,6 +182,23 @@ describe('backup', () => {
   })
 })
 
+describe('the demo machine', () => {
+  test('the app without a machine: it connects, asks something, takes the answer, and goes', async () => {
+    const h = await hub()
+    await h.addDemo()
+    await until(() => h.getState().machines[0]?.synced === true)
+    const demo = () => h.getState().machines[0]!
+    expect(demo().status).toBe('connected')
+    expect(demo().active?.prompt).toContain('dark mode')
+    await until(() => demo().approvals.length === 1, 8000)
+    expect((await h.request('demo', { type: 'answer', code: 'demo1', decision: 'allow' })).ok).toBe(true)
+    await until(() => demo().approvals.length === 0)
+    expect((await h.request('demo', { type: 'command', text: 'status' })).error).toContain('The demo machine can’t do that')
+    await h.forget('demo')
+    expect(h.getState().machines).toEqual([])
+  }, 15_000)
+})
+
 describe('prompts kept on this device', () => {
   test('saved prompts and drafts survive a restart; a queued draft is gone', async () => {
     const storage = memory()

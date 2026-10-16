@@ -1,8 +1,11 @@
 // Colours, type and sizes. Light: grouped lists on a grey page, as in the iPhone's own apps. Dark:
 // the brand's night navy. One accent, amber, for what needs you and a screen's main action.
 // On a wide window (the desktop app, a browser) the type and rows are as dense as desktop apps'.
+// Light or dark follows the system unless you chose one; the text can be a size smaller or larger.
 
+import { useSyncExternalStore } from 'react'
 import { Platform, useColorScheme, useWindowDimensions, type TextStyle } from 'react-native'
+import { hub } from './app-state'
 
 const light = {
   page: '#f2f2f7',
@@ -33,6 +36,11 @@ const light = {
   added: '#1b7a3a',
   removedBg: '#fdeceb',
   removed: '#b3261e',
+  /** Code: keywords, strings, comments, numbers (muted, so code doesn't shout). */
+  codeKeyword: '#8250df',
+  codeString: '#0a3069',
+  codeComment: '#6e7781',
+  codeNumber: '#0550ae',
 }
 
 export type Colors = typeof light
@@ -63,6 +71,10 @@ const dark: Colors = {
   added: '#5fd27e',
   removedBg: 'rgba(255, 105, 97, 0.15)',
   removed: '#ff8a83',
+  codeKeyword: '#d2a8ff',
+  codeString: '#a5d6ff',
+  codeComment: '#8b949e',
+  codeNumber: '#79c0ff',
 }
 
 export const palette = { light, dark }
@@ -123,14 +135,45 @@ export interface Theme {
   dark: boolean
   /** A wide window: sidebar navigation, desktop density. */
   wide: boolean
+  /** The tabs as a sidebar: a wide window, or a tablet held wide (with a phone's type and touch sizes). */
+  sidebar: boolean
 }
+
+const SIZES = { smaller: 0.9, default: 1, larger: 1.15 } as const
+const scales = new Map<string, TypeScale>()
+
+/** The type scale a size smaller or larger (line heights too). */
+function sized(base: TypeScale, size: keyof typeof SIZES, key: string): TypeScale {
+  const k = SIZES[size]
+  if (k === 1) return base
+  const id = `${key}:${size}`
+  let t = scales.get(id)
+  if (!t) {
+    t = Object.fromEntries(Object.entries(base).map(([name, s]) => [name, { ...s, fontSize: Math.round(s.fontSize! * k), lineHeight: Math.round(s.lineHeight! * k) }])) as TypeScale
+    scales.set(id, t)
+  }
+  return t
+}
+
+const appearanceOf = () => hub.getState().prefs.appearance ?? 'system'
+const textSizeOf = () => hub.getState().prefs.textSize ?? 'default'
 
 export function useTheme(): Theme {
   const scheme = useColorScheme()
-  const { width } = useWindowDimensions()
+  const appearance = useSyncExternalStore(hub.subscribe, appearanceOf, appearanceOf)
+  const textSize = useSyncExternalStore(hub.subscribe, textSizeOf, textSizeOf)
+  const { width, height } = useWindowDimensions()
   const wide = Platform.OS === 'web' && width >= WIDE
-  const isDark = scheme === 'dark'
-  return { c: isDark ? dark : light, t: wide ? desktop : phone, m: wide ? desktopMetrics : phoneMetrics, dark: isDark, wide }
+  const tablet = Platform.OS !== 'web' && Math.min(width, height) >= 600
+  const isDark = appearance === 'system' ? scheme === 'dark' : appearance === 'dark'
+  return {
+    c: isDark ? dark : light,
+    t: sized(wide ? desktop : phone, textSize, wide ? 'desktop' : 'phone'),
+    m: wide ? desktopMetrics : phoneMetrics,
+    dark: isDark,
+    wide,
+    sidebar: wide || (tablet && width >= WIDE),
+  }
 }
 
 /** Numbers that line up (counts, times, percentages). */

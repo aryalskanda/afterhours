@@ -69,7 +69,12 @@ export default function Machines() {
           testID="welcome"
           title="No machines yet"
           text="On a computer, run cq pair, then scan its code."
-          action={<Button title="Pair a machine" onPress={() => router.push('/pair')} testID="pair-first" />}
+          action={
+            <View style={{ gap: 10, alignSelf: 'stretch' }}>
+              <Button title="Pair a machine" onPress={() => router.push('/pair')} testID="pair-first" />
+              <Button kind="plain" title="Try a demo machine" onPress={() => void hub.addDemo()} testID="try-demo" />
+            </View>
+          }
         />
       ) : (
         <>

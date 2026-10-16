@@ -166,6 +166,10 @@ export function Row(props: {
   trailing?: ReactNode
   chevron?: boolean
   onPress?: () => void
+  /** More actions (a menu): also offered to screen readers as an action. */
+  onLongPress?: () => void
+  /** What a screen reader says for the row, when its parts don't say it well. */
+  label?: string
   tone?: 'accent' | 'danger'
   bold?: boolean
   titleLines?: number
@@ -212,8 +216,14 @@ export function Row(props: {
     <Pressable
       testID={props.testID}
       role="button"
+      aria-label={props.label}
       disabled={props.disabled}
       onPress={props.onPress}
+      onLongPress={props.onLongPress}
+      accessibilityActions={props.onLongPress ? [{ name: 'longpress', label: 'More actions' }] : undefined}
+      onAccessibilityAction={e => {
+        if (e.nativeEvent.actionName === 'longpress') props.onLongPress?.()
+      }}
       style={(state: PressState) => ({ backgroundColor: state.pressed ? c.pressed : state.hovered ? c.hover : 'transparent', opacity: props.disabled ? 0.4 : 1 })}
     >
       {body}
@@ -234,6 +244,7 @@ export function SwitchRow(props: { title: string; subtitle?: string; value: bool
           value={props.value}
           onValueChange={props.onChange}
           disabled={props.disabled}
+          aria-label={props.title}
           trackColor={{ true: c.okDot, false: dark ? c.thumb : c.fill }}
           thumbColor="#ffffff"
           // The web's switch has its own thumb colour when on (Material teal otherwise).
@@ -355,10 +366,10 @@ export function ConfirmRow(props: { title: string; confirm: string; onConfirm: (
 }
 
 /** One choice among a few, as a segmented control. Each segment's test id is `${testID}-${value}`. */
-export function Segmented<T extends string>(props: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; testID?: string }) {
+export function Segmented<T extends string>(props: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; testID?: string; label?: string }) {
   const { c, t, wide } = useTheme()
   return (
-    <View testID={props.testID} role="radiogroup" style={{ flexDirection: 'row', backgroundColor: c.fill, borderRadius: wide ? 7 : 9, padding: 2, gap: 2 }}>
+    <View testID={props.testID} role="radiogroup" aria-label={props.label} style={{ flexDirection: 'row', backgroundColor: c.fill, borderRadius: wide ? 7 : 9, padding: 2, gap: 2 }}>
       {props.options.map(o => {
         const on = o.value === props.value
         return (
@@ -404,6 +415,7 @@ export function FieldRow(props: TextInputProps & { label?: string }) {
   const input = (
     <TextInput
       placeholderTextColor={c.faint}
+      aria-label={label ?? props.placeholder}
       {...rest}
       style={[t.body, { flex: 1, color: c.ink, minHeight: m.row, paddingVertical: m.rowY, textAlign: label ? 'right' : 'left' }, noOutline, style]}
     />
@@ -425,6 +437,7 @@ export function TextArea(props: TextInputProps & { minHeight?: number }) {
       multiline
       placeholderTextColor={c.faint}
       textAlignVertical="top"
+      aria-label={props.placeholder}
       {...rest}
       style={[t.body, { color: c.ink, minHeight: minHeight ?? 120, paddingHorizontal: m.rowX, paddingVertical: m.rowY + 2 }, noOutline, style]}
     />
@@ -452,14 +465,15 @@ export function StatusDot(props: { color: string; pulse?: boolean; size?: number
     return () => loop.stop()
   }, [props.pulse, opacity])
   const size = props.size ?? 8
-  return <Animated.View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: props.color, opacity }} />
+  // What it means is said in words beside it.
+  return <Animated.View aria-hidden style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: props.color, opacity }} />
 }
 
 /** A count, in the accent: things that need you. */
 export function Badge(props: { count: number; testID?: string }) {
   const { c, t } = useTheme()
   return (
-    <View testID={props.testID} style={{ minWidth: 20, height: 20, paddingHorizontal: 6, borderRadius: 10, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' }}>
+    <View testID={props.testID} aria-label={`${props.count} waiting for you`} style={{ minWidth: 20, height: 20, paddingHorizontal: 6, borderRadius: 10, backgroundColor: c.accent, alignItems: 'center', justifyContent: 'center' }}>
       <Text style={[t.caption, tabular, { color: c.accentInk, fontWeight: '700' }]}>{props.count}</Text>
     </View>
   )

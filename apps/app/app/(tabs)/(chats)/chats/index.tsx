@@ -71,6 +71,7 @@ export default function Chats() {
             setChats(null)
             setError(null)
           }}
+          label="Machine"
         />
       ) : null}
       {!online ? <Note text={`${m.name} is offline. Its chats show when it’s back.`} /> : null}

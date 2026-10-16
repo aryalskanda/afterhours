@@ -5,10 +5,12 @@ import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type ErrorBounda
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
-import { AppState } from 'react-native'
+import { Appearance, AppState, Platform } from 'react-native'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { hub, useHub } from '../src/app-state'
 import { CrashScreen } from '../src/components/Crash'
+import { MenuHost } from '../src/components/Menu'
 import { AttentionBanner, LockGate, SystemAlerts } from '../src/components/Overlays'
 import { desktop } from '../src/desktop'
 import { useStackOptions } from '../src/navigation'
@@ -28,7 +30,12 @@ export function ErrorBoundary(props: ErrorBoundaryProps) {
 export default function Root() {
   const { c, dark, wide } = useTheme()
   const stack = useStackOptions()
-  const { ready } = useHub()
+  const { ready, prefs } = useHub()
+
+  // Native pieces (alerts, keyboards, pickers) follow the app's light or dark too.
+  useEffect(() => {
+    if (Platform.OS !== 'web') Appearance.setColorScheme(prefs.appearance === 'system' ? 'unspecified' : prefs.appearance)
+  }, [prefs.appearance])
 
   useEffect(() => {
     void hub.init()
@@ -68,18 +75,21 @@ export default function Root() {
   const theme = { ...base, colors: { ...base.colors, primary: c.accent, background: c.page, card: c.page, text: c.ink, border: c.line, notification: c.accent } }
 
   return (
-    <SafeAreaProvider>
-      <ThemeProvider value={theme}>
-        <Stack screenOptions={stack}>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false, title: 'Machines' }} />
-          <Stack.Screen name="pair" options={{ presentation: 'modal', title: 'Pair a machine', headerTitleAlign: wide ? 'center' : undefined }} />
-          <Stack.Screen name="new" options={{ presentation: 'modal', title: 'New task', headerTitleAlign: wide ? 'center' : undefined }} />
-        </Stack>
-        <AttentionBanner />
-        <SystemAlerts />
-        <LockGate />
-        <StatusBar style="auto" />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider value={theme}>
+          <Stack screenOptions={stack}>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false, title: 'Machines' }} />
+            <Stack.Screen name="pair" options={{ presentation: 'modal', title: 'Pair a machine', headerTitleAlign: wide ? 'center' : undefined }} />
+            <Stack.Screen name="new" options={{ presentation: 'modal', title: 'New task', headerTitleAlign: wide ? 'center' : undefined }} />
+          </Stack>
+          <AttentionBanner />
+          <SystemAlerts />
+          <MenuHost />
+          <LockGate />
+          <StatusBar style={dark ? 'light' : 'dark'} />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   )
 }

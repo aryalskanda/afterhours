@@ -2,6 +2,7 @@
 
 import type { JobInfo } from '@afterhours/protocol'
 import Ionicons from '@expo/vector-icons/Ionicons'
+import * as Clipboard from 'expo-clipboard'
 import { router } from 'expo-router'
 import { useMemo, useRef } from 'react'
 import { ScrollView, Text, View } from 'react-native'
@@ -10,6 +11,7 @@ import { useNow } from '../app-state'
 import { basename, clock, duration, oneLine, phaseLabel, whenLabel } from '../lib/format'
 import type { MachineState } from '../lib/state'
 import { mono, tabular, useTheme, type Colors } from '../theme'
+import { openMenu, type MenuItem } from './Menu'
 import { Badge, Row, StatusDot, Txt } from './ui'
 
 export function statusColor(m: MachineState, c: Colors): string {
@@ -32,6 +34,7 @@ export function MachineRow(props: { machine: MachineState }) {
   return (
     <Row
       testID={`machine-${m.name}`}
+      label={`${m.name}. ${line}${a && m.status === 'connected' ? `. Running ${oneLine(a.prompt, 90)}` : ''}${waiting > 0 ? `. ${waiting} waiting for you` : ''}`}
       onPress={() => router.push({ pathname: '/machine/[id]', params: { id: m.id } })}
       leading={<StatusDot color={statusColor(m, c)} pulse={m.status === 'connected' && a?.status === 'running'} />}
       title={m.name}
@@ -57,8 +60,13 @@ export function MachineRow(props: { machine: MachineState }) {
   )
 }
 
-/** A task in a list: done, failed, running or waiting, what it was asked, where and when. `where`: the machine's name, in lists across machines. */
-export function TaskRow(props: { machine: string; job: JobInfo; position?: number; where?: string }) {
+const STATUS_WORDS = { running: 'Running', queued: 'Queued', held: 'Held', done: 'Done', failed: 'Failed', cancelled: 'Stopped' } as const
+
+/**
+ * A task in a list: done, failed, running or waiting, what it was asked, where and when. `where`:
+ * the machine's name, in lists across machines. A long press: Open, Copy the prompt, and `actions`.
+ */
+export function TaskRow(props: { machine: string; job: JobInfo; position?: number; where?: string; actions?: MenuItem[] }) {
   const j = props.job
   const { c, wide } = useTheme()
   const now = useNow(30_000)
@@ -78,10 +86,19 @@ export function TaskRow(props: { machine: string; job: JobInfo; position?: numbe
       />
     )
   const when = j.finishedAt ? clock(j.finishedAt, now) : j.startedAt ? duration(now - j.startedAt) : (whenLabel(j, now) ?? clock(j.createdAt, now))
+  const open = () => router.push({ pathname: '/machine/[id]/task/[job]', params: { id: props.machine, job: String(j.id) } })
+  const status = j.status === 'queued' && props.position ? `Queued, number ${props.position}` : STATUS_WORDS[j.status]
   return (
     <Row
       testID={`job-${j.id}`}
-      onPress={() => router.push({ pathname: '/machine/[id]/task/[job]', params: { id: props.machine, job: String(j.id) } })}
+      label={`${status}. ${oneLine(j.prompt, 160)}. Task ${j.id}${props.where ? ` on ${props.where}` : ''}, ${basename(j.folder)}, ${when}`}
+      onPress={open}
+      onLongPress={() =>
+        openMenu({
+          title: oneLine(j.prompt, 90),
+          items: [{ label: 'Open', onPress: open }, { label: 'Copy the prompt', onPress: () => Clipboard.setStringAsync(j.prompt) }, ...(props.actions ?? [])],
+        })
+      }
       leading={<View style={{ width: size, alignItems: 'center' }}>{mark}</View>}
       title={oneLine(j.prompt, 160)}
       titleLines={2}
@@ -207,6 +224,7 @@ export function Terminal(props: { text: string; testID?: string; height?: number
       }}
       scrollEventThrottle={100}
       testID={props.testID}
+      aria-label="The task’s screen"
     >
       <ScrollView horizontal nestedScrollEnabled contentContainerStyle={{ padding: m.rowX }}>
         <Text selectable style={{ fontFamily: mono, fontSize: size, lineHeight: Math.round(size * 1.42), color: c.terminalInk }}>

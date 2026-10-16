@@ -6,8 +6,10 @@ import { useMemo, useState } from 'react'
 import { hub, useHub, useMachine, useNow } from '../../../../../src/app-state'
 import { LimitRow, statusColor, TaskRow } from '../../../../../src/components/bits'
 import { Block, Button, ConfirmButton, ConfirmRow, EmptyState, Group, GroupAction, HStack, Note, Page, Row, StatusDot, Txt } from '../../../../../src/components/ui'
+import { SwipeActions } from '../../../../../src/components/Menu'
 import { useAction } from '../../../../../src/components/useAction'
 import { clock, oneLine, roleLabel, shortPath, statusLabel } from '../../../../../src/lib/format'
+import { DEMO_ID } from '../../../../../src/lib/demo'
 import { needsYou, supports } from '../../../../../src/lib/state'
 import { useTheme } from '../../../../../src/theme'
 
@@ -49,6 +51,7 @@ export default function MachineScreen() {
       }}
     >
       <Stack.Screen options={{ title: m.name }} />
+      {m.id === DEMO_ID ? <Note text="A demo inside the app: nothing runs, and nothing leaves this device. Remove it at the bottom when you’re done." testID="demo-note" /> : null}
       <Group
         footer={
           m.status === 'offline'
@@ -61,7 +64,7 @@ export default function MachineScreen() {
         <Row
           leading={<StatusDot color={statusColor(m, c)} pulse={m.status === 'connected' && a?.status === 'running'} />}
           title={<Txt testID="machine-status">{statusLabel(m.status, m.statusDetail)}</Txt>}
-          subtitle={m.info ? `${m.info.os} ${m.info.arch} · Afterhours ${m.info.version}` : undefined}
+          subtitle={m.id === DEMO_ID ? 'Demo' : m.info ? `${m.info.os} ${m.info.arch} · Afterhours ${m.info.version}` : undefined}
           value={m.role ? roleLabel(m.role) : undefined}
         />
         {m.status === 'refused' ? <Row title="Pair again" tone="accent" onPress={() => router.push('/pair')} /> : null}
@@ -98,9 +101,19 @@ export default function MachineScreen() {
         right={canAct ? <GroupAction title={m.paused ? 'Resume' : 'Pause'} onPress={() => queue.run(m.id, { type: 'control', action: m.paused ? 'go' : 'pause' })} testID="pause" /> : null}
         footer={m.paused ? 'Paused: nothing new starts until you resume.' : undefined}
       >
-        {m.queued.map((j, i) => (
-          <TaskRow key={j.id} machine={m.id} job={j} position={i + 1} />
-        ))}
+        {m.queued.map((j, i) => {
+          const actions = canAct
+            ? [
+                { label: 'Run next', tone: 'accent' as const, onPress: () => queue.run(m.id, { type: 'job', action: 'top', job: j.id }) },
+                { label: 'Remove', tone: 'danger' as const, destructive: true, onPress: () => queue.run(m.id, { type: 'job', action: 'remove', job: j.id }) },
+              ]
+            : []
+          return (
+            <SwipeActions key={j.id} actions={actions} testID={`swipe-${j.id}`}>
+              <TaskRow machine={m.id} job={j} position={i + 1} actions={actions} />
+            </SwipeActions>
+          )
+        })}
         {m.queued.length === 0 ? <Row title={<Txt tone="soft">Empty</Txt>} /> : null}
         {canAct ? <Row testID="machine-new" title="New task here" tone="accent" onPress={() => router.push({ pathname: '/new', params: { machine: m.id } })} /> : null}
       </Group>

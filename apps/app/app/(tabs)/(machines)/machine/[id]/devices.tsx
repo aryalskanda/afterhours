@@ -57,7 +57,7 @@ function Invite(props: { machine: string; name: string; onUsed: () => void }) {
     return (
       <Group header="Invite a device" footer={ROLE_HINT[role]} testID="invite">
         <Block>
-          <Segmented options={ROLES} value={role} onChange={setRole} testID="invite-role" />
+          <Segmented options={ROLES} value={role} onChange={setRole} label="Role" testID="invite-role" />
         </Block>
         <Row title={offer ? 'That link expired. Make another' : 'Make a pairing link'} tone="accent" onPress={() => void create()} testID="invite-create" />
         {error ? <Row title={<Txt tone="danger">{error}</Txt>} /> : null}

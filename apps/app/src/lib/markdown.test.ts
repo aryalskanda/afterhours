@@ -42,6 +42,16 @@ describe('blocks', () => {
     expect(parse('```\nunfinished')).toEqual([{ kind: 'code', lang: '', text: 'unfinished' }])
   })
 
+  test('an image on its own line is an image (https only); inside text, a link', () => {
+    expect(parse('Before\n![The new settings](https://example.com/s.png)\nAfter')).toEqual([
+      { kind: 'paragraph', spans: [{ text: 'Before' }] },
+      { kind: 'image', alt: 'The new settings', src: 'https://example.com/s.png' },
+      { kind: 'paragraph', spans: [{ text: 'After' }] },
+    ])
+    expect(parse('![x](http://example.com/s.png)')[0]).toEqual({ kind: 'paragraph', spans: [{ text: 'x', href: 'http://example.com/s.png' }] })
+    expect(inline('See ![](https://example.com/a.png) here')).toEqual([{ text: 'See ' }, { text: 'image', href: 'https://example.com/a.png' }, { text: ' here' }])
+  })
+
   test('plain text for previews', () => {
     expect(plainText('## Steps\n1. Add a **theme** store\n2. Wire the `ThemeToggle`')).toBe('Steps\nAdd a theme store\nWire the ThemeToggle')
   })

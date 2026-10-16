@@ -103,7 +103,7 @@ export default function AllTasks() {
       </Group>
       <Group>
         <Block>
-          <Segmented options={STATUSES} value={status} onChange={setStatus} testID="tasks-status" />
+          <Segmented options={STATUSES} value={status} onChange={setStatus} label="How it ended" testID="tasks-status" />
         </Block>
       </Group>
       {!online ? <Note text={`${m.name} is offline. Its tasks show when it’s back.`} /> : null}

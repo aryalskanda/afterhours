@@ -20,6 +20,7 @@ import {
   Snapshot,
 } from '@afterhours/protocol'
 import { openBackup, sealBackup } from './backup'
+import { DEMO_ID, DEMO_RELAY, DemoConnection } from './demo'
 import { DEFAULT_NOTIFY, toPushPrefs, type NotifyPrefs } from './push'
 import { applyActivity, applyEvent, applySnapshot, applyState, machineState, saved, supports, wantsAttention, withStatus, type MachineState, type SavedMachine } from './state'
 
@@ -43,6 +44,9 @@ export interface Prefs {
   browserNotifications: boolean
   /** What notifications (pushes, the browser's, the desktop's) are about, and what they say. */
   notify: NotifyPrefs
+  /** Light, dark, or as the system is. */
+  appearance: 'system' | 'light' | 'dark'
+  textSize: 'smaller' | 'default' | 'larger'
 }
 
 /** A notice as it happens on a machine (not the replay of what you missed). */
@@ -155,7 +159,7 @@ export class Hub {
     deviceName: '',
     fingerprint: '',
     machines: [],
-    prefs: { lockApp: false, confirmAllow: false, browserNotifications: false, notify: DEFAULT_NOTIFY },
+    prefs: { lockApp: false, confirmAllow: false, browserNotifications: false, notify: DEFAULT_NOTIFY, appearance: 'system', textSize: 'default' },
     attention: null,
     saved: [],
     outbox: [],
@@ -229,7 +233,8 @@ export class Hub {
   }
 
   private connect(m: SavedMachine): void {
-    const conn = this.client!.connect({ id: m.id, name: m.name, relay: m.relay }, { lastSeq: m.lastSeq })
+    // The demo machine lives in the app; every other one is reached through its relay.
+    const conn = m.relay === DEMO_RELAY ? (new DemoConnection({ name: m.name }) as unknown as MachineConnection) : this.client!.connect({ id: m.id, name: m.name, relay: m.relay }, { lastSeq: m.lastSeq })
     this.conns.set(m.id, conn)
     conn.on('status', (status, detail) => {
       this.updateMachine(m.id, x => withStatus(x, status, detail))
@@ -262,6 +267,19 @@ export class Hub {
     })
   }
 
+  /** A machine inside the app, to try it without one: nothing runs, nothing leaves the device. */
+  async addDemo(): Promise<void> {
+    if (this.state.machines.some(m => m.id === DEMO_ID)) return
+    const record: SavedMachine = { id: DEMO_ID, name: 'Demo machine', relay: DEMO_RELAY, role: 'owner', lastSeq: 0, addedAt: this.now() }
+    this.set({ machines: [...this.state.machines, machineState(record)] })
+    await this.save()
+    this.connect(record)
+  }
+
+  private closeDemo(id: string): void {
+    if (id === DEMO_ID) (this.conns.get(id) as unknown as DemoConnection | undefined)?.close()
+  }
+
   /** Pairs with the machine in a pairing link; resolves once the machine says yes. */
   async pair(link: string): Promise<Paired> {
     if (!this.client) throw new Error('Not ready yet.')
@@ -285,14 +303,15 @@ export class Hub {
    */
   async forget(id: string): Promise<void> {
     const conn = this.conns.get(id)
+    this.closeDemo(id)
     this.conns.delete(id)
     this.set({ machines: this.state.machines.filter(m => m.id !== id) })
     await this.save()
     if (this.state.outbox.some(x => x.machine === id)) await this.setOutbox(this.state.outbox.filter(x => x.machine !== id))
-    if (conn && conn.status === 'connected') {
+    if (conn && conn.status === 'connected' && id !== DEMO_ID) {
       await conn.request({ type: 'devices.remove', device: this.state.deviceId }, { timeoutMs: 4000 }).catch(() => undefined)
     }
-    this.client?.disconnect(id)
+    if (id !== DEMO_ID) this.client?.disconnect(id)
   }
 
   /** Sends a request to a machine. Never throws: a failure comes back as a result that says why. */
@@ -497,6 +516,7 @@ export class Hub {
     await this.starting
     this.client?.close()
     this.client = null
+    for (const id of this.conns.keys()) this.closeDemo(id)
     this.conns.clear()
     const s = this.o.storage
     await s.setSecret(KEYS.identity, c.identity)
@@ -536,6 +556,7 @@ export class Hub {
 
   close(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
+    for (const id of this.conns.keys()) this.closeDemo(id)
     this.client?.close()
   }
 }

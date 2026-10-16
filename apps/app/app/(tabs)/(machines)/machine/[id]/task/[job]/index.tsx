@@ -180,11 +180,12 @@ export default function TaskScreen() {
         <Group header="Edit" testID="task-editor">
           <TextArea value={editing.prompt} onChangeText={prompt => setEditing({ ...editing, prompt })} minHeight={110} testID="task-edit-prompt" />
           <Block>
-            <Segmented options={[...new Set([...m.models, editing.model])].map(x => ({ value: x, label: modelLabel(x) }))} value={editing.model} onChange={model => setEditing({ ...editing, model })} testID="task-edit-model" />
+            <Segmented options={[...new Set([...m.models, editing.model])].map(x => ({ value: x, label: modelLabel(x) }))} value={editing.model} onChange={model => setEditing({ ...editing, model })} label="Model" testID="task-edit-model" />
             <Segmented
               options={(['low', 'medium', 'high', 'xhigh', 'max'] as const).map(x => ({ value: x, label: effortLabel(x) }))}
               value={editing.effort}
               onChange={effort => setEditing({ ...editing, effort })}
+              label="Effort"
               testID="task-edit-effort"
             />
             <HStack>
@@ -226,7 +227,7 @@ export default function TaskScreen() {
       {act.outcome ? <Note ok={act.outcome.ok} text={act.outcome.text} /> : null}
       {error && detail ? <Note ok={false} text={error} /> : null}
 
-      {views.length > 1 ? <Segmented options={views} value={shown} onChange={setView} testID="task-view" /> : null}
+      {views.length > 1 ? <Segmented options={views} value={shown} onChange={setView} label="View" testID="task-view" /> : null}
 
       {shown === 'activity' ? (
         j.status === 'queued' ? (

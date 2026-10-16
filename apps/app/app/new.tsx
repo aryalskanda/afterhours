@@ -505,22 +505,22 @@ export default function NewTask() {
 
       <Group header="Plan" footer={HOW.find(h => h.value === how)?.hint}>
         <Block>
-          <Segmented options={HOW} value={how} onChange={v => change(withHow({ ...choices, mode }, v))} testID="new-how" />
+          <Segmented options={HOW} value={how} onChange={v => change(withHow({ ...choices, mode }, v))} label="Plan" testID="new-how" />
         </Block>
       </Group>
 
       {how !== 'ask' ? (
         <Group header="Permissions" footer={`${MODES.find(x => x.value === mode)?.hint ?? ''}${allowBypass ? '' : ` ${m.name} doesn’t allow No prompts from apps.`}`}>
           <Block>
-            <Segmented options={allowBypass ? MODES : MODES.filter(x => x.value !== 'bypassPermissions')} value={mode} onChange={v => change({ ...choices, mode: v })} testID="new-mode" />
+            <Segmented options={allowBypass ? MODES : MODES.filter(x => x.value !== 'bypassPermissions')} value={mode} onChange={v => change({ ...choices, mode: v })} label="Permissions" testID="new-mode" />
           </Block>
         </Group>
       ) : null}
 
       <Group header="Model and effort">
         <Block>
-          <Segmented options={models.map(x => ({ value: x, label: modelLabel(x) }))} value={choices.model} onChange={v => change({ ...choices, model: v })} testID="new-model" />
-          <Segmented options={EFFORTS.map(x => ({ value: x, label: effortLabel(x) }))} value={choices.effort} onChange={v => change({ ...choices, effort: v })} testID="new-effort" />
+          <Segmented options={models.map(x => ({ value: x, label: modelLabel(x) }))} value={choices.model} onChange={v => change({ ...choices, model: v })} label="Model" testID="new-model" />
+          <Segmented options={EFFORTS.map(x => ({ value: x, label: effortLabel(x) }))} value={choices.effort} onChange={v => change({ ...choices, effort: v })} label="Effort" testID="new-effort" />
         </Block>
       </Group>
 
@@ -539,6 +539,7 @@ export default function NewTask() {
               ]}
               value={ways}
               onChange={setWays}
+              label="Three ways"
               testID="new-ways"
             />
           </Block>
@@ -548,7 +549,7 @@ export default function NewTask() {
       {supports(m, 'schedule') ? (
         <Group header="Start" footer={whenFooter} testID="new-start">
           <Block>
-            <Segmented options={whenOptions} value={whenNow} onChange={setWhen} testID="new-when" />
+            <Segmented options={whenOptions} value={whenNow} onChange={setWhen} label="When it starts" testID="new-when" />
           </Block>
           {whenNow === 'time' ? <FieldRow label="At" placeholder="2:30 am" value={at} onChangeText={setAt} autoCapitalize="none" autoCorrect={false} testID="new-at" /> : null}
           {whenNow === 'time' ? <SwitchRow title="Every day" value={daily} onChange={setDaily} testID="new-daily" /> : null}
@@ -580,6 +581,7 @@ export default function NewTask() {
               ]}
               value={String(limit ?? 0)}
               onChange={v => setLimit(Number(v) || null)}
+              label="Time limit"
               testID="new-limit"
             />
           </Block>

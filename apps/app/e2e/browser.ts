@@ -38,6 +38,8 @@ export interface Driver {
   /** The header's back button, as a person would go back (the web's history differs with tabs). */
   back(): Promise<void>
   shot(name: string): Promise<void>
+  /** Controls a screen reader can't name (buttons, switches, radios, fields, menu items), as role: nearby text. */
+  unnamed(): Promise<string[]>
   check(name: string, run: () => Promise<void>): Promise<void>
   failed(): boolean
 }
@@ -123,6 +125,17 @@ export function attach(browser: Browser, page: Page, out: string): Driver {
           throw new Error('no back button')
         })
       await (handle.asElement() as ElementHandle<Element>).click()
+    },
+    async unnamed() {
+      const tree = await page.accessibility.snapshot({ interestingOnly: true })
+      const roles = new Set(['button', 'switch', 'radio', 'checkbox', 'link', 'menuitem', 'textbox', 'combobox', 'slider', 'tab'])
+      const out: string[] = []
+      const walk = (n: { role?: string; name?: string; children?: unknown[] }, parent: string) => {
+        if (n.role && roles.has(n.role) && !(n.name ?? '').trim()) out.push(`${n.role} in "${parent.slice(0, 60)}"`)
+        for (const child of (n.children ?? []) as (typeof n)[]) walk(child, n.name || parent)
+      }
+      if (tree) walk(tree, '')
+      return out
     },
     async shot(name) {
       await page.screenshot({ path: join(out, `${name}.png`) })

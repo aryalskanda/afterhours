@@ -405,7 +405,7 @@ function ReviewCard(props: Props) {
           <Txt v="footnote" tone="soft">
             Once approved
           </Txt>
-          <Segmented options={modes.map(x => ({ value: x, label: permissionsLabel(x) }))} value={mode} onChange={setMode} testID={`plan-mode-${need.approval.code}`} />
+          <Segmented options={modes.map(x => ({ value: x, label: permissionsLabel(x) }))} value={mode} onChange={setMode} label="How it works on" testID={`plan-mode-${need.approval.code}`} />
         </Block>
       ) : null}
       <Answering done={done} error={error}>

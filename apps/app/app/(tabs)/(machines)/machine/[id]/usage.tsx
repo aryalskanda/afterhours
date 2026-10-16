@@ -108,7 +108,7 @@ export default function Usage() {
       {supports(m, 'limits.history') ? (
         <Group footer={line ?? (history.data ? 'Not enough use lately to tell when it runs out.' : undefined)} testID="usage-history">
           <Block>
-            <Segmented options={WINDOWS} value={w} onChange={setW} testID="usage-window" />
+            <Segmented options={WINDOWS} value={w} onChange={setW} label="Limit" testID="usage-window" />
             {history.data ? (
               samples.length > 0 ? (
                 <Chart bars={bars} from={span.from} label={`${w === 'fiveHour' ? '5-hour' : 'Weekly'} limit, ${span.from} until now: at most ${Math.round(peak)}%.`} />

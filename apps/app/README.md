@@ -35,6 +35,8 @@ The app for your Afterhours machines, on iPhone, Android and the web. The deskto
   - Back up and restore: this device's key, machines, name and settings sealed with a passphrase (scrypt, XChaCha20-Poly1305), to restore on a new phone, which then is this device (machines stop pushing to the old one).
   - Check the connection (each machine's round trip, through which relay), Report a problem (to a machine's owner, into its `app-reports.log`, showing what's sent first; a screen that breaks offers the same), Help, What's new.
 
+- **Everywhere**: a long press on a task offers Open, Copy the prompt and, in a queue, Run next and Remove (on a phone, swiping a queued task left shows those two); screen readers get the same as an action. Claude's code is coloured, with Copy; tables are a grid in a wide window; images from the web show when you ask (the desktop app opens them in the browser). Appearance: system, light or dark, and the text a size smaller or larger. On an iPad held wide, the tabs are a sidebar. No machine yet? Try the demo machine: it lives in the app, nothing runs and nothing leaves the device.
+
 A banner (and a buzz) tells you when something new needs you while the app is open. Pushes for when it's closed need the app built under your Expo account (below); until then, Settings says so.
 
 ## Run it
@@ -87,7 +89,7 @@ npm run e2e:web             # headless Chrome against the scripted machine, thro
 npm run e2e:engine          # headless Chrome against a private Afterhours daemon (no Claude task runs)
 ```
 
-The end-to-end runs pair, answer a permission, three questions and a plan, queue a task, and check what the machine received, not just the screen. Screenshots land in `e2e/out/` and `e2e/out-engine/`. Chrome: set `CHROME` if it isn't at the usual macOS path.
+The end-to-end runs pair, answer a permission, three questions and a plan, queue a task, and check what the machine received, not just the screen. They also walk fifteen screens through the browser's accessibility tree: every button, switch, choice and field must have a name a screen reader can say. Screenshots land in `e2e/out/` and `e2e/out-engine/`. Chrome: set `CHROME` if it isn't at the usual macOS path.
 
 Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a Pixel 3a emulator (Android 14). Pairing through a relay, Needs you, answering by touch, the machine and task screens.
 
@@ -101,6 +103,7 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 - `src/lib/hub.ts` owns the connections (the protocol's `AppClient`), the paired machines and what they report, and keeps what must survive a restart. Screens read it with `useSyncExternalStore`.
 - `src/lib/state.ts`: pure functions from a snapshot, a queue change or an event to a machine's state, plus "needs you", a task's timeline, what runs and finished across machines, and the free machine.
 - `src/lib/forecast.ts`: usage limits charted and forecast; `src/lib/risk.ts`: what a permission request does and what to look at twice; `src/lib/qr.ts`: QR codes drawn with plain views (`uqr`).
+- `src/lib/highlight.ts`: code colours; `src/components/Menu.tsx`: long-press menus (the system's action sheet on iPhone) and swipe actions (`react-native-gesture-handler`); `src/lib/demo.ts`: the demo machine.
 - `src/lib/push.ts`: what notifications are about and say, where they open, what their buttons answer; `src/notifications.ts`: push on phones (`expo-notifications`); `src/lib/backup.ts`: sealed backups; `src/lib/problems.ts` and `src/components/Report.tsx`: problem reports.
 - `src/lib/markdown.ts` and `src/components/Markdown.tsx`: Claude's Markdown, drawn natively. Tables become one entry per row, which reads better on a phone.
 - `src/lib/results.ts`: what machines send back, checked before use (a machine may run another version).
