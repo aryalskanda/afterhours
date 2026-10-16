@@ -517,8 +517,9 @@ try {
     await shot('16-settings')
   })
 
-  await check('browser notifications: switched on in Settings; a request while the tab is hidden shows one', async () => {
+  await check('notifications: on in Settings; a request while the tab is hidden shows one, in full or not, never in quiet hours', async () => {
     await d.browser.defaultBrowserContext().overridePermissions(base, ['notifications'])
+    await tap('settings-notifications')
     await tap('browser-notifications')
     await until(async () => (await page.evaluate(() => localStorage.getItem('afterhours.prefs')))?.includes('"browserNotifications":true'), 'the setting')
     // A hidden tab, and a record of the notifications it shows.
@@ -545,6 +546,96 @@ try {
       return list.length > 0 ? list : null
     }, 'a notification')
     if (shown[0] !== `build-box: #${active.id} wants to use Edit`) throw new Error(`showed ${JSON.stringify(shown)}`)
+    await shot('16b-notifications')
+    // Without details: only that it needs you.
+    await tap('notify-details')
+    await until(async () => (await page.evaluate(() => localStorage.getItem('afterhours.prefs')))?.includes('"details":false'), 'details off')
+    const ask = (code: string) =>
+      m.ask(
+        { code, job: active.id, kind: 'permission', tool: 'Bash', detail: 'npm run deploy', payload: null, createdAt: Date.now(), expiresAt: Date.now() + 900_000 },
+        { type: 'permission', job: active, code, tool: 'Bash', detail: 'npm run deploy', minutes: 15 },
+        `🔐 #${active.id} wants to use Bash: npm run deploy`,
+      )
+    ask('perm4')
+    await until(async () => (await page.evaluate(() => (window as unknown as { shown: string[] }).shown)).length === 2, 'a second notification')
+    const second = (await page.evaluate(() => (window as unknown as { shown: string[] }).shown))[1]
+    if (second !== `build-box: #${active.id} needs you.`) throw new Error(`showed ${second}`)
+    // Quiet hours around now: nothing.
+    await tap('notify-quiet')
+    const now = new Date()
+    const hhmm = (d: Date) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    await replace('quiet-from', hhmm(new Date(now.getTime() - 3_600_000)))
+    await page.keyboard.press('Enter')
+    await replace('quiet-to', hhmm(new Date(now.getTime() + 3_600_000)))
+    await page.keyboard.press('Enter')
+    await until(async () => (await page.evaluate(() => localStorage.getItem('afterhours.prefs')))?.includes(`"start":${(now.getHours() + 23) % 24 * 60 + now.getMinutes()}`), 'quiet hours saved')
+    ask('perm5')
+    await Bun.sleep(800)
+    const after = await page.evaluate(() => (window as unknown as { shown: string[] }).shown)
+    if (after.length !== 2) throw new Error(`notified in quiet hours: ${JSON.stringify(after)}`)
+  })
+
+  await check('a problem reported to the machine’s owner; the connection checked; help and what’s new', async () => {
+    await page.goto(`${base}/settings`)
+    await tap('settings-report')
+    await typeInto('report-text', 'The diff screen stays blank on a big file.')
+    await tap('report-show')
+    await see('App: afterhours-app/')
+    await shot('28-report')
+    await tap('report-send')
+    await until(() => m.reports.find(r => r.includes('The diff screen stays blank on a big file.') && r.includes('App: afterhours-app/')), 'the report on the machine')
+    await see('Thanks.')
+    await page.goto(`${base}/settings`)
+    await tap('settings-connection')
+    await until(async () => /\d+ ms/.test(await page.$eval('[data-testid="connection-build-box"]', el => el.textContent ?? '')), 'a round trip')
+    await shot('29-connection')
+    await page.goto(`${base}/settings`)
+    await tap('settings-whats-new')
+    await see('Version')
+    await see('Backups')
+    await page.goto(`${base}/settings`)
+    await tap('settings-help')
+    await see('A lost phone')
+  })
+
+  await check('a backup restored on a new phone is the same device, with its machines', async () => {
+    await page.goto(`${base}/settings`)
+    await page.waitForFunction(() => /\w{4}/.test(document.querySelector('[data-testid="fingerprint"]')?.textContent ?? ''))
+    const key = await page.$eval('[data-testid="fingerprint"]', el => el.textContent)
+    await tap('settings-backup')
+    await typeInto('backup-pass', 'correct horse battery')
+    await typeInto('backup-again', 'correct horse battery')
+    await tap('backup-make')
+    await visible('backup-made', 20_000)
+    const text = await page.$eval('[data-testid="backup-text"]', el => el.textContent ?? '')
+    if (!text.includes('"afterhours":"backup"') || text.includes('build-box')) throw new Error(`not a sealed backup: ${text.slice(0, 80)}`)
+    await shot('30-backup')
+    // Another browser, as a new phone: nothing paired, then the backup.
+    const other = await d.browser.createBrowserContext()
+    const phone = await other.newPage()
+    try {
+      await phone.setViewport({ width: 430, height: 900, deviceScaleFactor: 2 })
+      await phone.goto(`${base}/backup`)
+      await phone.waitForSelector('[data-testid="restore-text"]', { visible: true })
+      await phone.click('[data-testid="restore-text"]')
+      await phone.evaluate((value: string) => {
+        const el = document.querySelector('[data-testid="restore-text"]') as HTMLTextAreaElement
+        const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+        set.call(el, value)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }, text)
+      await phone.click('[data-testid="restore-pass"]')
+      await phone.type('[data-testid="restore-pass"]', 'correct horse battery')
+      await phone.click('[data-testid="restore-go"]')
+      await phone.click('[data-testid="restore-go"]')
+      await phone.waitForFunction(() => document.body.innerText.includes('Restored: this is'), { timeout: 20_000 })
+      await phone.goto(`${base}/settings`)
+      await phone.waitForFunction((k: string | null) => document.querySelector('[data-testid="fingerprint"]')?.textContent === k, { timeout: 15_000 }, key)
+      await phone.waitForFunction(() => document.body.innerText.includes('Online'), { timeout: 15_000 })
+      await phone.screenshot({ path: join(out, '31-restored.png') })
+    } finally {
+      await other.close()
+    }
   })
 
   await check('a device the machine removed says so', async () => {

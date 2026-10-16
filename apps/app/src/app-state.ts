@@ -8,6 +8,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Platform } from 'react-native'
 import { desktop, desktopPlatform } from './desktop'
 import { Hub, type HubState, type Storage } from './lib/hub'
+import { noteProblem } from './lib/problems'
 import type { MachineState } from './lib/state'
 
 const local = {
@@ -46,7 +47,22 @@ export const hub = new Hub({
   defaultName: defaultName(),
   platform: desktopPlatform ?? Platform.OS,
   app: `afterhours-app/${APP_VERSION}`,
+  // Connection lines, kept for a problem report.
+  log: noteProblem,
 })
+
+// Errors nobody caught, kept for a problem report too.
+const errors = (globalThis as { ErrorUtils?: { getGlobalHandler(): (e: Error, fatal?: boolean) => void; setGlobalHandler(h: (e: Error, fatal?: boolean) => void): void } }).ErrorUtils
+if (errors) {
+  const previous = errors.getGlobalHandler()
+  errors.setGlobalHandler((e, fatal) => {
+    noteProblem(`${fatal ? 'fatal' : 'error'}: ${e?.message ?? e}`)
+    previous(e, fatal)
+  })
+} else if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('error', e => noteProblem(`error: ${e.message}`))
+  window.addEventListener('unhandledrejection', e => noteProblem(`unhandled: ${e.reason instanceof Error ? e.reason.message : String(e.reason)}`))
+}
 
 export function useHub(): HubState {
   return useSyncExternalStore(hub.subscribe, hub.getState, hub.getState)

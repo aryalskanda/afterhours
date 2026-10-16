@@ -276,6 +276,20 @@ export const QueueOptions = z.object({
 })
 export type QueueOptions = z.infer<typeof QueueOptions>
 
+/**
+ * What a device wants pushed to it. Pushes leave the end-to-end encryption (Expo, then Apple or
+ * Google carry them), so `details` says whether they hold the request itself or only that a task
+ * needs you.
+ */
+export const PushPrefs = z.object({
+  /** Requests (permissions, questions, plans, folder trust); finished tasks; failed or stuck ones; usage limits. */
+  events: z.object({ requests: z.boolean(), done: z.boolean(), failed: z.boolean(), limits: z.boolean() }),
+  /** No pushes from `start` until `end` (minutes after midnight) in the device's time zone. */
+  quiet: z.object({ start: z.number().int().min(0).max(1439), end: z.number().int().min(0).max(1439), tz: z.string().min(1).max(64) }).nullable(),
+  details: z.boolean(),
+})
+export type PushPrefs = z.infer<typeof PushPrefs>
+
 const withId = <T extends z.ZodRawShape>(shape: T) => z.object({ id: RequestId, ...shape })
 
 export const Request = z.discriminatedUnion('type', [
@@ -368,6 +382,10 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('audit'), limit: z.number().int().min(1).max(500).optional() }),
   /** Owners: a pairing link for another device, with its role (approved by asking for it). */
   withId({ type: z.literal('pair.offer'), role: Role }),
+  /** This device's push token (an Expo push token) and what it wants pushed; `token: null` stops them. */
+  withId({ type: z.literal('push.register'), token: z.string().min(10).max(200).nullable(), prefs: PushPrefs }),
+  /** A problem with the app, written to the machine's app-reports log for its owner. */
+  withId({ type: z.literal('report'), text: z.string().min(1).max(20_000), app: z.string().max(80), platform: z.string().max(40) }),
   /** A photo or file for a task's prompt, base64 (up to about 5 MB). Gives back its path on the machine. */
   withId({ type: z.literal('upload'), name: z.string().min(1).max(200), data: z.string().min(1).max(7_000_000) }),
   /** The slash commands and skills a folder's tasks can use, the project's and yours. */

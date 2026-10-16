@@ -19,7 +19,9 @@ import {
   type SocketFactory,
   Snapshot,
 } from '@afterhours/protocol'
-import { applyActivity, applyEvent, applySnapshot, applyState, machineState, saved, wantsAttention, withStatus, type MachineState, type SavedMachine } from './state'
+import { openBackup, sealBackup } from './backup'
+import { DEFAULT_NOTIFY, toPushPrefs, type NotifyPrefs } from './push'
+import { applyActivity, applyEvent, applySnapshot, applyState, machineState, saved, supports, wantsAttention, withStatus, type MachineState, type SavedMachine } from './state'
 
 /** A request as screens write it (the hub adds the id). */
 export type RequestBody = Request extends infer R ? (R extends { id: string } ? Omit<R, 'id'> : never) : never
@@ -39,6 +41,18 @@ export interface Prefs {
   confirmAllow: boolean
   /** In a browser: system notifications while the tab is in the background. */
   browserNotifications: boolean
+  /** What notifications (pushes, the browser's, the desktop's) are about, and what they say. */
+  notify: NotifyPrefs
+}
+
+/** A notice as it happens on a machine (not the replay of what you missed). */
+export interface News {
+  machine: string
+  machineName: string
+  type: string
+  text: string
+  job: number | null
+  code: string | null
 }
 
 /** What a new task on a machine starts with: what you used last time there. */
@@ -77,6 +91,8 @@ export interface HubState {
   attention: Attention | null
   /** When you last left the app: what finished since is "while you were away". Null once read. */
   away: number | null
+  /** This device's push token (phones), and why there's none when that failed. */
+  push: { token: string | null; error: string | null }
 }
 
 export interface HubOptions {
@@ -99,6 +115,8 @@ const KEYS = {
   drafts: 'afterhours.drafts',
   outbox: 'afterhours.outbox',
   left: 'afterhours.leftAt',
+  push: 'afterhours.pushToken',
+  pushSent: 'afterhours.pushSent',
 }
 
 /** Away for less than this (a quick look at another app): nothing new to report. */
@@ -137,13 +155,17 @@ export class Hub {
     deviceName: '',
     fingerprint: '',
     machines: [],
-    prefs: { lockApp: false, confirmAllow: false, browserNotifications: false },
+    prefs: { lockApp: false, confirmAllow: false, browserNotifications: false, notify: DEFAULT_NOTIFY },
     attention: null,
     saved: [],
     outbox: [],
     away: null,
+    push: { token: null, error: null },
   }
   private leftAt: number | null = null
+  private readonly newsListeners = new Set<(n: News) => void>()
+  /** What each machine was last asked to push (kept), so it's asked again only when that changes. */
+  private pushSent = new Map<string, string>()
   private drafts: Record<string, Draft> = {}
 
   constructor(private readonly o: HubOptions) {}
@@ -194,10 +216,12 @@ export class Hub {
       const saved = JSON.parse((await s.get(KEYS.saved)) ?? '[]') as string[]
       const outbox = JSON.parse((await s.get(KEYS.outbox)) ?? '[]') as Outgoing[]
       const leftAt = Number(await s.get(KEYS.left)) || null
+      const pushToken = (await s.get(KEYS.push)) || null
+      this.pushSent = new Map(Object.entries(JSON.parse((await s.get(KEYS.pushSent)) ?? '{}') as Record<string, string>))
       const id = peerId(identity.publicKey)
       this.client = new AppClient({ identity, device: { name, platform: this.o.platform, app: this.o.app }, socket: this.o.socket, log: this.o.log })
       this.startedAt = this.now()
-      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox, away: leftAt })
+      this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox, away: leftAt, push: { token: pushToken, error: null } })
       for (const m of machines) this.connect(m)
     } catch (err) {
       this.set({ ready: true, error: err instanceof Error ? err.message : String(err) })
@@ -214,6 +238,7 @@ export class Hub {
     conn.on('snapshot', snapshot => {
       this.updateMachine(m.id, x => applySnapshot(x, snapshot))
       this.saveSoon()
+      void this.registerPush(m.id)
     })
     conn.on('state', s => this.updateMachine(m.id, x => applyState(x, s)))
     conn.on('activity', a => this.updateMachine(m.id, x => applyActivity(x, a)))
@@ -224,11 +249,16 @@ export class Hub {
       const shown = this.state.attention
       if (e.notice.type === 'resolved' && shown?.machine === m.id && shown.code === e.notice.code) this.set({ attention: null })
       // Replayed history isn't news; only what happens while the app is open gets a banner.
-      if (wantsAttention(e.notice) && e.at >= this.startedAt - 5_000 && this.now() - e.at < 120_000) {
-        const machine = this.state.machines.find(x => x.id === m.id)
-        const code = 'code' in e.notice && typeof e.notice.code === 'string' ? e.notice.code : undefined
+      const live = e.at >= this.startedAt - 5_000 && this.now() - e.at < 120_000
+      if (!live) return
+      const machine = this.state.machines.find(x => x.id === m.id)
+      const code = 'code' in e.notice && typeof e.notice.code === 'string' ? e.notice.code : undefined
+      if (wantsAttention(e.notice)) {
         this.set({ attention: { id: ++this.attentionSeq, machine: m.id, machineName: machine?.name ?? m.name, text: e.text, type: e.notice.type, ...(code ? { code } : {}) } })
       }
+      const job = 'job' in e.notice ? (typeof e.notice.job === 'number' ? e.notice.job : (e.notice.job?.id ?? null)) : null
+      const news: News = { machine: m.id, machineName: machine?.name ?? m.name, type: e.notice.type, text: e.text, job, code: code ?? null }
+      for (const l of this.newsListeners) l(news)
     })
   }
 
@@ -326,6 +356,43 @@ export class Hub {
     const prefs = { ...this.state.prefs, ...patch }
     this.set({ prefs })
     await this.o.storage.set(KEYS.prefs, JSON.stringify(prefs))
+    if (patch.notify) await this.registerPushEverywhere()
+  }
+
+  /** Every notice as it happens on any machine (for system notifications). */
+  onNews(listener: (n: News) => void): () => void {
+    this.newsListeners.add(listener)
+    return () => this.newsListeners.delete(listener)
+  }
+
+  // --- push ----------------------------------------------------------------------------------
+
+  /** This device's push token (null: no pushes), and why there's none; machines are told. */
+  async setPush(token: string | null, error: string | null = null): Promise<void> {
+    this.set({ push: { token, error } })
+    await this.o.storage.set(KEYS.push, token ?? '')
+    await this.registerPushEverywhere()
+  }
+
+  private async registerPushEverywhere(): Promise<void> {
+    await Promise.all(this.state.machines.map(m => this.registerPush(m.id)))
+  }
+
+  /** Tells a machine where to push and what, unless it already knows. */
+  private async registerPush(id: string): Promise<void> {
+    const m = this.state.machines.find(x => x.id === id)
+    if (!m || !supports(m, 'push') || this.conns.get(id)?.status !== 'connected') return
+    const token = this.state.push.token
+    // Nothing to stop on a machine that was never told.
+    if (!token && !this.pushSent.has(id)) return
+    const prefs = toPushPrefs(this.state.prefs.notify, timeZone())
+    const key = JSON.stringify({ token, prefs })
+    if (this.pushSent.get(id) === key) return
+    this.pushSent.set(id, key)
+    const r = await this.request(id, { type: 'push.register', token, prefs }, { timeoutMs: 15_000 })
+    if (!r.ok) this.pushSent.delete(id)
+    else if (!token) this.pushSent.delete(id)
+    await this.o.storage.set(KEYS.pushSent, JSON.stringify(Object.fromEntries(this.pushSent)))
   }
 
   /** The choices a new task on this machine starts with. */
@@ -410,6 +477,47 @@ export class Hub {
     }
   }
 
+  // --- backup -------------------------------------------------------------------------------
+
+  /** This device sealed with a passphrase: its key, machines, name and settings. */
+  async backup(passphrase: string): Promise<string> {
+    const identity = await this.o.storage.getSecret(KEYS.identity)
+    if (!identity) throw new Error('This device has no key yet.')
+    const { deviceName, machines, prefs, saved: prompts } = this.state
+    return sealBackup({ identity, deviceName, machines: machines.map(saved), prefs, saved: prompts }, passphrase)
+  }
+
+  /**
+   * Becomes the device in a backup: its key, machines, name and settings replace this one's, and
+   * it connects as that device. Machines stop pushing to the phone the backup came from.
+   */
+  async restore(text: string, passphrase: string): Promise<void> {
+    const c = await openBackup(text, passphrase)
+    decodeIdentity(c.identity)
+    await this.starting
+    this.client?.close()
+    this.client = null
+    this.conns.clear()
+    const s = this.o.storage
+    await s.setSecret(KEYS.identity, c.identity)
+    await s.set(KEYS.machines, JSON.stringify(c.machines))
+    await s.set(KEYS.name, c.deviceName)
+    await s.set(KEYS.prefs, JSON.stringify({ ...c.prefs, lockApp: this.state.prefs.lockApp, browserNotifications: this.state.prefs.browserNotifications }))
+    await s.set(KEYS.saved, JSON.stringify(c.saved))
+    await s.set(KEYS.push, '')
+    // Every machine is told once to stop pushing: the old phone's token is still on file there.
+    await s.set(KEYS.pushSent, JSON.stringify(Object.fromEntries(c.machines.map(m => [m.id, 'restored']))))
+    this.set({ machines: [], attention: null })
+    this.starting = this.start()
+    await this.starting
+  }
+
+  /** A line for the banner, about a machine ("Allowed #14's request."). */
+  tell(machine: string, text: string): void {
+    const m = this.state.machines.find(x => x.id === machine)
+    this.set({ attention: { id: ++this.attentionSeq, machine, machineName: m?.name ?? 'Afterhours', text, type: 'info' } })
+  }
+
   dismissAttention(id: number): void {
     if (this.state.attention?.id === id) this.set({ attention: null })
   }
@@ -429,5 +537,14 @@ export class Hub {
   close(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer)
     this.client?.close()
+  }
+}
+
+/** This device's time zone, for quiet hours on the machine's side. */
+function timeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
   }
 }

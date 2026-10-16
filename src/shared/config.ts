@@ -16,6 +16,8 @@ export const paths = {
   db: join(CQ_HOME, 'state.db'),
   logs: join(CQ_HOME, 'logs'),
   log: join(CQ_HOME, 'logs', 'cqd.log'),
+  /** Problem reports sent from the apps. */
+  appReports: join(CQ_HOME, 'logs', 'app-reports.log'),
   jobs: join(CQ_HOME, 'jobs'),
   /** Photos and files apps attach to tasks (kept 14 days). */
   uploads: join(CQ_HOME, 'uploads'),

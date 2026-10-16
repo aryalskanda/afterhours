@@ -205,6 +205,17 @@ try {
     await gone('lost-Lost phone')
   })
 
+  await check('a problem report lands in the machine’s app-reports log', async () => {
+    await page.goto(`${base}/settings`)
+    await tap('settings-report')
+    await typeInto('report-text', 'Checking that reports reach the owner.')
+    await tap('report-send')
+    await see('app-reports log')
+    const reports = join(home, 'logs', 'app-reports.log')
+    await until(() => existsSync(reports) && readFileSync(reports, 'utf8').includes('Checking that reports reach the owner.'), 'the report in the log')
+    if (!readFileSync(reports, 'utf8').includes('· E2E browser · afterhours-app/')) throw new Error('the report doesn’t say which device sent it')
+  })
+
   await check('removed on the machine (cq devices remove), the app says so', async () => {
     await local('/api/remote/devices/remove', { device: 'E2E browser' })
     await page.goto(base)

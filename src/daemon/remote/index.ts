@@ -27,6 +27,7 @@ import type { Runner, ToolActivity } from '../runner'
 import type { Store } from '../store'
 import { RemoteDb, type AuditEntry } from './db'
 import { Feed } from './feed'
+import { PushSender, pushesFor } from './push'
 import { publicDevice, Router, type RouterDeps } from './router'
 
 export interface RemoteDeps {
@@ -50,6 +51,10 @@ export interface RemoteDeps {
   logPath: string
   /** Exits so the service starts the engine again. */
   restart: () => void
+  /** Where problem reports from apps go. */
+  reportsPath: string
+  /** Expo's push service (tests and private runs point it at a stand-in). */
+  push?: { url?: string; receiptsUrl?: string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> }
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
@@ -78,9 +83,12 @@ export class Remote {
   private identity: Identity | null = null
   private error: string | null = null
   private prunedAt = 0
+  private receiptsAt = 0
+  readonly pusher: PushSender
 
   constructor(private readonly d: RemoteDeps) {
     this.db = new RemoteDb(d.store.db)
+    this.pusher = new PushSender({ ...d.push, gone: token => this.db.dropPushToken(token), log: d.log, now: d.now })
     this.feed = new Feed({ db: this.db, store: d.store, runner: d.runner, host: () => this.host, resolvedBy: this.resolvedBy, now: d.now })
     this.router = new Router({
       runner: d.runner,
@@ -101,6 +109,7 @@ export class Remote {
       claudeJson: d.claudeJson,
       claudePath: d.claudePath,
       logPath: d.logPath,
+      reportsPath: d.reportsPath,
       restart: d.restart,
       // An owner asking for an invite is the approval.
       openOffer: role => {
@@ -172,9 +181,14 @@ export class Remote {
     }
   }
 
-  /** The notifier sink. */
+  /** The notifier sink: to the apps listening, and pushed to the devices that asked. */
   notice(text: string, notice: Notice): void {
     this.feed.record(text, notice)
+    const targets = this.db.pushTargets()
+    if (targets.length === 0 || !this.identity) return
+    const info = this.machine()
+    const messages = pushesFor(targets, { machine: { id: info.id, name: info.name }, notice, text, now: this.d.now() })
+    if (messages.length > 0) void this.pusher.send(messages)
   }
 
   /** A tool call in the running task, to the apps listening (not stored). */
@@ -187,6 +201,10 @@ export class Remote {
     this.host?.tick()
     this.feed.tick()
     const now = this.d.now()
+    if (now - this.receiptsAt > 5 * 60_000) {
+      this.receiptsAt = now
+      void this.pusher.checkReceipts()
+    }
     if (now - this.prunedAt > 3600_000) {
       this.prunedAt = now
       this.db.prune(now)

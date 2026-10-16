@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AppClient, newIdentity, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
+import { AppClient, newIdentity, peerId, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
 import { startRelay, type Relay } from '../relay/src/server'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
@@ -45,6 +45,13 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
 }
 
 let restarts = 0
+/** What was pushed, through a stand-in for Expo's push service. */
+let pushed: { to: string; title: string; body: string; data: Record<string, unknown> }[] = []
+const expoFetch = (async (_url: string, init?: RequestInit) => {
+  const batch = JSON.parse(String(init?.body)) as typeof pushed
+  pushed.push(...batch)
+  return Response.json({ data: batch.map((_, i) => ({ status: 'ok', id: `t${pushed.length}-${i}` })) })
+}) as unknown as typeof fetch
 
 /** The conversations the fake machine has; tests add to it. */
 let conversations: Chat[] = []
@@ -105,6 +112,8 @@ function machine() {
     claudeJson: join(dir, 'claude.json'),
     claudePath: '/usr/bin/true',
     logPath: join(dir, 'cqd.log'),
+    reportsPath: join(dir, 'logs', 'app-reports.log'),
+    push: { url: 'http://expo.test/send', fetch: expoFetch, sleep: async () => {} },
     restart: () => restarts++,
     log: () => {},
     now: Date.now,
@@ -741,5 +750,47 @@ describe('machines, money, safety', () => {
     m.runner.onStatusline(job.id, line(55))
     const r = await conn.request({ type: 'limits.history' })
     expect((r.data as { samples: { fiveHour: number }[] }).samples.map(s => s.fiveHour)).toEqual([40, 55])
+  })
+})
+
+describe('pushes and problem reports', () => {
+  const prefs = { events: { requests: true, done: true, failed: true, limits: true }, quiet: null, details: true }
+
+  test('each device registers its token and choices; a removed device gets nothing more', async () => {
+    pushed = []
+    const m = machine()
+    const phone = await pairedApp(m, { name: 'Phone', role: 'viewer' })
+    const tablet = await pairedApp(m, { name: 'Tablet' })
+    expect((await phone.conn.request({ type: 'push.register', token: 'ExponentPushToken[phone]', prefs })).ok).toBe(true)
+    expect((await tablet.conn.request({ type: 'push.register', token: 'ExponentPushToken[tablet]', prefs: { ...prefs, details: false, events: { ...prefs.events, done: false } } })).ok).toBe(true)
+    const job = m.store.addJob({ plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'remote', projectDir: m.project, prompt: 'Run the tests' }, Date.now())
+    m.remote.notice('🔐 #1 wants to use Bash: npm test', { type: 'permission', job, code: 'k3x9', tool: 'Bash', detail: 'npm test', minutes: 15 })
+    await until(() => pushed.length === 2)
+    expect(pushed.map(p => [p.to, p.title, p.body])).toEqual([
+      ['ExponentPushToken[phone]', 'build-box', '#1 wants to use Bash: npm test'],
+      ['ExponentPushToken[tablet]', 'build-box', `#${job.id} needs you.`],
+    ])
+    m.remote.notice('✅ done', { type: 'done', job, diff: null, next: null })
+    await until(() => pushed.length === 3)
+    expect(pushed[2]!.to).toBe('ExponentPushToken[phone]')
+    // Off on the phone; the tablet removed: nothing more for either.
+    await phone.conn.request({ type: 'push.register', token: null, prefs })
+    await tablet.conn.request({ type: 'devices.remove', device: peerId(phone.id.publicKey) })
+    const owner = await pairedApp(m, { name: 'Owner' })
+    await owner.conn.request({ type: 'devices.remove', device: peerId(tablet.id.publicKey) })
+    expect(m.remote.db.pushTargets()).toEqual([])
+    m.remote.notice('🔐 again', { type: 'permission', job, code: 'k3y0', tool: 'Bash', detail: 'npm test', minutes: 15 })
+    await Bun.sleep(100)
+    expect(pushed.length).toBe(3)
+    expect(m.remote.db.auditLog(20).filter(e => e.action === 'push.register').map(e => e.detail)).toEqual(['off', 'on', 'on, with details'])
+  })
+
+  test('a problem report lands in the app-reports log, with the device’s name', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m, { name: 'Pixel', role: 'viewer' })
+    const r = await conn.request({ type: 'report', text: 'The diff screen is blank on a big file.', app: 'afterhours-app/0.2.0', platform: 'android' })
+    expect(r).toMatchObject({ ok: true, text: 'Thanks. It’s in build-box’s app-reports log.' })
+    const log = await Bun.file(join(dir, 'logs', 'app-reports.log')).text()
+    expect(log).toContain('· Pixel · afterhours-app/0.2.0 · android\nThe diff screen is blank on a big file.')
   })
 })

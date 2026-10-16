@@ -10,6 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { hub, useHub } from '../app-state'
 import { desktop } from '../desktop'
 import { withoutEmoji } from '../lib/format'
+import { genericText, pushRoute, wantsNotice } from '../lib/push'
 import { useTheme } from '../theme'
 import { Button, StatusDot, Txt } from './ui'
 
@@ -21,31 +22,34 @@ function routeFor(a: { type: string; machine: string }): string {
 }
 
 /**
- * Outside the app's window: a system notification. On the desktop, the app decides (it knows
- * whether its window is in front); in a browser, when the tab is in the background and you turned
- * them on.
+ * Outside the app's window: a system notification, for what you chose in Notifications (and only
+ * what the task asks when you show details). On the desktop, the app decides (it knows whether its
+ * window is in front); in a browser, when the tab is in the background and you turned them on.
+ * Phones get pushes from the machines instead.
  */
 export function SystemAlerts() {
-  const { attention, prefs } = useHub()
-  const last = useRef<number | null>(null)
   useEffect(() => {
-    if (!attention || attention.id === last.current) return
-    last.current = attention.id
-    const route = routeFor(attention)
-    const body = withoutEmoji(attention.text.split('\n')[0] ?? '')
-    if (desktop) {
-      desktop.notify({ title: attention.machineName, body, route })
-      return
-    }
-    if (Platform.OS !== 'web' || !prefs.browserNotifications || typeof Notification === 'undefined') return
-    if (Notification.permission !== 'granted' || !document.hidden) return
-    const note = new Notification(attention.machineName, { body, tag: `afterhours-${attention.id}` })
-    note.onclick = () => {
-      window.focus()
-      router.push(route as Href)
-      note.close()
-    }
-  }, [attention, prefs.browserNotifications])
+    if (!desktop && Platform.OS !== 'web') return
+    let seq = 0
+    return hub.onNews(n => {
+      const { prefs } = hub.getState()
+      if (!wantsNotice(prefs.notify, n.type, new Date())) return
+      const route = pushRoute({ machine: n.machine, type: n.type, job: n.job, code: n.code })
+      const body = prefs.notify.details ? withoutEmoji(n.text.split('\n')[0] ?? '') : genericText(n.type, n.job)
+      if (desktop) {
+        desktop.notify({ title: n.machineName, body, route })
+        return
+      }
+      if (!prefs.browserNotifications || typeof Notification === 'undefined') return
+      if (Notification.permission !== 'granted' || !document.hidden) return
+      const note = new Notification(n.machineName, { body, tag: `afterhours-${++seq}` })
+      note.onclick = () => {
+        window.focus()
+        router.push(route as Href)
+        note.close()
+      }
+    })
+  }, [])
   return null
 }
 

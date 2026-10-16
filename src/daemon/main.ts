@@ -190,6 +190,9 @@ export async function runDaemon(): Promise<void> {
     claudeJson: CLAUDE_JSON,
     claudePath,
     logPath: paths.log,
+    reportsPath: paths.appReports,
+    // A stand-in for Expo's push service, for private test runs.
+    push: process.env.CQ_PUSH_URL ? { url: process.env.CQ_PUSH_URL, receiptsUrl: process.env.CQ_PUSH_RECEIPTS_URL } : undefined,
     restart: () => {
       log('restarting, as an owner asked from an app')
       process.exit(75)

@@ -18,7 +18,6 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [biometrics, setBiometrics] = useState(false)
   const [atLogin, setAtLogin] = useState(false)
-  const [blocked, setBlocked] = useState(false)
 
   useEffect(() => setName(s.deviceName), [s.deviceName])
   useEffect(() => {
@@ -28,10 +27,14 @@ export default function Settings() {
   }, [])
 
   const clean = name.trim()
+  const notifying = desktop ? true : Platform.OS === 'web' ? s.prefs.browserNotifications : Boolean(s.push.token)
   const keyStore = desktop?.info.platform === 'darwin' ? 'the Keychain' : desktop?.info.platform === 'win32' ? 'Windows' : 'the keyring'
   return (
     <Page title="Settings" testID="settings">
-      <Group header="This device" footer={saved ? 'Saved, and sent to the machines that are online.' : 'Machines see this name.'}>
+      <Group
+        header="This device"
+        footer={saved ? 'Saved, and sent to the machines that are online.' : Platform.OS === 'web' && !desktop ? 'Machines see this name. The key is kept in this site’s storage.' : 'Machines see this name.'}
+      >
         <FieldRow label="Name" value={name} onChangeText={t => (setName(t), setSaved(false))} maxLength={80} testID="device-name" />
         {clean && clean !== s.deviceName ? (
           <Row
@@ -73,29 +76,17 @@ export default function Settings() {
             }}
           />
         </Group>
-      ) : Platform.OS === 'web' ? (
-        <Group header="This browser" footer={blocked ? 'The browser blocks notifications for this site. Allow them in its settings.' : 'The key is kept in this site’s storage.'}>
-          <SwitchRow
-            title="Notifications"
-            subtitle="When the tab is in the background"
-            value={s.prefs.browserNotifications}
-            testID="browser-notifications"
-            onChange={async v => {
-              if (v && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
-                const answer = await Notification.requestPermission()
-                setBlocked(answer !== 'granted')
-                if (answer !== 'granted') return
-              }
-              await hub.setPrefs({ browserNotifications: v })
-            }}
-          />
-        </Group>
-      ) : (
+      ) : Platform.OS === 'web' ? null : (
         <Group header="Security" footer={biometrics ? 'The key never leaves this phone’s Keychain.' : 'Set up Face ID or a fingerprint to use these.'}>
           <SwitchRow title="Lock the app" value={s.prefs.lockApp} disabled={!biometrics} onChange={v => void hub.setPrefs({ lockApp: v })} />
           <SwitchRow title="Confirm Allow" subtitle="Face ID before a task may use a tool" value={s.prefs.confirmAllow} disabled={!biometrics} onChange={v => void hub.setPrefs({ confirmAllow: v })} />
         </Group>
       )}
+
+      <Group>
+        <Row title="Notifications" value={notifying ? 'On' : 'Off'} chevron onPress={() => router.push('/notifications')} testID="settings-notifications" />
+        <Row title="Back up and restore" chevron onPress={() => router.push('/backup')} testID="settings-backup" />
+      </Group>
 
       <Group header="Machines">
         {s.machines.map(m => (
@@ -116,6 +107,13 @@ export default function Settings() {
           <Row title="Remove a device" chevron onPress={() => router.push('/lost-device')} testID="settings-lost" />
         </Group>
       ) : null}
+
+      <Group>
+        <Row title="What’s new" chevron onPress={() => router.push('/whats-new')} testID="settings-whats-new" />
+        <Row title="Help" chevron onPress={() => router.push('/help')} testID="settings-help" />
+        <Row title="Check the connection" chevron onPress={() => router.push('/connection')} testID="settings-connection" />
+        <Row title="Report a problem" chevron onPress={() => router.push('/report')} testID="settings-report" />
+      </Group>
 
       <Group footer="End-to-end encrypted. The relay in between can’t read anything.">
         <Row title="Version" value={desktop ? `${APP_VERSION} · desktop ${desktop.info.version}` : APP_VERSION} />

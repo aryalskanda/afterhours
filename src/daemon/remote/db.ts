@@ -1,9 +1,9 @@
 // Remote access state, in the daemon's database: the devices allowed to control this machine,
 // the event log apps catch up from, requests already carried out (so a retry is answered, not
-// repeated), and an audit trail of everything apps did.
+// repeated), an audit trail of everything apps did, and where to push to.
 
 import type { Database } from 'bun:sqlite'
-import type { Result, Role } from '@afterhours/protocol'
+import type { PushPrefs, Result, Role } from '@afterhours/protocol'
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS remote_devices (
@@ -39,6 +39,12 @@ CREATE TABLE IF NOT EXISTS remote_audit (
   ok INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS remote_audit_at ON remote_audit (at);
+CREATE TABLE IF NOT EXISTS remote_push (
+  device TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  prefs TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `
 
 export interface DeviceRow {
@@ -130,12 +136,39 @@ export class RemoteDb {
     return this.db.query('UPDATE remote_devices SET name = ? WHERE id = ? AND revoked_at IS NULL').run(name, id).changes > 0
   }
 
+  /** Cuts a device off; it gets no more pushes either. */
   revoke(id: string, now: number): boolean {
+    this.db.query('DELETE FROM remote_push WHERE device = ?').run(id)
     return this.db.query('UPDATE remote_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL').run(now, id).changes > 0
   }
 
   touch(id: string, now: number): void {
     this.db.query('UPDATE remote_devices SET last_seen = ? WHERE id = ?').run(now, id)
+  }
+
+  // --- push ---------------------------------------------------------------------------------
+
+  /** A device's push token and what it wants pushed; null stops its pushes. A token belongs to one device. */
+  setPush(device: string, push: { token: string; prefs: PushPrefs } | null, now: number): void {
+    this.db.query('DELETE FROM remote_push WHERE device = ?').run(device)
+    if (!push) return
+    this.db.query('DELETE FROM remote_push WHERE token = ?').run(push.token)
+    this.db.query('INSERT INTO remote_push (device, token, prefs, updated_at) VALUES (?, ?, ?, ?)').run(device, push.token, JSON.stringify(push.prefs), now)
+  }
+
+  /** Where to push: devices still allowed, with their tokens and choices. */
+  pushTargets(): { device: string; token: string; prefs: PushPrefs }[] {
+    return this.db
+      .query<{ device: string; token: string; prefs: string }, []>(
+        'SELECT p.device, p.token, p.prefs FROM remote_push p JOIN remote_devices d ON d.id = p.device WHERE d.revoked_at IS NULL',
+      )
+      .all()
+      .map(r => ({ device: r.device, token: r.token, prefs: JSON.parse(r.prefs) as PushPrefs }))
+  }
+
+  /** A token Expo says is no longer valid. */
+  dropPushToken(token: string): void {
+    this.db.query('DELETE FROM remote_push WHERE token = ?').run(token)
   }
 
   // --- events -------------------------------------------------------------------------------

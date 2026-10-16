@@ -2,9 +2,9 @@
 // checks: the device's role, this machine's own rules (which no app can change), and whether the
 // request was already carried out (a retry gets the first answer again).
 
-import { existsSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import type {
   AuditEntryInfo,
   ClaudeInfo,
@@ -68,6 +68,8 @@ export const FEATURES = [
   'limits.history',
   'audit',
   'invite',
+  'push',
+  'report',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -108,6 +110,8 @@ const NEEDS: Record<RequestType, Role> = {
   'limits.history': 'viewer',
   audit: 'owner',
   'pair.offer': 'owner',
+  'push.register': 'viewer',
+  report: 'viewer',
 }
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 /** Requests that change something: audited, and answered from memory when retried. */
@@ -128,6 +132,8 @@ const CHANGES = new Set<RequestType>([
   'restart',
   'claude.md',
   'pair.offer',
+  'push.register',
+  'report',
 ])
 
 export interface RouterDeps {
@@ -157,6 +163,8 @@ export interface RouterDeps {
   claudePath: string
   /** The engine's log, whose tail owners may read (it never holds prompts). */
   logPath: string
+  /** Where problem reports from apps are appended. */
+  reportsPath: string
   /** A pairing link for another device. */
   openOffer: (role: Role) => { link: string; expires: number } | string
   /** Restarts the engine: its service starts it again. */
@@ -231,6 +239,10 @@ function auditDetail(r: Request): string | null {
       return `${r.folder} · ${r.text.length} characters`
     case 'pair.offer':
       return r.role
+    case 'push.register':
+      return r.token ? `on${r.prefs.details ? ', with details' : ''}` : 'off'
+    case 'report':
+      return `${r.text.length} characters`
     case 'open':
       return r.job !== undefined ? `#${r.job}` : (r.session?.slice(0, 8) ?? null)
     default:
@@ -517,6 +529,14 @@ export class Router {
           ok: true,
           data: { entries: this.d.db.auditLog(r.limit ?? 200).map(e => ({ at: e.at, device: e.deviceName, action: e.action, detail: e.detail, ok: e.ok }) satisfies AuditEntryInfo) },
         }
+      case 'push.register': {
+        this.d.db.setPush(session.device, r.token ? { token: r.token, prefs: r.prefs } : null, this.d.now())
+        return { ok: true, text: r.token ? 'Pushes on.' : 'Pushes off.' }
+      }
+      case 'report': {
+        const saved = appendReport(this.d.reportsPath, { at: this.d.now(), device: this.d.db.device(session.device)?.name ?? session.hello.name, app: r.app, platform: r.platform, text: r.text })
+        return saved ? { ok: true, text: `Thanks. It’s in ${this.d.machine().name}’s app-reports log.` } : { ok: false, code: 'failed', error: 'The machine couldn’t write it down.' }
+      }
       case 'pair.offer': {
         const offer = this.d.openOffer(r.role)
         return typeof offer === 'string' ? { ok: false, code: 'failed', error: offer } : { ok: true, data: offer }
@@ -816,4 +836,19 @@ function emptyPage(session: string): TranscriptPage {
 
 export function publicDevice(d: DeviceRow) {
   return { id: d.id, name: d.name, platform: d.platform, role: d.role, addedAt: d.addedAt, lastSeen: d.lastSeen }
+}
+
+/** Biggest the app-reports log grows before the old one is set aside (one older file is kept). */
+const REPORTS_MAX = 1024 * 1024
+
+/** Appends a problem report from an app; false when the disk said no. */
+export function appendReport(path: string, r: { at: number; device: string; app: string; platform: string; text: string }): boolean {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    if (existsSync(path) && statSync(path).size > REPORTS_MAX) renameSync(path, `${path}.1`)
+    appendFileSync(path, `--- ${new Date(r.at).toISOString()} · ${r.device} · ${r.app} · ${r.platform}\n${r.text.trim()}\n\n`, { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
 }

@@ -124,6 +124,10 @@ export interface FakeMachine {
   offer(role?: Role): string
   /** Every request apps sent, in order. */
   requests: Request[]
+  /** Where each device asked for pushes (null: stopped). */
+  pushes: Map<string, Extract<Request, { type: 'push.register' }>>
+  /** Problem reports apps sent. */
+  reports: string[]
   /** Sends a notice to listening apps (and keeps it for those that catch up later). */
   emit(notice: Notice, text: string): Event
   /** Adds a request waiting on you, and announces it. */
@@ -155,6 +159,8 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
   const history: JobInfo[] = []
   const memories = new Map<string, string>([['/home/me/code/shop/web', '# Shop web\n\n- Use pnpm, not npm.\n- Run pnpm test before you commit.\n']])
   const audit: { at: number; device: string | null; action: string; detail: string | null; ok: boolean }[] = []
+  const pushes = new Map<string, Extract<Request, { type: 'push.register' }>>()
+  const reports: string[] = []
 
   if (o.sample !== false) {
     state.active = job(14, { status: 'running', phase: 'working', startedAt: now() - 12 * 60_000, branch: 'afterhours/14-dark-mode', contextPct: 38 })
@@ -234,6 +240,8 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
       'limits.history',
       'audit',
       'invite',
+      'push',
+      'report',
     ],
   })
 
@@ -427,6 +435,12 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
       case 'audit':
         if (session.role !== 'owner') return reply(session, r, { ok: false, code: 'forbidden', error: 'This needs an owner.' })
         return reply(session, r, { ok: true, data: { entries: audit.slice(0, r.limit ?? 200) } })
+      case 'push.register':
+        pushes.set(session.device, r)
+        return reply(session, r, { ok: true, text: r.token ? 'Pushes on.' : 'Pushes off.' })
+      case 'report':
+        reports.push(`${session.hello.name}: ${r.text}`)
+        return reply(session, r, { ok: true, text: `Thanks. It’s in ${name}’s app-reports log.` })
       case 'pair.offer': {
         if (session.role !== 'owner') return reply(session, r, { ok: false, code: 'forbidden', error: 'This needs an owner.' })
         const offer = host.openOffer({ role: r.role, autoApprove: true })
@@ -484,6 +498,8 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     id,
     name,
     requests,
+    pushes,
+    reports,
     state,
     emit,
     offer: (role = 'owner') => host.openOffer({ role, autoApprove: true }).link,

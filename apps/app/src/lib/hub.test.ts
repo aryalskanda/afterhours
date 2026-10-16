@@ -131,6 +131,57 @@ describe('the hub', () => {
   })
 })
 
+describe('push', () => {
+  test('machines learn this device’s token and choices; again only when they change; off stops them', async () => {
+    const storage = memory()
+    const h = await hub(storage)
+    await h.pair(machine.offer('viewer'))
+    await until(() => h.getState().machines[0]?.synced === true)
+    // No token yet: nothing to tell.
+    expect(machine.pushes.size).toBe(0)
+    await h.setPush('ExponentPushToken[abc]')
+    const device = h.getState().deviceId
+    await until(() => machine.pushes.get(device)?.token === 'ExponentPushToken[abc]')
+    expect(machine.pushes.get(device)!.prefs).toMatchObject({ events: { requests: true, done: true, failed: true, limits: true }, details: true, quiet: null })
+    await h.setPrefs({ notify: { ...h.getState().prefs.notify, details: false, quiet: { start: 1320, end: 420 } } })
+    await until(() => machine.pushes.get(device)?.prefs.details === false)
+    expect(machine.pushes.get(device)!.prefs.quiet).toMatchObject({ start: 1320, end: 420 })
+    expect(typeof machine.pushes.get(device)!.prefs.quiet?.tz).toBe('string')
+    const asked = machine.requests.filter(r => r.type === 'push.register').length
+    // A restart, the same choices: not asked again.
+    h.close()
+    const again = await hub(storage)
+    await until(() => again.getState().machines[0]?.synced === true)
+    await Bun.sleep(100)
+    expect(machine.requests.filter(r => r.type === 'push.register').length).toBe(asked)
+    await again.setPush(null)
+    await until(() => machine.pushes.get(device)?.token === null)
+  })
+})
+
+describe('backup', () => {
+  test('a new phone restores the backup: the same device, its machines, and no pushes to the old phone', async () => {
+    const old = await hub()
+    await old.pair(machine.offer('operator'))
+    await until(() => old.getState().machines[0]?.synced === true)
+    await old.setPush('ExponentPushToken[old-phone]')
+    const device = old.getState().deviceId
+    await until(() => machine.pushes.get(device)?.token === 'ExponentPushToken[old-phone]')
+    await old.savePrompt('Run the tests')
+    const text = await old.backup('correct horse battery')
+    old.close()
+    const fresh = await hub()
+    expect(fresh.getState().deviceId).not.toBe(device)
+    await expect(fresh.restore(text, 'wrong passphrase!')).rejects.toThrow('Wrong passphrase')
+    await fresh.restore(text, 'correct horse battery')
+    expect(fresh.getState().deviceId).toBe(device)
+    expect(fresh.getState().saved).toEqual(['Run the tests'])
+    expect(fresh.getState().push.token).toBeNull()
+    await until(() => fresh.getState().machines[0]?.status === 'connected')
+    await until(() => machine.pushes.get(device)?.token === null)
+  })
+})
+
 describe('prompts kept on this device', () => {
   test('saved prompts and drafts survive a restart; a queued draft is gone', async () => {
     const storage = memory()

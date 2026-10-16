@@ -31,8 +31,11 @@ The app for your Afterhours machines, on iPhone, Android and the web. The deskto
 - **Read aloud**: Claude's answers and questions, in the system's voice.
 - **Chats**: your Claude Code conversations on a machine. Read one whole, tool calls included, and write into it.
 - **Settings**: this device's name and key, app lock and Face ID before Allow, machines, removing a lost device from every machine you own, about.
+  - Notifications: push on a phone, the browser's when its tab is in the background, the desktop app's when its window isn't in front. Choose what they're about (requests, finished, failed or stuck, usage limits), whether they say what the task asks (on by default: pushes pass through Expo and Apple or Google, outside the encryption), and quiet hours. A push's buttons (Allow, Deny on a permission; Approve on a plan) open the app and answer; a request answered anywhere takes its notification down.
+  - Back up and restore: this device's key, machines, name and settings sealed with a passphrase (scrypt, XChaCha20-Poly1305), to restore on a new phone, which then is this device (machines stop pushing to the old one).
+  - Check the connection (each machine's round trip, through which relay), Report a problem (to a machine's owner, into its `app-reports.log`, showing what's sent first; a screen that breaks offers the same), Help, What's new.
 
-A banner (and a buzz) tells you when something new needs you while the app is open. Push notifications for when it's closed come later; they need your accounts (below).
+A banner (and a buzz) tells you when something new needs you while the app is open. Pushes for when it's closed need the app built under your Expo account (below); until then, Settings says so.
 
 ## Run it
 
@@ -98,6 +101,7 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 - `src/lib/hub.ts` owns the connections (the protocol's `AppClient`), the paired machines and what they report, and keeps what must survive a restart. Screens read it with `useSyncExternalStore`.
 - `src/lib/state.ts`: pure functions from a snapshot, a queue change or an event to a machine's state, plus "needs you", a task's timeline, what runs and finished across machines, and the free machine.
 - `src/lib/forecast.ts`: usage limits charted and forecast; `src/lib/risk.ts`: what a permission request does and what to look at twice; `src/lib/qr.ts`: QR codes drawn with plain views (`uqr`).
+- `src/lib/push.ts`: what notifications are about and say, where they open, what their buttons answer; `src/notifications.ts`: push on phones (`expo-notifications`); `src/lib/backup.ts`: sealed backups; `src/lib/problems.ts` and `src/components/Report.tsx`: problem reports.
 - `src/lib/markdown.ts` and `src/components/Markdown.tsx`: Claude's Markdown, drawn natively. Tables become one entry per row, which reads better on a phone.
 - `src/lib/results.ts`: what machines send back, checked before use (a machine may run another version).
 - The protocol comes from `../../packages/protocol` (a `file:` dependency). `metro.config.js` resolves its imports from this app's `node_modules`, so there's one copy of zod and noble.

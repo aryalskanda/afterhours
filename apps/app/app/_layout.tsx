@@ -1,22 +1,29 @@
-// The app's frame: starts the hub, checks the connections when the app comes back to the
-// foreground, themes the navigation, and lays the banner and the lock over every screen.
+// The app's frame: starts the hub and notifications, checks the connections when the app comes
+// back to the foreground, themes the navigation, and lays the banner and the lock over every screen.
 
-import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type Href } from 'expo-router'
+import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type ErrorBoundaryProps, type Href } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { useEffect } from 'react'
 import { AppState } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { hub, useHub } from '../src/app-state'
+import { CrashScreen } from '../src/components/Crash'
 import { AttentionBanner, LockGate, SystemAlerts } from '../src/components/Overlays'
 import { desktop } from '../src/desktop'
 import { useStackOptions } from '../src/navigation'
+import { startNotifications } from '../src/notifications'
 import { useTheme } from '../src/theme'
 
 void SplashScreen.preventAutoHideAsync().catch(() => {})
 
 // A link that opens a screen directly (afterhours://pair?…) still has the tabs to go back to.
 export const unstable_settings = { initialRouteName: '(tabs)' }
+
+/** A screen that throws: what broke, Try again, and a report to a machine's owner. */
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+  return <CrashScreen {...props} />
+}
 
 export default function Root() {
   const { c, dark, wide } = useTheme()
@@ -25,6 +32,7 @@ export default function Root() {
 
   useEffect(() => {
     void hub.init()
+    const stopNotifications = startNotifications()
     // Whatever happens, the splash doesn't stay up.
     const timer = setTimeout(() => void SplashScreen.hideAsync().catch(() => {}), 4000)
     const sub = AppState.addEventListener('change', s => {
@@ -34,6 +42,7 @@ export default function Root() {
     return () => {
       clearTimeout(timer)
       sub.remove()
+      stopNotifications()
     }
   }, [])
 
