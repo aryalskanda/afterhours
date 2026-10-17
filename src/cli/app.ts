@@ -177,10 +177,14 @@ async function setup(args: string[]): Promise<boolean> {
   console.log(`✓ ${BRAND.name} runs the relay on 127.0.0.1:${port} and serves the app from it`)
 
   // 4. Funnel: the public https address, to that port only.
-  console.log('Opening it to the internet with Tailscale Funnel …')
-  const funnel = await runFor([ts, 'funnel', '--bg', '--yes', String(port)], 60_000)
-  if (!funnel.ok) {
-    console.error(`${funnel.timedOut ? 'Tailscale is waiting for you:' : 'Tailscale said:'}\n${funnel.out}\n\nDo what it asks, then run cq app setup again.`)
+  // In the terminal itself: Tailscale prints its link to allow Funnel only to a terminal, and waits.
+  console.log('Opening it to the internet with Tailscale Funnel. If Tailscale shows a link, open it; this goes on once you allow it …')
+  const funnel = Bun.spawn([ts, 'funnel', '--bg', '--yes', String(port)], { stdio: ['inherit', 'inherit', 'inherit'] })
+  const timer = setTimeout(() => funnel.kill(), 10 * 60_000)
+  const code = await funnel.exited
+  clearTimeout(timer)
+  if (code !== 0) {
+    console.error('Tailscale Funnel didn\'t start. Do what Tailscale asks above, then run cq app setup again.')
     return false
   }
   console.log(`✓ Funnel: https://${info.dnsName} → 127.0.0.1:${port}`)
