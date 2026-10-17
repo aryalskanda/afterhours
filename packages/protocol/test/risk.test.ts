@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { commandRisk, permissionRisk } from './risk'
+import { commandRisk, permissionRisk } from '../src/risk'
 
 describe('commands', () => {
   test('what to look at twice, most serious first', () => {

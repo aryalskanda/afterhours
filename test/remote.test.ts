@@ -2,10 +2,10 @@
 // tasks and answers requests, under the machine's own rules.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AppClient, newIdentity, peerId, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
+import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
 import { startRelay, type Relay } from '../relay/src/server'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
@@ -18,6 +18,7 @@ import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { git } from '../src/daemon/system'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
+import { checkInitData, signInitData } from '../src/telegram/webapp'
 import { FakeTmux } from './fakes'
 
 let relay: Relay
@@ -62,7 +63,7 @@ const chats: ChatSource = {
 }
 const folders = { search: async () => [] } as unknown as FolderMap
 
-function machine() {
+function machine(o: { remote?: Partial<Config['remote']>; appDir?: string } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -71,7 +72,7 @@ function machine() {
   let config: Config = {
     ...DEFAULT_CONFIG,
     defaults: { ...DEFAULT_CONFIG.defaults, model: 'haiku' },
-    remote: { ...DEFAULT_CONFIG.remote, enabled: true, relay: relay.url, name: 'build-box', allowedRoots: [projects] },
+    remote: { ...DEFAULT_CONFIG.remote, enabled: true, relay: relay.url, name: 'build-box', allowedRoots: [projects], ...o.remote },
   }
   const store = new Store(':memory:')
   let remote: Remote | null = null
@@ -118,6 +119,8 @@ function machine() {
     log: () => {},
     now: Date.now,
     identityPath: join(dir, 'identity.json'),
+    appDir: o.appDir ?? join(dir, 'no-app'),
+    relayDb: ':memory:',
   })
   remote.apply()
   cleanups.push(() => {
@@ -792,5 +795,77 @@ describe('pushes and problem reports', () => {
     expect(r).toMatchObject({ ok: true, text: 'Thanks. It’s in build-box’s app-reports log.' })
     const log = await Bun.file(join(dir, 'logs', 'app-reports.log')).text()
     expect(log).toContain('· Pixel · afterhours-app/0.2.0 · android\nThe diff screen is blank on a big file.')
+  })
+})
+
+describe('the app inside Telegram: this machine runs the relay and serves the app', () => {
+  const TOKEN = '123456:test-token'
+  const OWNER = 7001
+
+  function servingMachine() {
+    const appDir = join(dir, 'web')
+    mkdirSync(appDir, { recursive: true })
+    writeFileSync(join(appDir, 'index.html'), '<!doctype html><div id="root"></div>')
+    // The public address is Tailscale's; here only the local one exists.
+    return machine({ appDir, remote: { relay: 'wss://mac.example.ts.net/v1', serve: { port: 0 }, publicUrl: 'https://mac.example.ts.net/' } })
+  }
+
+  function telegramApp(initData: () => string | undefined) {
+    const client = new AppClient({
+      identity: newIdentity(),
+      device: { name: 'Telegram on iPhone', platform: 'telegram-ios', app: 'afterhours-app/0.3.0', telegram: initData },
+      timing: { retryMs: 50, maxRetryMs: 200 },
+    })
+    cleanups.unshift(() => client.close())
+    return client
+  }
+
+  const verify = (hello: { telegram?: string }) => checkInitData(hello.telegram, { token: TOKEN, ownerId: OWNER, now: Date.now() }).ok
+  const launch = (user = OWNER) =>
+    signInitData({ user: JSON.stringify({ id: user, first_name: 'Skanda' }), auth_date: String(Math.floor(Date.now() / 1000)) }, TOKEN)
+
+  test('it reaches its own relay locally, links give the public address, and the same address serves the app', async () => {
+    const m = servingMachine()
+    await until(() => m.remote.status().connected)
+    const serving = m.remote.status().serving!
+    expect(serving).toMatchObject({ port: 0, app: true, error: null, publicUrl: 'https://mac.example.ts.net/' })
+    expect(m.remote.appUrl()).toBe('https://mac.example.ts.net')
+    const offer = m.remote.openTelegramOffer(verify)
+    if (typeof offer === 'string') throw new Error(offer)
+    expect(parsePairingLink(offer.link).relay).toBe('wss://mac.example.ts.net/v1')
+    const page = await fetch(`http://127.0.0.1:${serving.listening}/machine/x`)
+    expect(await page.text()).toContain('id="root"')
+  })
+
+  test("pairing from Telegram: the owner's launch data pairs as owner; anyone else's, or none, is refused", async () => {
+    const m = servingMachine()
+    await until(() => m.remote.status().connected)
+    const local = `ws://127.0.0.1:${m.remote.status().serving!.listening}/v1`
+    const linkFor = () => {
+      const offer = m.remote.openTelegramOffer(verify)
+      if (typeof offer === 'string') throw new Error(offer)
+      // Through Tailscale this is the public address; here it's the same relay, locally.
+      return offer.link.replace(encodeURIComponent('wss://mac.example.ts.net/v1'), encodeURIComponent(local))
+    }
+
+    await expect(telegramApp(() => launch(9009)).pair(linkFor())).rejects.toThrow('only works for the bot’s owner')
+    await expect(telegramApp(() => undefined).pair(linkFor())).rejects.toThrow('only works for the bot’s owner')
+    expect(m.remote.hasTelegramDevice()).toBe(false)
+
+    const paired = await telegramApp(() => launch()).pair(linkFor())
+    expect(paired.role).toBe('owner')
+    expect(m.remote.hasTelegramDevice()).toBe(true)
+    expect(m.remote.devices().map(d => [d.name, d.platform])).toEqual([['Telegram on iPhone', 'telegram-ios']])
+  })
+
+  test('turned off: no relay here, no app address', async () => {
+    const m = servingMachine()
+    await until(() => m.remote.status().connected)
+    const port = m.remote.status().serving!.listening!
+    m.setRemote({ serve: null, publicUrl: null })
+    m.remote.apply()
+    expect(m.remote.appUrl()).toBeNull()
+    expect(m.remote.status().serving).toBeNull()
+    await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow()
   })
 })

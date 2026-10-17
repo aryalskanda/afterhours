@@ -7,6 +7,7 @@ import { BRAND, LEGACY } from '../shared/brand'
 import { CQ_HOME, ensureHome, findExecutable, LAUNCH_AGENT_LABEL, loadConfig, paths, writeFileAtomic } from '../shared/config'
 import { isMac, isWsl } from '../platform/os'
 import { launchAgentsDir, launchDomain, service, type Service } from '../platform/service'
+import { installWeb } from './app'
 import { migrateLegacy } from './migrate'
 import { run } from './util'
 
@@ -74,6 +75,12 @@ function placeBinary(): void {
     console.log(`Building ${binary} from ${entry} …`)
     const build = Bun.spawnSync([self[0]!, 'build', entry, '--compile', '--outfile', binary], { stdio: ['inherit', 'inherit', 'inherit'] })
     if (build.exitCode !== 0) process.exit(build.exitCode ?? 1)
+    // This source tree's web build, for the app inside Telegram (cq app setup serves it).
+    const web = join(dirname(entry), '..', '..', 'apps', 'app', 'dist-web')
+    if (existsSync(join(web, 'index.html'))) {
+      installWeb(web)
+      console.log(`Copied the app's web build to ${paths.web}.`)
+    }
   } else {
     const brew = homebrewLink(self[0]!)
     if (brew) {

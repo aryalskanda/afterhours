@@ -47,6 +47,11 @@ export const Hello = z.object({
   /** What people call this device, e.g. "Skanda's iPhone". */
   name: z.string().min(1).max(80),
   platform: Text(40),
+  /**
+   * Inside Telegram (the Mini App), while pairing: Telegram's signed launch data, so the machine can
+   * check that its bot's owner opened the link. Encrypted like everything else in the handshake.
+   */
+  telegram: Text(4096).optional(),
 })
 export type Hello = z.infer<typeof Hello>
 

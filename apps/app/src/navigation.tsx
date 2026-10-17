@@ -1,8 +1,10 @@
 // What every stack's header looks like: on the page's own colour, no shadow, the accent for
-// buttons; on the iPhone, back buttons say where they go back to.
+// buttons; on the iPhone, back buttons say where they go back to; inside Telegram, none (Telegram's
+// Back button does it).
 
 import Ionicons from '@expo/vector-icons/Ionicons'
 import { Platform, Pressable, Text } from 'react-native'
+import { inTelegram } from './telegram'
 import { useTheme } from './theme'
 
 export function useStackOptions() {
@@ -14,8 +16,13 @@ export function useStackOptions() {
     headerTitleStyle: { color: c.ink, fontSize: t.headline.fontSize, fontWeight: '600' as const },
     contentStyle: { backgroundColor: c.page },
     headerBackButtonDisplayMode: Platform.OS === 'ios' ? ('default' as const) : ('minimal' as const),
+    // Inside Telegram, its own Back button (in its header) goes back.
+    ...(inTelegram ? { headerBackVisible: false, headerLeft: noBack } : {}),
   }
 }
+
+/** A header's left side on the web: the stack's back arrow, except inside Telegram (its Back button does it). */
+export const noBack = inTelegram ? () => null : undefined
 
 /** A text button in a header: Cancel, Queue. */
 export function HeaderButton(props: { title: string; onPress: () => void; bold?: boolean; disabled?: boolean; testID?: string }) {

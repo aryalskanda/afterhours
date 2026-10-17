@@ -13,6 +13,7 @@ import {
   type DiffFile,
   type TranscriptItem,
   type Event,
+  type Hello,
   type HostSession,
   type JobInfo,
   type MachineInfo,
@@ -122,6 +123,8 @@ export interface FakeMachine {
   name: string
   /** A fresh pairing link (approved automatically). */
   offer(role?: Role): string
+  /** An owner offer approved only for an app whose Hello passes `verify` (the Telegram pairing); refused otherwise. */
+  offerChecked(verify: (hello: Hello) => boolean): string
   /** Every request apps sent, in order. */
   requests: Request[]
   /** Where each device asked for pushes (null: stopped). */
@@ -503,6 +506,7 @@ export function fakeMachine(o: { relay: string; name?: string; sample?: boolean 
     state,
     emit,
     offer: (role = 'owner') => host.openOffer({ role, autoApprove: true }).link,
+    offerChecked: verify => host.openOffer({ role: 'owner', verify, refusal: 'telegram' }).link,
     ask(approval, notice, text) {
       state.approvals = [...state.approvals, approval]
       emit(notice, text)

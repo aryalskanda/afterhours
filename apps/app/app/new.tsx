@@ -14,7 +14,8 @@ import type { Choices } from '../src/lib/hub'
 import { fileSize, MAX_ATTACHMENT_BYTES, pickFiles, pickPhotos, type Picked } from '../src/lib/attach'
 import { FilesResult, FolderList, Queued, SlashCommandList, UNREADABLE, Uploaded, type FolderHit } from '../src/lib/results'
 import { findJob, freeMachine, supports } from '../src/lib/state'
-import { HeaderButton } from '../src/navigation'
+import { HeaderButton, noBack } from '../src/navigation'
+import { telegramConfirmClose } from '../src/telegram'
 import { useTheme } from '../src/theme'
 
 type How = 'plan' | 'review' | 'none' | 'ask'
@@ -48,7 +49,8 @@ function withHow(c: Choices, how: How): Choices {
 }
 
 export default function NewTask() {
-  const params = useLocalSearchParams<{ machine?: string; folder?: string; session?: string; title?: string; move?: string }>()
+  // `prompt` and `folder`: a prompt sent to the Telegram bot, to change here before it's queued.
+  const params = useLocalSearchParams<{ machine?: string; folder?: string; session?: string; title?: string; move?: string; prompt?: string }>()
   const { machines, ready } = useHub()
   const { c, wide } = useTheme()
   // Moving a queued task: where it is now, and the task.
@@ -74,7 +76,7 @@ export default function NewTask() {
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<FolderHit[] | null>(null)
   const [searchError, setSearchError] = useState<string | null>(null)
-  const [prompt, setPrompt] = useState(moving?.prompt ?? '')
+  const [prompt, setPrompt] = useState(moving?.prompt ?? params.prompt ?? '')
   const [front, setFront] = useState(false)
   // When it starts, and how long it may work.
   const [when, setWhen] = useState<'now' | 'time' | 'reset' | 'after'>('now')
@@ -113,6 +115,13 @@ export default function NewTask() {
     const timer = setTimeout(() => void hub.saveDraft(machineId, { prompt, folder, at: Date.now() }), 600)
     return () => clearTimeout(timer)
   }, [machineId, restored, session, prompt, folder])
+
+  // Inside Telegram, closing the app while writing asks first.
+  const writing = prompt.trim().length > 0 && !outcome?.ok
+  useEffect(() => {
+    telegramConfirmClose(writing)
+    return () => telegramConfirmClose(false)
+  }, [writing])
 
   // The word you're typing: `/name` at the very start, or `@path` anywhere.
   const before = prompt.slice(0, cursor)
@@ -181,7 +190,7 @@ export default function NewTask() {
     }
   }, [machineId, query, session, folder, m?.status])
 
-  const cancel = Platform.OS === 'web' ? undefined : () => <HeaderButton title="Cancel" onPress={() => router.back()} />
+  const cancel = Platform.OS === 'web' ? noBack : () => <HeaderButton title="Cancel" onPress={() => router.back()} />
 
   if (!ready) return <Page sheet>{null}</Page>
   if (usable.length === 0 || !m || !choices) {
@@ -321,7 +330,7 @@ export default function NewTask() {
     const job = outcome.job
     return (
       <Page sheet testID="new-done">
-        <Stack.Screen options={{ headerLeft: undefined, headerRight: undefined }} />
+        <Stack.Screen options={{ headerLeft: noBack, headerRight: undefined }} />
         <Group footer={`${m.name} starts it when it gets to it${front ? ', next' : ''}. Anything it asks shows up in Needs you.`}>
           <Block>
             <Txt v="headline">{outcome.text}</Txt>

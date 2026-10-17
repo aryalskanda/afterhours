@@ -5,7 +5,7 @@ import Ionicons from '@expo/vector-icons/Ionicons'
 import { Stack, useLocalSearchParams } from 'expo-router'
 import { View } from 'react-native'
 import { useMachine, useNow } from '../../../../../src/app-state'
-import { EmptyState, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
+import { EmptyState, NotPaired, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { auditLabel, clock } from '../../../../../src/lib/format'
 import { AuditList } from '../../../../../src/lib/results'
@@ -23,7 +23,7 @@ export default function Audit() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

@@ -6,7 +6,7 @@ import { useState } from 'react'
 import { View } from 'react-native'
 import { hub, useMachine, useNow } from '../../../../../src/app-state'
 import { LimitRow } from '../../../../../src/components/bits'
-import { Block, EmptyState, Group, LoadingRows, Note, Page, Row, Segmented, Txt } from '../../../../../src/components/ui'
+import { Block, EmptyState, NotPaired, Group, LoadingRows, Note, Page, Row, Segmented, Txt } from '../../../../../src/components/ui'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { clock } from '../../../../../src/lib/format'
 import { forecast, forecastLabel, usageBars, type LimitWindow } from '../../../../../src/lib/forecast'
@@ -60,7 +60,7 @@ export default function Usage() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

@@ -6,10 +6,11 @@
 import Ionicons from '@expo/vector-icons/Ionicons'
 import * as Clipboard from 'expo-clipboard'
 import { useMemo, useState } from 'react'
-import { Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { desktop } from '../desktop'
 import { highlight, type TokenKind } from '../lib/highlight'
 import { parse, type Span } from '../lib/markdown'
+import { openLink } from '../telegram'
 import { mono, useTheme, type Colors } from '../theme'
 
 const plainOf = (spans: Span[]) => spans.map(s => s.text).join('')
@@ -117,7 +118,7 @@ function WebImage(props: { alt: string; src: string }) {
     <Pressable
       role="button"
       aria-label={`${open ? 'Open' : 'Show'} the image ${props.alt}`}
-      onPress={() => (open ? void Linking.openURL(props.src) : setShown(true))}
+      onPress={() => (open ? openLink(props.src) : setShown(true))}
       style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10, borderRadius: wide ? 6 : 8, backgroundColor: c.fill, opacity: pressed ? 0.6 : 1 })}
       testID="md-image"
     >
@@ -138,7 +139,7 @@ function Spans(props: { spans: Span[]; heading?: 1 | 2 | 3; soft?: boolean }) {
       {props.spans.map((s, i) => (
         <Text
           key={i}
-          onPress={s.href ? () => void Linking.openURL(s.href!) : undefined}
+          onPress={s.href ? () => openLink(s.href!) : undefined}
           style={{
             fontWeight: s.bold ? '600' : undefined,
             fontStyle: s.italic ? 'italic' : undefined,

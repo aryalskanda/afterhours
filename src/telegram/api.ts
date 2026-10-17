@@ -33,10 +33,8 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery
 }
 
-export interface InlineButton {
-  text: string
-  callback_data: string
-}
+/** A button that sends `callback_data` to the bot, or (`web_app`) opens the app inside Telegram. */
+export type InlineButton = { text: string; callback_data: string; web_app?: never } | { text: string; web_app: { url: string }; callback_data?: never }
 
 export type InlineKeyboard = InlineButton[][]
 
@@ -46,7 +44,15 @@ export interface ReplyKeyboard {
   resize_keyboard?: boolean
 }
 
-export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard
+/** Takes the buttons under the text box away. */
+export interface RemoveKeyboard {
+  remove_keyboard: true
+}
+
+export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard | RemoveKeyboard
+
+/** The button beside the text box: the bot's commands, or the app inside Telegram. */
+export type MenuButton = { type: 'commands' } | { type: 'web_app'; text: string; web_app: { url: string } }
 
 /** What the bridge needs from Telegram; tests swap in a fake. */
 export interface BotApi {
@@ -59,6 +65,7 @@ export interface BotApi {
   editMessageText(chatId: number, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<void>
   answerCallbackQuery(id: string, text?: string): Promise<void>
   setMyCommands(commands: { command: string; description: string }[]): Promise<void>
+  setChatMenuButton(chatId: number, button: MenuButton): Promise<void>
 }
 
 export class TelegramError extends Error {
@@ -76,6 +83,11 @@ export function refusedFormatting(err: unknown): boolean {
   return /can't parse entities|unsupported start tag|can't find end tag|unclosed|message is too long|text is too long/i.test(
     err instanceof Error ? err.message : String(err),
   )
+}
+
+/** Telegram refused a message's buttons (an app button it won't take): worth sending again without them. */
+export function refusedButtons(err: unknown): boolean {
+  return /BUTTON_|reply markup|web_?app/i.test(err instanceof Error ? err.message : String(err))
 }
 
 interface ApiResponse<T> {
@@ -169,5 +181,9 @@ export class TelegramApi implements BotApi {
 
   async setMyCommands(commands: { command: string; description: string }[]): Promise<void> {
     await this.call('setMyCommands', { commands })
+  }
+
+  async setChatMenuButton(chatId: number, button: MenuButton): Promise<void> {
+    await this.call('setChatMenuButton', { chat_id: chatId, menu_button: button })
   }
 }

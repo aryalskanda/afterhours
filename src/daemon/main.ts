@@ -197,6 +197,8 @@ export async function runDaemon(): Promise<void> {
       log('restarting, as an owner asked from an app')
       process.exit(75)
     },
+    // Every new device, said in your Telegram chat (telegram is set below).
+    onPaired: (device, role) => void telegram?.devicePaired(device, role),
     log,
     now: Date.now,
   })
@@ -222,6 +224,18 @@ export async function runDaemon(): Promise<void> {
       config: getConfig,
       saveConfig: putConfig,
       commandContext: () => commandContext('cli'),
+      app: {
+        url: () => remote.appUrl(),
+        machine: () => {
+          const s = remote.status().machine
+          return s ? { id: s.id, name: s.name } : null
+        },
+        paired: () => remote.hasTelegramDevice(),
+        offer: verify => {
+          const offer = remote.openTelegramOffer(verify)
+          return typeof offer === 'string' ? offer : { link: offer.link, expires: offer.expires }
+        },
+      },
       now: Date.now,
       log,
     })

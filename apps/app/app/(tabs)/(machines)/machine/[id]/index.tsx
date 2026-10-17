@@ -5,7 +5,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useMemo, useState } from 'react'
 import { hub, useHub, useMachine, useNow } from '../../../../../src/app-state'
 import { LimitRow, statusColor, TaskRow } from '../../../../../src/components/bits'
-import { Block, Button, ConfirmButton, ConfirmRow, EmptyState, Group, GroupAction, HStack, Note, Page, Row, StatusDot, Txt } from '../../../../../src/components/ui'
+import { Block, Button, ConfirmButton, ConfirmRow, EmptyState, NotPaired, Group, GroupAction, HStack, Note, Page, Row, StatusDot, Txt } from '../../../../../src/components/ui'
 import { SwipeActions } from '../../../../../src/components/Menu'
 import { useAction } from '../../../../../src/components/useAction'
 import { clock, oneLine, roleLabel, shortPath, statusLabel } from '../../../../../src/lib/format'
@@ -29,7 +29,7 @@ export default function MachineScreen() {
     return (
       <Page>
         <Stack.Screen options={{ title: 'Machine' }} />
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." action={<Button kind="tinted" title="Machines" onPress={() => router.replace('/')} />} />
+        <NotPaired action={<Button kind="tinted" title="Machines" onPress={() => router.replace('/')} />} />
       </Page>
     )
   }

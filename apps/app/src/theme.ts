@@ -1,11 +1,13 @@
 // Colours, type and sizes. Light: grouped lists on a grey page, as in the iPhone's own apps. Dark:
 // the brand's night navy. One accent, amber, for what needs you and a screen's main action.
 // On a wide window (the desktop app, a browser) the type and rows are as dense as desktop apps'.
-// Light or dark follows the system unless you chose one; the text can be a size smaller or larger.
+// Light or dark follows the system (inside Telegram, Telegram's) unless you chose one; the text can
+// be a size smaller or larger.
 
 import { useSyncExternalStore } from 'react'
 import { Platform, useColorScheme, useWindowDimensions, type TextStyle } from 'react-native'
 import { hub } from './app-state'
+import { onTelegramScheme, telegramDark } from './telegram'
 
 const light = {
   page: '#f2f2f7',
@@ -156,16 +158,19 @@ function sized(base: TypeScale, size: keyof typeof SIZES, key: string): TypeScal
 }
 
 const appearanceOf = () => hub.getState().prefs.appearance ?? 'system'
+const telegramOf = () => telegramDark()
 const textSizeOf = () => hub.getState().prefs.textSize ?? 'default'
 
 export function useTheme(): Theme {
   const scheme = useColorScheme()
   const appearance = useSyncExternalStore(hub.subscribe, appearanceOf, appearanceOf)
   const textSize = useSyncExternalStore(hub.subscribe, textSizeOf, textSizeOf)
+  // Inside Telegram, "System" means Telegram's own light or dark.
+  const telegram = useSyncExternalStore(onTelegramScheme, telegramOf, telegramOf)
   const { width, height } = useWindowDimensions()
   const wide = Platform.OS === 'web' && width >= WIDE
   const tablet = Platform.OS !== 'web' && Math.min(width, height) >= 600
-  const isDark = appearance === 'system' ? scheme === 'dark' : appearance === 'dark'
+  const isDark = appearance === 'system' ? (telegram ?? scheme === 'dark') : appearance === 'dark'
   return {
     c: isDark ? dark : light,
     t: sized(wide ? desktop : phone, textSize, wide ? 'desktop' : 'phone'),

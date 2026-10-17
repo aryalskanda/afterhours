@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
 import { chatCache, hub, useMachine, useNow } from '../../../../../src/app-state'
 import { Conversation } from '../../../../../src/components/Conversation'
 import { Markdown } from '../../../../../src/components/Markdown'
-import { Block, Button, EmptyState, Group, HStack, LoadingRows, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
+import { Block, Button, EmptyState, NotPaired, Group, HStack, LoadingRows, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { ago, oneLine, shortPath } from '../../../../../src/lib/format'
 import { ChatList, Queued } from '../../../../../src/lib/results'
@@ -47,7 +47,7 @@ export default function ChatScreen() {
   if (!m || !session) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

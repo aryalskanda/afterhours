@@ -1,10 +1,11 @@
 // The app's frame: starts the hub and notifications, checks the connections when the app comes
 // back to the foreground, themes the navigation, and lays the banner and the lock over every screen.
+// Inside Telegram, Telegram's Back button goes back and its bars take the page's colour.
 
-import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, type ErrorBoundaryProps, type Href } from 'expo-router'
+import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider, usePathname, type ErrorBoundaryProps, type Href } from 'expo-router'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Appearance, AppState, Platform } from 'react-native'
 import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -15,12 +16,31 @@ import { AttentionBanner, LockGate, SystemAlerts } from '../src/components/Overl
 import { desktop } from '../src/desktop'
 import { useStackOptions } from '../src/navigation'
 import { startNotifications } from '../src/notifications'
+import { inTelegram, setTelegramBack, setTelegramColors, telegram, telegramReady } from '../src/telegram'
 import { useTheme } from '../src/theme'
 
 void SplashScreen.preventAutoHideAsync().catch(() => {})
 
 // A link that opens a screen directly (afterhours://pair?…) still has the tabs to go back to.
 export const unstable_settings = { initialRouteName: '(tabs)' }
+
+/** Inside Telegram: its Back button shows while there's somewhere to go back to, and its bars match the page. */
+function TelegramFrame() {
+  const pathname = usePathname()
+  const { c } = useTheme()
+  const [ready, setReady] = useState(telegram() !== null)
+  useEffect(() => {
+    void telegramReady.then(w => setReady(w !== null))
+  }, [])
+  useEffect(() => {
+    if (ready) setTelegramColors(c.page)
+  }, [ready, c.page])
+  useEffect(() => {
+    if (!ready) return
+    return setTelegramBack(router.canGoBack(), () => router.back())
+  }, [ready, pathname])
+  return null
+}
 
 /** A screen that throws: what broke, Try again, and a report to a machine's owner. */
 export function ErrorBoundary(props: ErrorBoundaryProps) {
@@ -87,6 +107,7 @@ export default function Root() {
           <SystemAlerts />
           <MenuHost />
           <LockGate />
+          {inTelegram ? <TelegramFrame /> : null}
           <StatusBar style={dark ? 'light' : 'dark'} />
         </ThemeProvider>
       </SafeAreaProvider>

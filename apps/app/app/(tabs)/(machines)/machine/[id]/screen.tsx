@@ -5,7 +5,7 @@ import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router'
 import { useCallback, useRef, useState } from 'react'
 import { hub, useMachine } from '../../../../../src/app-state'
 import { countMatches, Terminal } from '../../../../../src/components/bits'
-import { Block, Button, EmptyState, FieldRow, Group, HStack, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
+import { Block, Button, EmptyState, NotPaired, FieldRow, Group, HStack, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { ScreenText } from '../../../../../src/lib/results'
 import { supports } from '../../../../../src/lib/state'
@@ -88,7 +88,7 @@ export default function ScreenView() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

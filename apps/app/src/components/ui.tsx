@@ -2,7 +2,7 @@
 // a segmented control, switches, fields, status dots, badges and empty states.
 
 import Ionicons from '@expo/vector-icons/Ionicons'
-import { Children, isValidElement, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Children, isValidElement, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import {
   ActivityIndicator,
   Animated,
@@ -22,6 +22,7 @@ import {
   type ViewStyle,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { hub } from '../app-state'
 import { mono, tabular, useTheme, type TypeScale } from '../theme'
 
 /** Pressable's state; the web adds `hovered`. */
@@ -499,6 +500,15 @@ export function EmptyState(props: { title: string; text?: string; action?: React
       {props.action ? <View style={{ marginTop: 14 }}>{props.action}</View> : null}
     </View>
   )
+}
+
+const readyOf = () => hub.getState().ready
+
+/** A machine this device isn't paired with; while the app is still starting (an address opened directly, a link from Telegram), rows loading. */
+export function NotPaired(props: { action?: ReactNode }) {
+  const ready = useSyncExternalStore(hub.subscribe, readyOf, readyOf)
+  if (!ready) return <LoadingRows count={2} />
+  return <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." action={props.action} />
 }
 
 /** Rows that are still loading: grey bars where the text will be. */

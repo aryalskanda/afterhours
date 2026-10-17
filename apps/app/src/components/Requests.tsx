@@ -11,6 +11,7 @@ import { hub, useHub, useNow } from '../app-state'
 import { basename, permissionsLabel, plainReply } from '../lib/format'
 import { permissionRisk, type Risk } from '../lib/risk'
 import { supports, type Need } from '../lib/state'
+import { telegramHaptic } from '../telegram'
 import { mono, useTheme } from '../theme'
 import { countdown } from './bits'
 import { Markdown } from './Markdown'
@@ -35,9 +36,12 @@ function useAnswer({ need, onAnswered }: Props) {
       ...(a.mode ? { mode: a.mode } : {}),
     })
     if (!r.ok) {
+      telegramHaptic('error')
       setError(r.error ?? 'It didn’t go through.')
       return false
     }
+    // Inside Telegram, the answer is felt too.
+    telegramHaptic(a.decision === 'deny' ? 'warning' : 'success')
     const text = plainReply(r.text ?? 'Sent.')
     setDone(text)
     onAnswered?.(text)

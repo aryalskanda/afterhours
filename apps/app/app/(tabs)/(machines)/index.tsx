@@ -10,6 +10,7 @@ import { Block, Button, EmptyState, Group, GroupAction, HStack, Page, Row, Statu
 import { clock } from '../../../src/lib/format'
 import { finishedSince, needsYou, runningNow, supports } from '../../../src/lib/state'
 import { TitleButton } from '../../../src/navigation'
+import { inTelegram, openLink, telegramLaunch } from '../../../src/telegram'
 import { useTheme } from '../../../src/theme'
 
 /** "3 done, 1 failed since 9:40 PM." */
@@ -35,6 +36,7 @@ export default function Machines() {
   const canQueue = machines.some(m => m.role !== 'viewer' && m.status !== 'refused')
   const canSearch = machines.some(m => supports(m, 'history'))
   const several = machines.length > 1
+  const bot = telegramLaunch?.bot ?? null
 
   if (!ready) return <View style={{ flex: 1, backgroundColor: c.page }} />
 
@@ -68,10 +70,17 @@ export default function Machines() {
         <EmptyState
           testID="welcome"
           title="No machines yet"
-          text="On a computer, run cq pair, then scan its code."
+          text={
+            inTelegram
+              ? bot
+                ? 'Set up pairs this with your Mac in one tap, through your bot.'
+                : 'Send /app to your Afterhours bot: it pairs this with your Mac in one tap.'
+              : 'On a computer, run cq pair, then scan its code.'
+          }
           action={
             <View style={{ gap: 10, alignSelf: 'stretch' }}>
-              <Button title="Pair a machine" onPress={() => router.push('/pair')} testID="pair-first" />
+              {inTelegram && bot ? <Button title="Set up" onPress={() => openLink(`https://t.me/${bot}?start=app`)} testID="telegram-setup" /> : null}
+              <Button kind={inTelegram && bot ? 'plain' : undefined} title="Pair a machine" onPress={() => router.push('/pair')} testID="pair-first" />
               <Button kind="plain" title="Try a demo machine" onPress={() => void hub.addDemo()} testID="try-demo" />
             </View>
           }

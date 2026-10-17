@@ -8,6 +8,7 @@ import { APP_VERSION, hub, useHub } from '../../../src/app-state'
 import { statusColor } from '../../../src/components/bits'
 import { FieldRow, Group, Note, Page, Row, StatusDot, SwitchRow, Txt } from '../../../src/components/ui'
 import { desktop } from '../../../src/desktop'
+import { inTelegram } from '../../../src/telegram'
 import { statusLabel } from '../../../src/lib/format'
 import { useTheme } from '../../../src/theme'
 
@@ -33,7 +34,15 @@ export default function Settings() {
     <Page title="Settings" testID="settings">
       <Group
         header="This device"
-        footer={saved ? 'Saved, and sent to the machines that are online.' : Platform.OS === 'web' && !desktop ? 'Machines see this name. The key is kept in this site’s storage.' : 'Machines see this name.'}
+        footer={
+          saved
+            ? 'Saved, and sent to the machines that are online.'
+            : inTelegram
+              ? 'Machines see this name. The key is kept in Telegram’s storage on this device.'
+              : Platform.OS === 'web' && !desktop
+                ? 'Machines see this name. The key is kept in this site’s storage.'
+                : 'Machines see this name.'
+        }
       >
         <FieldRow label="Name" value={name} onChangeText={t => (setName(t), setSaved(false))} maxLength={80} testID="device-name" />
         {clean && clean !== s.deviceName ? (

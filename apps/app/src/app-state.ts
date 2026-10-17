@@ -8,6 +8,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Platform } from 'react-native'
 import { desktop, desktopPlatform } from './desktop'
 import { Hub, type HubState, type Storage } from './lib/hub'
+import { telegramDevice, telegramLaunch, telegramStorage } from './telegram'
 import { noteProblem } from './lib/problems'
 import type { MachineState } from './lib/state'
 
@@ -18,23 +19,28 @@ const local = {
 
 /**
  * The key lives in the Keychain / Keystore, on this device only (never in a backup); on the
- * desktop, encrypted by the OS. A plain browser has no keychain: there it's in the site's storage,
- * which Settings says.
+ * desktop, encrypted by the OS; inside Telegram, in Telegram's secure storage where it has one. A
+ * plain browser has no keychain: there it's in the site's storage, which Settings says.
  */
 const bridge = desktop
 const storage: Storage = bridge
   ? { getSecret: key => bridge.secrets.get(key), setSecret: (key, value) => bridge.secrets.set(key, value), get: local.get, set: local.set }
-  : Platform.OS === 'web'
-    ? { getSecret: local.get, setSecret: local.set, get: local.get, set: local.set }
-    : {
-        getSecret: key => SecureStore.getItemAsync(key),
-        setSecret: (key, value) => SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
-        get: key => AsyncStorage.getItem(key),
-        set: (key, value) => AsyncStorage.setItem(key, value),
-      }
+  : telegramLaunch
+    ? telegramStorage(local)
+    : Platform.OS === 'web'
+      ? { getSecret: local.get, setSecret: local.set, get: local.get, set: local.set }
+      : {
+          getSecret: key => SecureStore.getItemAsync(key),
+          setSecret: (key, value) => SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
+          get: key => AsyncStorage.getItem(key),
+          set: (key, value) => AsyncStorage.setItem(key, value),
+        }
+
+const inside = telegramLaunch ? telegramDevice(telegramLaunch) : null
 
 function defaultName(): string {
   if (desktop?.info.deviceName) return desktop.info.deviceName
+  if (inside) return inside.name
   const named = Constants.deviceName?.trim()
   if (named) return named
   return Platform.OS === 'ios' ? 'iPhone' : Platform.OS === 'android' ? 'Android phone' : 'Web browser'
@@ -45,8 +51,10 @@ export const APP_VERSION = Constants.expoConfig?.version ?? '0.1.0'
 export const hub = new Hub({
   storage,
   defaultName: defaultName(),
-  platform: desktopPlatform ?? Platform.OS,
+  platform: desktopPlatform ?? inside?.platform ?? Platform.OS,
   app: `afterhours-app/${APP_VERSION}`,
+  // Pairing from inside Telegram: Telegram's proof of who opened the app, for the machine to check.
+  telegram: telegramLaunch ? () => telegramLaunch?.initData || undefined : undefined,
   // Connection lines, kept for a problem report.
   log: noteProblem,
 })

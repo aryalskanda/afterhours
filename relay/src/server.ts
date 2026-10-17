@@ -2,8 +2,12 @@
 // connecting (a signature with their key), forwards only between a machine and the apps the
 // machine linked (or an app holding a live pairing offer), and never sees inside a frame: those
 // are end-to-end encrypted. It stores keys, links and connection times; nothing else.
+// It can also serve the app's web build (`appDir`), for a machine that runs its own relay and opens
+// the app inside Telegram: the same address then has the app and its relay.
 
 import { Database } from 'bun:sqlite'
+import { statSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import type { Server, ServerWebSocket } from 'bun'
 import {
   authMessage,
@@ -59,6 +63,8 @@ export interface RelayOptions {
   log?: (line: string) => void
   now?: () => number
   limits?: Partial<RelayLimits>
+  /** The app's web build (apps/app/dist-web), served at every other address. */
+  appDir?: string
 }
 
 export interface Relay {
@@ -95,6 +101,63 @@ CREATE TABLE IF NOT EXISTS links (
 );
 CREATE INDEX IF NOT EXISTS links_device ON links (device);
 `
+
+/**
+ * What pages from `appDir` may do: their own scripts (and Telegram's, which the app loads only
+ * inside Telegram), connections to relays, and showing inside Telegram's web client.
+ */
+export const APP_CSP = [
+  "default-src 'self'",
+  "script-src 'self' https://telegram.org",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self' wss:",
+  "frame-ancestors 'self' https://web.telegram.org",
+  "base-uri 'none'",
+  "object-src 'none'",
+  "form-action 'none'",
+].join('; ')
+
+/**
+ * A file from the app's build, or the app itself for any address that isn't a file (one page app).
+ * Pairing links arrive in the query string: it is never logged, and no referrer carries it on.
+ */
+export function appResponse(dir: string, req: Request): Response {
+  const headers: Record<string, string> = {
+    'content-security-policy': APP_CSP,
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') return new Response('Not here.\n', { status: 405, headers })
+  const root = resolve(dir)
+  let path: string
+  try {
+    path = resolve(join(root, decodeURIComponent(new URL(req.url).pathname)))
+  } catch {
+    return new Response('Bad address.\n', { status: 400, headers })
+  }
+  if (path !== root && !path.startsWith(root + sep)) return new Response('Not here.\n', { status: 404, headers })
+  const isFile = (p: string) => {
+    try {
+      return statSync(p).isFile()
+    } catch {
+      return false
+    }
+  }
+  if (isFile(path)) {
+    // Bundles and fonts have their content's hash in the name, so they never change.
+    const hashed = /[\/](_expo[\/]static|assets)[\/]/.test(path.slice(root.length))
+    headers['cache-control'] = hashed ? 'public, max-age=31536000, immutable' : 'no-cache'
+    return new Response(Bun.file(path), { headers })
+  }
+  const index = join(root, 'index.html')
+  // An address with a file extension that isn't there is a missing file, not a screen.
+  if (/\.[A-Za-z0-9]{1,8}$/.test(path) || !isFile(index)) return new Response('Not here.\n', { status: 404, headers })
+  headers['cache-control'] = 'no-cache'
+  headers['content-type'] = 'text/html; charset=utf-8'
+  return new Response(Bun.file(index), { headers })
+}
 
 export function startRelay(o: RelayOptions = {}): Relay {
   const limits = { ...DEFAULT_LIMITS, ...o.limits }
@@ -330,6 +393,7 @@ export function startRelay(o: RelayOptions = {}): Relay {
         if (srv.upgrade(req, { data })) return undefined
         return new Response('upgrade failed', { status: 400 })
       }
+      if (o.appDir) return appResponse(o.appDir, req)
       return new Response('Afterhours relay. Apps and machines connect to /v1.\n', { headers: { 'content-type': 'text/plain' } })
     },
     websocket: {

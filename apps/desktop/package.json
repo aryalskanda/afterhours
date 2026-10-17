@@ -1,7 +1,7 @@
 {
   "name": "afterhours-desktop",
   "productName": "Afterhours",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "The Afterhours app for Mac, Windows and Linux: the app's web build, in Electron",
   "license": "Apache-2.0",

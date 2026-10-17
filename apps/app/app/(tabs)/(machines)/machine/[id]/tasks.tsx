@@ -6,7 +6,7 @@ import { Stack, useLocalSearchParams } from 'expo-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { hub, useMachine } from '../../../../../src/app-state'
 import { TaskRow } from '../../../../../src/components/bits'
-import { Block, EmptyState, FieldRow, Group, LoadingRows, Note, Page, Row, Segmented } from '../../../../../src/components/ui'
+import { Block, EmptyState, NotPaired, FieldRow, Group, LoadingRows, Note, Page, Row, Segmented } from '../../../../../src/components/ui'
 import { Jobs, UNREADABLE } from '../../../../../src/lib/results'
 import { supports } from '../../../../../src/lib/state'
 
@@ -76,7 +76,7 @@ export default function AllTasks() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

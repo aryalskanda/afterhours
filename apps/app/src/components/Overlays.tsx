@@ -11,6 +11,7 @@ import { hub, useHub } from '../app-state'
 import { desktop } from '../desktop'
 import { withoutEmoji } from '../lib/format'
 import { genericText, pushRoute, wantsNotice } from '../lib/push'
+import { telegramHaptic } from '../telegram'
 import { useTheme } from '../theme'
 import { Button, StatusDot, Txt } from './ui'
 
@@ -61,6 +62,7 @@ export function AttentionBanner() {
   useEffect(() => {
     if (!attention) return
     if (Platform.OS !== 'web') void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {})
+    else telegramHaptic('warning')
     const timer = setTimeout(() => hub.dismissAttention(attention.id), 7000)
     return () => clearTimeout(timer)
   }, [attention])

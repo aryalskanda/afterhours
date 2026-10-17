@@ -40,6 +40,11 @@ export interface OfferView {
 export interface HostOptions {
   identity: Identity
   relay: string
+  /**
+   * The relay address pairing links give apps, when it differs from the one this machine uses (the
+   * machine runs the relay itself and reaches it locally; apps come through its public address).
+   */
+  linkRelay?: () => string
   machine: () => MachineInfo
   /** A paired device's role, or null when it isn't (or is no longer) allowed. */
   roleOf: (device: string) => Role | null
@@ -75,8 +80,11 @@ interface Offer {
   id: Uint8Array
   secret: Uint8Array
   autoApprove: boolean
-  pending: Map<string, { session: Session; device: DeviceHello; startedAt: number }>
-  winner: { session: Session; device: DeviceHello } | null
+  /** A check of the app's Hello before an automatic yes: failing it is a no, with `refusal` as the reason. */
+  verify: ((hello: Hello) => boolean) | null
+  refusal: string
+  pending: Map<string, { session: Session; device: DeviceHello; hello: Hello; startedAt: number }>
+  winner: { session: Session; device: DeviceHello; hello: Hello } | null
 }
 
 class LiveSession implements HostSession {
@@ -167,21 +175,25 @@ export class Host {
     }
   }
 
-  /** A pairing offer: show its link as a QR code. Valid for `ttlMs` (10 minutes by default). */
-  openOffer(o: { role: Role; autoApprove?: boolean; ttlMs?: number }): OfferView {
+  /**
+   * A pairing offer: show its link as a QR code. Valid for `ttlMs` (10 minutes by default).
+   * `verify`: approve by itself only an app whose Hello passes it; refuse every other one, telling
+   * it `refusal` (a short code the app explains).
+   */
+  openOffer(o: { role: Role; autoApprove?: boolean; ttlMs?: number; verify?: (hello: Hello) => boolean; refusal?: string }): OfferView {
     const secret = randomBytes(PAIRING_SECRET_BYTES)
     const id = offerId(secret)
     const expires = this.now() + Math.min(o.ttlMs ?? PAIRING_TTL_MS, PAIRING_TTL_MS)
     const machine = this.o.machine()
     const view: OfferView = {
       offer: toBase64url(id),
-      link: pairingLink({ relay: this.o.relay, machine: this.id, name: machine.name, secret, expires }),
+      link: pairingLink({ relay: this.o.linkRelay?.() ?? this.o.relay, machine: this.id, name: machine.name, secret, expires }),
       role: o.role,
       expires,
       status: 'waiting',
       device: null,
     }
-    this.offers.set(view.offer, { view, id, secret, autoApprove: o.autoApprove ?? false, pending: new Map(), winner: null })
+    this.offers.set(view.offer, { view, id, secret, autoApprove: o.autoApprove ?? false, verify: o.verify ?? null, refusal: o.refusal ?? 'denied', pending: new Map(), winner: null })
     this.relay.control({ t: 'offer', offer: view.offer, expires })
     return { ...view }
   }
@@ -191,8 +203,8 @@ export class Host {
     return o ? { ...o.view, device: o.view.device ? { ...o.view.device } : null } : null
   }
 
-  /** Your yes or no to a pairing that proved the secret. */
-  decide(offer: string, approve: boolean): OfferView | null {
+  /** Your yes or no to a pairing that proved the secret. `reason`: what the app is told on a no. */
+  decide(offer: string, approve: boolean, reason = 'denied'): OfferView | null {
     const o = this.offers.get(offer)
     if (!o || o.view.status !== 'confirm' || !o.winner) return this.offer(offer)
     const { session, device } = o.winner
@@ -211,7 +223,7 @@ export class Host {
     this.sendPairing(device.id, session, o.id, {
       type: 'pair.result',
       ok,
-      ...(ok ? { machine: this.o.machine(), role: o.view.role } : { error: error ? 'failed' : 'denied' }),
+      ...(ok ? { machine: this.o.machine(), role: o.view.role } : { error: error ? 'failed' : reason }),
     })
     this.closeOffer(o)
     return this.offer(offer)
@@ -351,7 +363,7 @@ export class Host {
         const session = Session.respond({ identity: this.o.identity, peer: frame.peer, pattern: 'IKpsk2', psk: pairingKey(o.secret), id: frame.session })
         const hello = Hello.parse(session.readHandshake(frame.payload))
         const device = { id: frame.peer, name: hello.name, platform: hello.platform }
-        o.pending.set(key, { session, device, startedAt: this.now() })
+        o.pending.set(key, { session, device, hello, startedAt: this.now() })
         this.sendPairing(frame.peer, session, o.id, { v: PROTOCOL, ok: true, machine: this.o.machine() }, true)
       } catch {
         this.sendReset(frame.peer, frame.session)
@@ -369,11 +381,19 @@ export class Host {
     }
     if (message === undefined || !PairConfirm.safeParse(message).success) return
     o.pending.clear()
-    o.winner = { session: pending.session, device: pending.device }
+    o.winner = { session: pending.session, device: pending.device, hello: pending.hello }
     o.view.status = 'confirm'
     o.view.device = pending.device
     this.o.onPairingRequest?.(this.offer(o.view.offer)!)
-    if (o.autoApprove) this.decide(o.view.offer, true)
+    if (o.verify) {
+      let passed = false
+      try {
+        passed = o.verify(pending.hello)
+      } catch (err) {
+        this.log(`pairing ${pending.device.name}: the check failed: ${err instanceof Error ? err.message : err}`)
+      }
+      this.decide(o.view.offer, passed, o.refusal)
+    } else if (o.autoApprove) this.decide(o.view.offer, true)
   }
 
   private closeOffer(o: Offer): void {

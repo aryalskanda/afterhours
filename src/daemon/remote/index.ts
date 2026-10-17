@@ -1,6 +1,8 @@
 // Remote access from the Afterhours apps: this machine connects out to a relay, apps pair with it
 // (cq pair), and everything between them is end-to-end encrypted (packages/protocol). Turned on
 // by `cq pair`; config.json's `remote` section holds the relay and this machine's rules.
+// With `remote.serve` (cq app setup) the machine runs the relay itself, serving the app's web
+// build at the same address: that's the app inside Telegram.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
@@ -14,10 +16,12 @@ import {
   PROTOCOL,
   type Identity,
   type MachineInfo,
+  type Hello,
   type OfferView,
   type Role,
   type SocketFactory,
 } from '@afterhours/protocol'
+import { startRelay, type Relay } from '../../../relay/src/server'
 import { paths, writeFileAtomic, type Config } from '../../shared/config'
 import type { JobSpec } from '../../shared/types'
 import type { ChatSource } from '../chats'
@@ -58,6 +62,11 @@ export interface RemoteDeps {
   /** Where the machine's key lives (tests use a scratch file). */
   identityPath?: string
   socket?: SocketFactory
+  /** When this machine runs the relay (remote.serve): the app's web build, and the relay's database. */
+  appDir?: string
+  relayDb?: string
+  /** A device was just paired (the Telegram bot says so in your chat). */
+  onPaired?: (device: { name: string; platform: string }, role: Role) => void
 }
 
 export interface RemoteStatus {
@@ -68,6 +77,8 @@ export interface RemoteStatus {
   devices: number
   sessions: number
   error: string | null
+  /** The relay this machine runs itself (remote.serve), and the app it serves. */
+  serving: { port: number; listening: number | null; publicUrl: string | null; app: boolean; error: string | null } | null
 }
 
 const OS_NAMES: Record<string, string> = { darwin: 'macOS', linux: 'Linux', win32: 'Windows' }
@@ -80,6 +91,10 @@ export class Remote {
   private readonly lastTouch = new Map<string, number>()
   private host: Host | null = null
   private running = ''
+  /** The relay this machine runs: the port config asked for (0 picks one), and the server. */
+  private relay: { port: number; server: Relay } | null = null
+  private relayError: string | null = null
+  private relayTriedAt = 0
   private identity: Identity | null = null
   private error: string | null = null
   private prunedAt = 0
@@ -121,10 +136,13 @@ export class Remote {
     })
   }
 
-  /** Starts, restarts or stops the relay connection to match config.json. */
+  /** Starts, restarts or stops the relay connection (and the relay this machine runs) to match config.json. */
   apply(): void {
     const r = this.d.config().remote
-    const want = r.enabled && r.relay ? r.relay : ''
+    this.applyServe(r.enabled ? r.serve : null)
+    // Running the relay here: this machine reaches it locally, and links give apps its public address.
+    const local = this.relay ? `ws://127.0.0.1:${this.relay.server.port}/v1` : null
+    const want = r.enabled && r.relay ? (r.serve ? (local ?? '') : r.relay) : ''
     if (want === this.running) return
     this.host?.stop()
     this.host = null
@@ -141,6 +159,7 @@ export class Remote {
     this.host = new Host({
       identity: this.identity,
       relay: want,
+      linkRelay: () => this.d.config().remote.relay ?? want,
       machine: () => this.machine(),
       roleOf: id => this.roleOf(id),
       devices: () => this.db.activeIds(),
@@ -153,6 +172,7 @@ export class Remote {
         this.db.addDevice({ ...device, role, addedBy: 'pairing' }, this.d.now())
         this.audit({ device: device.id, deviceName: device.name, action: 'paired', detail: role, ok: true })
         this.d.log(`pairing: "${device.name}" can now reach this machine as ${role}`)
+        this.d.onPaired?.(device, role)
       },
       log: this.d.log,
       now: this.d.now,
@@ -165,6 +185,64 @@ export class Remote {
     this.host?.stop()
     this.host = null
     this.running = ''
+    this.applyServe(null)
+  }
+
+  /** Starts or stops the relay this machine runs, serving the app too. */
+  private applyServe(serve: { port: number } | null): void {
+    const port = serve?.port ?? null
+    if (this.relay && this.relay.port === port) return
+    if (this.relay) {
+      void this.relay.server.stop()
+      this.relay = null
+      this.d.log('remote: stopped the relay on this machine')
+    }
+    this.relayError = null
+    if (port === null) return
+    this.relayTriedAt = this.d.now()
+    try {
+      const appDir = this.d.appDir ?? paths.web
+      const server = startRelay({
+        port,
+        hostname: '127.0.0.1',
+        db: this.d.relayDb ?? paths.relayDb,
+        appDir: existsSync(appDir) ? appDir : undefined,
+        log: line => this.d.log(`relay: ${line}`),
+      })
+      this.relay = { port, server }
+    } catch (err) {
+      this.relayError = `can't run the relay on 127.0.0.1:${port}: ${err instanceof Error ? err.message : err}`
+      this.d.log(`remote: ${this.relayError}`)
+    }
+  }
+
+  /** The app's public address, when this machine serves it (cq app setup); null otherwise. */
+  appUrl(): string | null {
+    const r = this.d.config().remote
+    if (!r.enabled || !r.serve || !r.publicUrl || !this.relay) return null
+    return r.publicUrl.replace(/\/+$/, '')
+  }
+
+  /** This machine's id, as the apps know it (in their addresses). */
+  machineId(): string | null {
+    return this.identity ? peerId(this.identity.publicKey) : null
+  }
+
+  /** Whether a device paired from inside Telegram can reach this machine. */
+  hasTelegramDevice(): boolean {
+    return this.db.devices().some(d => d.platform.startsWith('telegram'))
+  }
+
+  /**
+   * A one-time pairing link for the Telegram bot's owner, opened in the app inside Telegram: an
+   * owner, approved by itself only when `verify` accepts the app's Hello (Telegram's proof that
+   * it's the bot's owner), and refused otherwise.
+   */
+  openTelegramOffer(verify: (hello: Hello) => boolean): OfferView | string {
+    if (!this.host) return this.error ?? 'Remote access is off. Run cq app setup on the Mac.'
+    const offer = this.host.openOffer({ role: 'owner', verify, refusal: 'telegram' })
+    this.audit({ device: null, deviceName: null, action: 'pair.offer', detail: 'owner, from Telegram', ok: true })
+    return offer
   }
 
   status(): RemoteStatus {
@@ -177,7 +255,10 @@ export class Remote {
       machine: id ? { id: peerId(id.publicKey), name: this.machineName(), fingerprint: fingerprint(peerId(id.publicKey)) } : null,
       devices: this.db.activeIds().length,
       sessions: this.host?.liveSessions().length ?? 0,
-      error: this.error,
+      error: this.error ?? this.relayError,
+      serving: r.serve
+        ? { port: r.serve.port, listening: this.relay?.server.port ?? null, publicUrl: r.publicUrl, app: existsSync(this.d.appDir ?? paths.web), error: this.relayError }
+        : null,
     }
   }
 
@@ -198,6 +279,8 @@ export class Remote {
 
   /** Call every few seconds from the daemon's loop. */
   tick(): void {
+    // The relay this machine runs couldn't start (its port was taken): try again every minute.
+    if (this.relayError && this.d.now() - this.relayTriedAt > 60_000) this.apply()
     this.host?.tick()
     this.feed.tick()
     const now = this.d.now()

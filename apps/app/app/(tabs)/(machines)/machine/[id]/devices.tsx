@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Platform, Share } from 'react-native'
 import { hub, useHub, useMachine, useNow } from '../../../../../src/app-state'
 import { QrCode } from '../../../../../src/components/QrCode'
-import { Block, Button, ConfirmRow, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Segmented, Txt } from '../../../../../src/components/ui'
+import { Block, Button, ConfirmRow, EmptyState, NotPaired, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, Segmented, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { ago, clock, roleLabel } from '../../../../../src/lib/format'
 import { DeviceList, Offer, UNREADABLE } from '../../../../../src/lib/results'
@@ -125,7 +125,7 @@ export default function Devices() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

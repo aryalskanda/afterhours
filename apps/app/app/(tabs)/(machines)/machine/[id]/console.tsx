@@ -5,7 +5,7 @@ import { Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useRef, useState } from 'react'
 import { ScrollView, Text, View } from 'react-native'
 import { hub, useMachine } from '../../../../../src/app-state'
-import { Block, Button, EmptyState, FieldRow, Group, HStack, Page } from '../../../../../src/components/ui'
+import { Block, Button, EmptyState, NotPaired, FieldRow, Group, HStack, Page } from '../../../../../src/components/ui'
 import { withoutEmoji } from '../../../../../src/lib/format'
 import { mono, useTheme } from '../../../../../src/theme'
 
@@ -38,7 +38,7 @@ export default function ConsoleScreen() {
     if (m?.status === 'connected' && m.role === 'owner' && lines.length === 0) void run('help')
   }, [m?.status])
 
-  if (!m) return <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+  if (!m) return <NotPaired />
   if (m.role !== 'owner') {
     return (
       <Page>

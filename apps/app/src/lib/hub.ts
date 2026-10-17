@@ -104,6 +104,8 @@ export interface HubOptions {
   defaultName: string
   platform: string
   app: string
+  /** Inside Telegram: its signed launch data, sent while pairing. */
+  telegram?: () => string | undefined
   socket?: SocketFactory
   log?: (line: string) => void
   now?: () => number
@@ -223,7 +225,7 @@ export class Hub {
       const pushToken = (await s.get(KEYS.push)) || null
       this.pushSent = new Map(Object.entries(JSON.parse((await s.get(KEYS.pushSent)) ?? '{}') as Record<string, string>))
       const id = peerId(identity.publicKey)
-      this.client = new AppClient({ identity, device: { name, platform: this.o.platform, app: this.o.app }, socket: this.o.socket, log: this.o.log })
+      this.client = new AppClient({ identity, device: { name, platform: this.o.platform, app: this.o.app, telegram: this.o.telegram }, socket: this.o.socket, log: this.o.log })
       this.startedAt = this.now()
       this.set({ ready: true, deviceId: id, deviceName: name, fingerprint: fingerprint(id), machines: machines.map(machineState), prefs, saved, outbox, away: leftAt, push: { token: pushToken, error: null } })
       for (const m of machines) this.connect(m)

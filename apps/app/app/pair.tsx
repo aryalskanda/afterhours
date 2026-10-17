@@ -1,5 +1,6 @@
 // Pairing: scan the code `cq pair` shows, paste its link, or open the link on this device. The
-// machine then asks for a yes, unless `cq pair` was told to say yes by itself.
+// machine then asks for a yes, unless `cq pair` was told to say yes by itself. Inside Telegram the
+// bot's Finish setup opens this with its link, and the machine checks with Telegram that it's you.
 
 import { parsePairingLink, type Paired, type Role } from '@afterhours/protocol'
 import { CameraView, useCameraPermissions } from 'expo-camera'
@@ -10,7 +11,8 @@ import { Linking, Platform, View } from 'react-native'
 import { hub, useHub } from '../src/app-state'
 import { Block, Button, Group, HStack, Note, Page, Row, Spinner, TextArea, Txt } from '../src/components/ui'
 import { pairingLinkFrom } from '../src/lib/links'
-import { HeaderButton } from '../src/navigation'
+import { HeaderButton, noBack } from '../src/navigation'
+import { inTelegram, telegramReady, telegramScanner } from '../src/telegram'
 import { useTheme } from '../src/theme'
 
 type Phase = { kind: 'idle' } | { kind: 'waiting'; name: string } | { kind: 'paired'; paired: Paired } | { kind: 'failed'; text: string }
@@ -33,6 +35,11 @@ export default function Pair() {
   const [permission, requestPermission] = useCameraPermissions()
   const busy = useRef(false)
   const lastScan = useRef<string | null>(null)
+  // Telegram's own QR scanner, once its script has loaded (phones only).
+  const [scan, setScan] = useState<ReturnType<typeof telegramScanner>>(null)
+  useEffect(() => {
+    if (inTelegram) void telegramReady.then(() => setScan(() => telegramScanner()))
+  }, [])
 
   const start = async (link: string) => {
     if (busy.current) return
@@ -59,13 +66,13 @@ export default function Pair() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, fromLink])
 
-  const header = <Stack.Screen options={{ headerLeft: Platform.OS === 'web' ? undefined : () => <HeaderButton title="Cancel" onPress={() => router.back()} /> }} />
+  const header = <Stack.Screen options={{ headerLeft: Platform.OS === 'web' ? noBack : () => <HeaderButton title="Cancel" onPress={() => router.back()} /> }} />
 
   if (phase.kind === 'waiting') {
     return (
       <Page sheet testID="pair">
         {header}
-        <Group testID="pair-waiting" footer="Say yes where cq pair is running.">
+        <Group testID="pair-waiting" footer={inTelegram && fromLink ? 'It checks with Telegram that it’s you.' : 'Say yes where cq pair is running.'}>
           <Row leading={<Spinner />} title={`Waiting for ${phase.name}…`} />
         </Group>
       </Page>
@@ -102,6 +109,19 @@ export default function Pair() {
           <Note ok={false} text={phase.text} />
         </View>
       ) : null}
+      {scan ? (
+        <Group header="Scan the code cq pair shows">
+          <Row
+            title="Scan with Telegram"
+            tone="accent"
+            testID="pair-scan-telegram"
+            onPress={async () => {
+              const data = await scan('Scan the code cq pair shows')
+              if (data) void start(data)
+            }}
+          />
+        </Group>
+      ) : null}
       {scanning ? (
         <Group header="Scan the code cq pair shows">
           {permission?.granted ? (
@@ -130,7 +150,7 @@ export default function Pair() {
           )}
         </Group>
       ) : null}
-      <Group header={scanning ? 'Or paste its link' : 'Paste the link cq pair shows'}>
+      <Group header={scanning || scan ? 'Or paste its link' : 'Paste the link cq pair shows'}>
         <TextArea placeholder="afterhours://pair?…" value={text} onChangeText={setText} autoCapitalize="none" autoCorrect={false} minHeight={88} testID="pair-link" />
         <Block>
           <HStack>

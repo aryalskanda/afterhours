@@ -16,6 +16,10 @@ export const paths = {
   db: join(CQ_HOME, 'state.db'),
   logs: join(CQ_HOME, 'logs'),
   log: join(CQ_HOME, 'logs', 'cqd.log'),
+  /** The app's web build, when this machine serves it (cq app setup). */
+  web: join(CQ_HOME, 'web'),
+  /** The relay's keys and links, when this machine runs the relay itself. */
+  relayDb: join(CQ_HOME, 'relay.db'),
   /** Problem reports sent from the apps. */
   appReports: join(CQ_HOME, 'logs', 'app-reports.log'),
   jobs: join(CQ_HOME, 'jobs'),
@@ -107,6 +111,13 @@ export interface RemoteConfig {
   allowScreens: boolean
   /** Whether apps may type and press keys in a running task. */
   allowTyping: boolean
+  /**
+   * Run the relay inside Afterhours, on this port of 127.0.0.1, serving the app's web build too
+   * (cq app setup). This machine then reaches it locally; apps use `relay`, its public address.
+   */
+  serve: { port: number } | null
+  /** Where that relay and the app are reachable from the internet, e.g. https://mac.tailnet.ts.net. */
+  publicUrl: string | null
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -135,7 +146,7 @@ export const DEFAULT_CONFIG: Config = {
   autoContinueChats: true,
   reopenInVsCode: true,
   keepAwake: true,
-  remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true },
+  remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, serve: null, publicUrl: null },
 }
 
 export function ensureHome(): void {

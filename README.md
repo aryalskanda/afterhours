@@ -119,7 +119,30 @@ Keeping it tidy:
 
 If Telegram can't be reached, messages wait on the Mac and arrive in order once it can.
 
-Commands in the menu: `/new /chats /leave /queue /status /peek /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
+Commands in the menu: `/app /new /chats /leave /queue /status /peek /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
+
+### The app inside Telegram
+
+A chat has limits: buttons in a row share its width, so long labels get cut, and long text arrives in parts. So the bot can open the whole Afterhours app inside Telegram instead, as a Mini App: full screen, light or dark like Telegram, with Telegram's own Back button. It needs no app store and no account anywhere. Your Mac serves the app, and Tailscale Funnel gives it the public https address Telegram requires.
+
+1. Install [Tailscale](https://tailscale.com/download), sign in and connect. Turn on **HTTPS Certificates** once (Tailscale's admin page → DNS).
+2. On the Mac: `cq app setup`. It copies the app's web build, runs the relay inside Afterhours (on `127.0.0.1:7788`), and opens it to the internet with `tailscale funnel`. The first time, Tailscale shows a link to allow Funnel. Open it, then run `cq app setup` again.
+3. In Telegram, send `/app` to your bot and tap **Finish setup**. That pairs this Telegram with your Mac in one tap. The link works once, for 10 minutes, and the Mac also checks Telegram's signed proof that you're the bot's owner.
+
+From then on:
+
+- The **Afterhours** button next to the text box opens the app.
+- The bot's messages are a line or two, and **Open ↗** shows the rest in the app:
+  - 🔐 *#14 wants to run a command · Runs the tests*: **✅ Allow** · **❌ Deny** · **Open ↗**
+  - ✅ *#14 done in 48m · 6 files changed*: **Open ↗** · **➕ Follow up**
+  - ❓ questions: **Answer ↗**
+  - 📝 plans: **✅ Approve** · **Review ↗**
+  - ⚠️ / ❌ paused or failed: **▶️ Go** · **⏭ Skip** · **Open ↗**
+- A prompt you type still gets a card: **▶️ Queue** as it is, or **Change ↗** in the app.
+- The buttons under the text box go away, since the app has them all. The typed commands still work.
+- `/settings` → **📄 Full messages instead** brings back the full messages and buttons.
+
+Inside the app, everything goes end to end through the relay, not through Telegram; the bot's short notices still pass through Telegram, as before. The app only opens while the Mac is awake and online, and so does the bot. `cq app status` checks it's reachable; `cq app off` stops serving it. Every newly paired device is announced in your chat.
 
 ## Continue a VS Code chat from your phone
 
@@ -163,6 +186,8 @@ The machine decides what apps may do, and no app can change it:
 - `cq remote bypass on|off`: tasks that skip permission prompts (off by default).
 - `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task.
 - `cq devices` lists paired devices; `cq devices remove <name>` cuts one off at once; `cq audit` shows what apps did.
+
+The relay can also run inside Afterhours, serving the app's web build at the same address: that's how [the app inside Telegram](#the-app-inside-telegram) works (`cq app setup`). To serve the app from a relay you run yourself, set `APP_DIR=apps/app/dist-web`.
 
 ## What happens to a task
 

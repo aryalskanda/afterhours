@@ -1,6 +1,6 @@
 // Notifications: push on a phone (through the machines), the browser's when its tab is in the
 // background, the desktop app's when its window isn't in front. Then what they're about, whether
-// they say what the task asks, and quiet hours.
+// they say what the task asks, and quiet hours. Inside Telegram, the bot is what notifies you.
 
 import { Stack } from 'expo-router'
 import { useEffect, useState } from 'react'
@@ -12,6 +12,7 @@ import { parseTimeOfDay, timeOfDay } from '../../../src/lib/format'
 import type { NotifyPrefs } from '../../../src/lib/push'
 import { supports } from '../../../src/lib/state'
 import { enablePush, pushAvailable } from '../../../src/notifications'
+import { inTelegram, openLink, telegramLaunch } from '../../../src/telegram'
 
 /** A time you type ("10 pm", "22:00"), kept when it reads as one. */
 function TimeField(props: { label: string; minutes: number; onChange: (m: number) => void; testID: string }) {
@@ -41,6 +42,19 @@ export default function NotificationSettings() {
   const event = (key: keyof NotifyPrefs['events']) => (v: boolean) => set({ events: { ...n.events, [key]: v } })
   const pushOn = Boolean(s.push.token)
   const old = pushAvailable && pushOn ? s.machines.filter(m => m.synced && !supports(m, 'push')) : []
+
+  if (inTelegram) {
+    const bot = telegramLaunch?.bot
+    return (
+      <Page testID="notifications">
+        <Stack.Screen options={{ title: 'Notifications' }} />
+        <Group footer="Requests, finished tasks, failures and usage limits, each in a line or two with Open ↗. The bot’s /settings chooses how many." testID="notify-telegram">
+          <Row title="Your bot messages you" value="On" />
+          {bot ? <Row title="Open the bot" tone="accent" onPress={() => openLink(`https://t.me/${bot}`)} testID="open-bot" /> : null}
+        </Group>
+      </Page>
+    )
+  }
 
   return (
     <Page testID="notifications">

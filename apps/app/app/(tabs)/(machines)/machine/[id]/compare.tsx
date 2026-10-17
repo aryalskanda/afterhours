@@ -6,7 +6,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useState } from 'react'
 import { hub, useMachine, useNow } from '../../../../../src/app-state'
 import { LineCounts } from '../../../../../src/components/Changes'
-import { ConfirmRow, EmptyState, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
+import { ConfirmRow, EmptyState, NotPaired, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { duration, modelLabel, money, oneLine, phaseLabel } from '../../../../../src/lib/format'
 import { DiffSummary, Jobs } from '../../../../../src/lib/results'
@@ -42,7 +42,7 @@ export default function CompareScreen() {
   const now = useNow(15_000)
   const [outcome, setOutcome] = useState<{ ok: boolean; text: string } | null>(null)
   const older = useLoad(id, { type: 'jobs', recent: 100 }, Jobs, `jobs:${group}`)
-  if (!m) return <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+  if (!m) return <NotPaired />
 
   // The machine's live copies first; older finished ones from its history.
   const byId = new Map<number, Job>()

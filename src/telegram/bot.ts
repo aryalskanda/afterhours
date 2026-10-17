@@ -1,5 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import type { Hello } from '@afterhours/protocol'
+import { BRAND } from '../shared/brand'
 import { codeRoots, type Config } from '../shared/config'
 import type { Approval, Job, JobSpec } from '../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
@@ -9,10 +11,23 @@ import { formatClock } from '../daemon/limits'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
 import type { Store } from '../daemon/store'
-import { refusedFormatting, type BotApi, type Markup, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
+import { refusedButtons, refusedFormatting, type BotApi, type InlineKeyboard, type Markup, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
 import { htmlToText, telegramHtmlProblem } from './markdown'
 import { TelegramState, type Choices, type Draft } from './state'
 import * as ui from './ui'
+import { checkInitData } from './webapp'
+
+/** The app inside Telegram (a Mini App), which this machine serves once `cq app setup` ran. */
+export interface TelegramAppLink {
+  /** Its public address (https://…), or null while it isn't set up. */
+  url(): string | null
+  /** This machine's id in the app's addresses, and its name. */
+  machine(): { id: string; name: string } | null
+  /** Whether a device paired from inside Telegram can reach this machine. */
+  paired(): boolean
+  /** A one-time pairing link for the bot's owner; `verify` approves the app's Hello, or refuses it. */
+  offer(verify: (hello: Hello) => boolean): { link: string; expires: number } | string
+}
 
 export interface TelegramOptions {
   api: BotApi
@@ -25,6 +40,8 @@ export interface TelegramOptions {
   saveConfig: (config: Config) => void
   /** For reusing the text commands' status output. */
   commandContext: () => CommandContext
+  /** The app inside Telegram: short messages with Open ↗, the menu button, /app. */
+  app?: TelegramAppLink
   now: () => number
   log: (line: string) => void
 }
@@ -55,6 +72,7 @@ export interface TelegramStatus {
 }
 
 const COMMANDS = [
+  { command: 'app', description: 'Open Afterhours here, or set it up' },
   { command: 'new', description: 'Pick a folder, then send the prompt' },
   { command: 'chats', description: 'Your recent chats, from any project' },
   { command: 'leave', description: 'Leave the chat you are in' },
@@ -91,6 +109,11 @@ function errorText(err: unknown): string {
 /** A message's text without formatting, within Telegram's limit: what's sent when formatting fails. */
 function plain(html: string): string {
   return ui.esc(ui.clip(htmlToText(html), 4000))
+}
+
+/** A keyboard without its app buttons (Open ↗), for when Telegram won't take them. */
+function withoutAppButtons(keyboard: InlineKeyboard | undefined): InlineKeyboard | undefined {
+  return keyboard?.map(row => row.filter(b => !b.web_app)).filter(row => row.length > 0)
 }
 
 /** The line added to a request's message once it was settled somewhere else. */
@@ -135,6 +158,9 @@ export class TelegramBridge {
   private peekMessages = new Set<number>()
   private ticking = false
   private pairAttempts = new Map<number, number>()
+  private username: string | null = null
+  /** The menu button last set, and when setting it last failed (tried again after a while). */
+  private menuFailedAt = 0
 
   constructor(private o: TelegramOptions) {
     this.state = new TelegramState(o.store.db)
@@ -149,6 +175,7 @@ export class TelegramBridge {
     try {
       const me = await this.o.api.getMe()
       this.botName = me.username ? `@${me.username}` : me.first_name
+      this.username = me.username ?? null
       this.error = null
     } catch (err) {
       this.error = errorText(err)
@@ -156,6 +183,7 @@ export class TelegramBridge {
     }
     if (this.owner === null) this.pairCode()
     this.o.api.setMyCommands(COMMANDS).catch(err => this.o.log(`telegram: setMyCommands failed: ${errorText(err)}`))
+    await this.syncApp().catch(err => this.o.log(`telegram: ${errorText(err)}`))
     void this.loop()
     this.o.log(`telegram: ${this.botName ?? 'bot'} ${this.owner === null ? 'waiting to pair' : 'ready'}`)
   }
@@ -239,17 +267,24 @@ export class TelegramBridge {
     return msg
   }
 
-  /** One message. If Telegram refuses its formatting or length, it goes again as plain text. */
+  /**
+   * One message. If Telegram refuses its formatting or length, it goes again as plain text; if it
+   * refuses its app buttons, again without them.
+   */
   private async sendOne(chat: number, view: ui.View, markup?: Markup): Promise<TgMessage> {
-    const reply = view.keyboard ? { inline_keyboard: view.keyboard } : markup
+    let reply = view.keyboard ? { inline_keyboard: view.keyboard } : markup
     let html = this.checked(view.html)
     let msg: TgMessage
     try {
       msg = await this.o.api.sendMessage(chat, html, reply, { silent: view.silent })
     } catch (err) {
-      if (!refusedFormatting(err)) throw err
-      this.o.log(`telegram: ${errorText(err)}; sending it as plain text`)
-      html = plain(html)
+      if (refusedButtons(err) && view.keyboard) {
+        this.o.log(`telegram: ${errorText(err)}; sending it without its app buttons`)
+        reply = { inline_keyboard: withoutAppButtons(view.keyboard) ?? [] }
+      } else if (refusedFormatting(err)) {
+        this.o.log(`telegram: ${errorText(err)}; sending it as plain text`)
+        html = plain(html)
+      } else throw err
       msg = await this.o.api.sendMessage(chat, html, reply, { silent: view.silent })
     }
     if (view.keyboard) this.remember(msg.message_id, html)
@@ -258,12 +293,14 @@ export class TelegramBridge {
 
   private async edit(chat: number, messageId: number, view: ui.View): Promise<void> {
     let html = this.checked(view.html)
+    let keyboard = view.keyboard
     try {
-      await this.o.api.editMessageText(chat, messageId, html, view.keyboard)
+      await this.o.api.editMessageText(chat, messageId, html, keyboard)
     } catch (err) {
-      if (!refusedFormatting(err)) throw err
-      html = plain(html)
-      await this.o.api.editMessageText(chat, messageId, html, view.keyboard)
+      if (refusedButtons(err) && keyboard) keyboard = withoutAppButtons(keyboard)
+      else if (refusedFormatting(err)) html = plain(html)
+      else throw err
+      await this.o.api.editMessageText(chat, messageId, html, keyboard)
     }
     this.remember(messageId, html)
   }
@@ -351,6 +388,7 @@ export class TelegramBridge {
     if (chat === null || !this.running || this.ticking) return
     this.ticking = true
     try {
+      await this.syncApp().catch(err => this.o.log(`telegram: ${errorText(err)}`))
       for (const [code, messageId] of [...this.requests]) {
         const a = this.o.store.getApproval(code)
         if (a?.status === 'pending') continue
@@ -401,6 +439,7 @@ export class TelegramBridge {
   private uiContext(): ui.UiContext {
     const roots = this.roots()
     return {
+      links: this.links(),
       models: this.o.config().models,
       folderId: path => this.state.folderId(path),
       label: path => relativeToRoots(path, roots),
@@ -432,6 +471,101 @@ export class TelegramBridge {
     const p = this.pending
     this.pending = null
     return p && this.o.now() - p.at < PENDING_TTL ? p : null
+  }
+
+  // --- the app inside Telegram -----------------------------------------------------------
+
+  /** The app's address with the bot's name, so the app can send you back here to set it up. */
+  private appHome(): string | null {
+    const url = this.o.app?.url() ?? null
+    return url ? `${url}/${this.username ? `?bot=${encodeURIComponent(this.username)}` : ''}` : null
+  }
+
+  /** Short messages with Open ↗: the app is set up, paired from Telegram, and you didn't pick full messages. */
+  private links(): ui.AppLinks | null {
+    const base = this.o.app?.url() ?? null
+    const machine = this.o.app?.machine() ?? null
+    if (!base || !machine || !this.o.app!.paired()) return null
+    if (this.o.store.kvGet<string>('telegram.messages') === 'full') return null
+    return { base, machine: machine.id }
+  }
+
+  /** The buttons under the text box: none once the app has them all. */
+  private mainKeyboard(): Markup {
+    return this.links() ? { remove_keyboard: true } : ui.MAIN_KEYBOARD
+  }
+
+  /**
+   * Keeps Telegram in step with the app: the menu button opens it (or shows the commands when it
+   * isn't set up), and the first time messages turn short, the buttons under the text box go.
+   */
+  private async syncApp(): Promise<void> {
+    const chat = this.owner
+    if (chat === null) return
+    const home = this.appHome()
+    const set = this.o.store.kvGet<string>('telegram.menu') ?? ''
+    if ((home ?? '') !== set && this.o.now() - this.menuFailedAt > 10 * 60_000) {
+      try {
+        await this.o.api.setChatMenuButton(chat, home ? { type: 'web_app', text: BRAND.name, web_app: { url: home } } : { type: 'commands' })
+        this.o.store.kvSet('telegram.menu', home ?? '')
+        this.o.log(home ? `telegram: the menu button opens ${home}` : 'telegram: the menu button shows the commands again')
+      } catch (err) {
+        this.menuFailedAt = this.o.now()
+        throw new Error(`couldn't set the menu button: ${errorText(err)}`)
+      }
+    }
+    if (this.links() && !this.o.store.kvGet<boolean>('telegram.appIntro')) {
+      this.o.store.kvSet('telegram.appIntro', true)
+      await this.send(
+        chat,
+        { html: `📱 <b>${ui.esc(BRAND.name)} now opens right here:</b> tap the ${ui.esc(BRAND.name)} button next to the text box.\nMessages from now on are a line or two; Open ↗ shows the rest. /settings has full messages instead.` },
+        { remove_keyboard: true },
+      )
+    }
+  }
+
+  /** /app: opens the app, or pairs this Telegram with the machine first. */
+  private async showApp(chat: number, again = false): Promise<void> {
+    const app = this.o.app
+    const home = this.appHome()
+    if (!app || !home) {
+      await this.send(chat, {
+        html: `📱 <b>The app inside Telegram isn't set up.</b>\nOn the Mac, run <code>cq app setup</code>: it shows each step. Until then, everything works here as it does now.`,
+      })
+      return
+    }
+    const machine = app.machine()
+    if (app.paired() && !again) {
+      await this.send(chat, {
+        html: `📱 <b>${ui.esc(BRAND.name)}</b> opens from the button next to the text box, or here.`,
+        keyboard: [[{ text: `Open ${BRAND.name}`, web_app: { url: home } }], [ui.btn('Pair it again', 'g:app')]],
+      })
+      return
+    }
+    const token = this.o.config().telegram.token ?? ''
+    const offer = app.offer(hello => {
+      const check = checkInitData(hello.telegram, { token, ownerId: this.owner, now: this.o.now() })
+      if (!check.ok) this.o.log(`telegram: refused pairing "${hello.name}" from Telegram: ${check.reason}`)
+      return check.ok
+    })
+    if (typeof offer === 'string') {
+      await this.sendText(chat, `Couldn't start pairing: ${offer}`)
+      return
+    }
+    const q = offer.link.indexOf('?')
+    const url = `${app.url()}/pair?${offer.link.slice(q + 1)}${this.username ? `&bot=${encodeURIComponent(this.username)}` : ''}`
+    await this.send(chat, ui.appSetupView({ url, machineName: machine?.name ?? 'this Mac', minutes: Math.max(1, Math.round((offer.expires - this.o.now()) / 60_000)) }))
+  }
+
+  /** A device was paired with this machine: you hear about every one. */
+  async devicePaired(device: { name: string; platform: string }, role: string): Promise<void> {
+    const chat = this.owner
+    if (chat === null || !this.running) return
+    const where = device.platform.startsWith('telegram') ? ' from Telegram' : ''
+    await this.send(chat, { html: `📱 <b>${ui.esc(device.name)}</b> paired with this machine${where}, as ${ui.esc(role)}. Not you? Remove it in the app, or with <code>cq devices remove</code> on the Mac.` }).catch(err =>
+      this.o.log(`telegram: couldn't say a device paired: ${errorText(err)}`),
+    )
+    await this.syncApp().catch(err => this.o.log(`telegram: ${errorText(err)}`))
   }
 
   // --- messages ---------------------------------------------------------------------
@@ -486,16 +620,21 @@ export class TelegramBridge {
     this.o.saveConfig(config)
     this.o.store.kvSet('telegram.pairCode', '')
     this.o.log(`telegram: paired with ${config.telegram.ownerName} (${from.id})`)
-    await this.send(m.chat.id, { html: `✅ <b>Paired.</b> Only you can use this bot now.\n\n${ui.HELP_HTML}` }, ui.MAIN_KEYBOARD)
+    await this.send(m.chat.id, { html: `✅ <b>Paired.</b> Only you can use this bot now.\n\n${ui.HELP_HTML}` }, this.mainKeyboard())
   }
 
   private async onCommand(chat: number, text: string): Promise<void> {
     const name = text.slice(1).split(/[\s@]/)[0]!.toLowerCase()
     switch (name) {
       case 'start':
-      case 'help':
-        await this.send(chat, { html: ui.HELP_HTML }, ui.MAIN_KEYBOARD)
+        if (/^\/start\s+app$/.test(text)) return this.showApp(chat)
+        await this.send(chat, { html: this.links() ? ui.HELP_SHORT_HTML : ui.HELP_HTML }, this.mainKeyboard())
         return
+      case 'help':
+        await this.send(chat, { html: this.links() ? ui.HELP_SHORT_HTML : ui.HELP_HTML }, this.mainKeyboard())
+        return
+      case 'app':
+        return this.showApp(chat)
       case 'new':
         await this.leaveChat(chat, true)
         return this.newTask(chat)
@@ -628,7 +767,7 @@ export class TelegramBridge {
   }
 
   private async showQueue(chat: number, messageId?: number): Promise<void> {
-    const view = ui.queueView(this.o.store.active(), this.o.store.queued(), this.uiContext(), this.o.runner.paused)
+    const view = this.withOpen(ui.queueView(this.o.store.active(), this.o.store.queued(), this.uiContext(), this.o.runner.paused))
     if (messageId) await this.edit(chat, messageId, view)
     else messageId = (await this.send(chat, view)).message_id
     this.queueMessages.add(messageId)
@@ -649,7 +788,7 @@ export class TelegramBridge {
 
   /** 📊 Status; `messageId` refreshes one already shown. */
   private async showStatus(chat: number, messageId?: number): Promise<void> {
-    const view = ui.statusView(this.statusInfo(), this.noticeContext())
+    const view = this.withOpen(ui.statusView(this.statusInfo(), this.noticeContext()))
     if (messageId) await this.edit(chat, messageId, view)
     else messageId = (await this.send(chat, view)).message_id
     this.statusMessages.add(messageId)
@@ -658,11 +797,19 @@ export class TelegramBridge {
 
   private async showPeek(chat: number, messageId?: number): Promise<void> {
     const s = await this.o.runner.screen(30)
-    const view = ui.peekView(s?.jobId ?? null, s?.text ?? '')
+    const links = this.links()
+    const view = links ? ui.shortPeekView(s?.jobId ?? null, s?.text ?? '', links) : ui.peekView(s?.jobId ?? null, s?.text ?? '')
     if (messageId) await this.edit(chat, messageId, view)
     else messageId = (await this.send(chat, view)).message_id
     this.peekMessages.add(messageId)
     if (this.peekMessages.size > 50) this.peekMessages.delete(this.peekMessages.values().next().value!)
+  }
+
+  /** A view with Open ↗ (the machine in the app) as its first row, while messages are short. */
+  private withOpen(view: ui.View): ui.View {
+    const l = this.links()
+    if (!l) return view
+    return { ...view, keyboard: [[ui.openBtn(l, ui.appPath.machine(l), `Open ${BRAND.name} ↗`)], ...(view.keyboard ?? [])] }
   }
 
   /** How long a request still waits for you, in minutes. */
@@ -682,6 +829,7 @@ export class TelegramBridge {
       models: config.models,
       watch: config.watchSessions,
       autoContinue: config.autoContinueChats,
+      messages: this.appHome() && this.o.app?.paired() ? (this.o.store.kvGet<string>('telegram.messages') === 'full' ? 'full' : 'short') : null,
       now: this.o.now(),
     })
   }
@@ -1101,7 +1249,7 @@ export class TelegramBridge {
     if (!f && quiet) return
     this.setFocus(null)
     if (quiet) return
-    await this.send(chat, { html: f ? `⬅️ Left “${ui.esc(ui.clip(f.title, 80))}”. New messages make new tasks again.` : "You're not in a chat." }, ui.MAIN_KEYBOARD)
+    await this.send(chat, { html: f ? `⬅️ Left “${ui.esc(ui.clip(f.title, 80))}”. New messages make new tasks again.` : "You're not in a chat." }, this.mainKeyboard())
   }
 
   /** c:… buttons: 💬 Chats pages, a chat's view, ✍️ Write here, 📜 Full reply, ⬅️ Leave. */
@@ -1148,7 +1296,7 @@ export class TelegramBridge {
     const c = this.o.chats.get(f.sessionId)
     if (!c?.cwd || !existsSync(c.cwd)) {
       this.setFocus(null)
-      await this.send(chat, { html: "That chat is gone, so you've left it. New messages make new tasks again." }, ui.MAIN_KEYBOARD)
+      await this.send(chat, { html: "That chat is gone, so you've left it. New messages make new tasks again." }, this.mainKeyboard())
       return
     }
     const name = `“${ui.clip(c.title, 60)}”`
@@ -1234,6 +1382,17 @@ export class TelegramBridge {
         if (at) await this.edit(chat, at, this.settingsView())
         return `Notifications: ${level}`
       }
+      case 'msgs': {
+        const full = this.o.store.kvGet<string>('telegram.messages') !== 'full'
+        this.o.store.kvSet('telegram.messages', full ? 'full' : 'short')
+        if (at) await this.edit(chat, at, this.settingsView())
+        if (!full) await this.send(chat, { html: 'Messages are short again; Open ↗ shows the rest.' }, { remove_keyboard: true })
+        else await this.send(chat, { html: 'Messages are in full again.' }, ui.MAIN_KEYBOARD)
+        return full ? 'Full messages.' : 'Short messages.'
+      }
+      case 'app':
+        await this.showApp(chat, true)
+        return
       case 'rescan':
         await this.o.folders.rebuild()
         if (at) await this.edit(chat, at, this.settingsView())

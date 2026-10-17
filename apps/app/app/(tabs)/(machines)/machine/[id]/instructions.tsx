@@ -4,7 +4,7 @@
 import { Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
 import { useMachine } from '../../../../../src/app-state'
-import { Block, Button, EmptyState, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
+import { Block, Button, EmptyState, NotPaired, FieldRow, Group, HStack, LoadingRows, Note, Page, Row, TextArea, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { basename, shortPath } from '../../../../../src/lib/format'
@@ -41,7 +41,7 @@ export default function Instructions() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

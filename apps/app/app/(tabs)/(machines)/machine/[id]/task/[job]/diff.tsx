@@ -7,7 +7,7 @@ import { useMemo, useState } from 'react'
 import { FlatList, Pressable, Text, TextInput, View } from 'react-native'
 import { hub, useMachine } from '../../../../../../../src/app-state'
 import { LineCounts } from '../../../../../../../src/components/Changes'
-import { Button, EmptyState, LoadingRows, Note, Txt } from '../../../../../../../src/components/ui'
+import { Button, EmptyState, NotPaired, LoadingRows, Note, Txt } from '../../../../../../../src/components/ui'
 import { useLoad } from '../../../../../../../src/components/useLoad'
 import { parsePatch, type DiffLine } from '../../../../../../../src/lib/diff'
 import { basename } from '../../../../../../../src/lib/format'
@@ -32,7 +32,7 @@ export default function DiffScreen() {
   const lineHeight = wide ? 17 : 18
 
   if (!m) {
-    return <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+    return <NotPaired />
   }
   const canRead = (m.role === 'owner' || m.role === 'operator') && supports(m, 'files') && status !== 'deleted'
   const t0 = task.data?.job

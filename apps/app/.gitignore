@@ -3,6 +3,8 @@ node_modules/
 dist-web/
 e2e/out/
 e2e/out-engine/
+e2e/out-telegram/
+e2e/out-engine-telegram/
 # Made by `npx expo prebuild` / `expo run:*` (development builds); the app is configured in app.json.
 ios/
 android/

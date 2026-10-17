@@ -87,9 +87,11 @@ npm run typecheck           # the app and the end-to-end scripts
 npm run export:web          # the web build, used by the next two
 npm run e2e:web             # headless Chrome against the scripted machine, through a real relay
 npm run e2e:engine          # headless Chrome against a private Afterhours daemon (no Claude task runs)
+npm run e2e:telegram        # inside Telegram (a stand-in for it): served by the relay, paired with Telegram's proof
+npm run e2e:engine-telegram # inside Telegram, against a private daemon that runs the relay and serves the app
 ```
 
-The end-to-end runs pair, answer a permission, three questions and a plan, queue a task, and check what the machine received, not just the screen. They also walk fifteen screens through the browser's accessibility tree: every button, switch, choice and field must have a name a screen reader can say. Screenshots land in `e2e/out/` and `e2e/out-engine/`. Chrome: set `CHROME` if it isn't at the usual macOS path.
+The end-to-end runs pair, answer a permission, three questions and a plan, queue a task, and check what the machine received, not just the screen. They also walk fifteen screens through the browser's accessibility tree: every button, switch, choice and field must have a name a screen reader can say. Screenshots land in `e2e/out/`, `e2e/out-engine/`, `e2e/out-telegram/` and `e2e/out-engine-telegram/`. Chrome: set `CHROME` if it isn't at the usual macOS path.
 
 Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a Pixel 3a emulator (Android 14). Pairing through a relay, Needs you, answering by touch, the machine and task screens.
 
@@ -102,7 +104,8 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 - `src/theme.ts` and `src/components/ui.tsx`: the look. Grouped lists on a grey page, the system's fonts, and one accent (amber) for what needs you and a screen's main action. A wide window gets a denser type scale and the tabs as a sidebar.
 - `src/lib/hub.ts` owns the connections (the protocol's `AppClient`), the paired machines and what they report, and keeps what must survive a restart. Screens read it with `useSyncExternalStore`.
 - `src/lib/state.ts`: pure functions from a snapshot, a queue change or an event to a machine's state, plus "needs you", a task's timeline, what runs and finished across machines, and the free machine.
-- `src/lib/forecast.ts`: usage limits charted and forecast; `src/lib/risk.ts`: what a permission request does and what to look at twice; `src/lib/qr.ts`: QR codes drawn with plain views (`uqr`).
+- `src/lib/forecast.ts`: usage limits charted and forecast; `src/lib/risk.ts`: what a permission request does and what to look at twice (from the protocol package, which the Telegram bot shares); `src/lib/qr.ts`: QR codes drawn with plain views (`uqr`).
+- `src/telegram.ts` and `src/lib/telegram.ts`: inside Telegram (the bot opens the web build as a Mini App). They read Telegram's launch data and load Telegram's script only there. They give the app Telegram's Back button (the app's own back arrows hide), its light or dark, haptics, its QR scanner, closing confirmation and its storage. Links from the bot open screens directly: `task/[job]?view=answer|activity|plan`, `new?machine=&folder=&prompt=`.
 - `src/lib/highlight.ts`: code colours; `src/components/Menu.tsx`: long-press menus (the system's action sheet on iPhone) and swipe actions (`react-native-gesture-handler`); `src/lib/demo.ts`: the demo machine.
 - `src/lib/push.ts`: what notifications are about and say, where they open, what their buttons answer; `src/notifications.ts`: push on phones (`expo-notifications`); `src/lib/backup.ts`: sealed backups; `src/lib/problems.ts` and `src/components/Report.tsx`: problem reports.
 - `src/lib/markdown.ts` and `src/components/Markdown.tsx`: Claude's Markdown, drawn natively. Tables become one entry per row, which reads better on a phone.
@@ -112,7 +115,8 @@ Checked by hand in Expo Go 57.0.9: an iPhone 17 Pro simulator (iOS 26.3) and a P
 
 ## Security
 
-- This device's key is in the Keychain or Keystore: this device only, never in a backup. In a browser it's in the site's storage, which Settings says.
+- This device's key is in the Keychain or Keystore: this device only, never in a backup. In a browser it's in the site's storage, which Settings says. Inside Telegram it's in Telegram's secure storage where Telegram has one (iPhone, Android), else in its device storage.
+- Pairing from inside Telegram sends Telegram's signed launch data, inside the encrypted handshake; the machine pairs only its bot's owner, within 10 minutes of opening.
 - Pairing links are checked before use. The machine's key comes from the link, and the handshake proves it.
 - With **Lock the app** on, Face ID or a fingerprint opens it, and again after a minute away. With **Confirm Allow** on, it asks before allowing a permission.
 - The machine's rules (folders, skipping permission prompts, screens, typing) are enforced on the machine. The app only shows them.

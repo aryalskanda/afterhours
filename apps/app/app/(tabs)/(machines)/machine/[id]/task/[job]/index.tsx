@@ -6,12 +6,13 @@
 import type { Event, JobInfo, TaskDetail as Detail } from '@afterhours/protocol'
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useEffect, useMemo, useState } from 'react'
+import { Platform } from 'react-native'
 import { hub, useHub, useMachine, useNow } from '../../../../../../../src/app-state'
 import { Changes } from '../../../../../../../src/components/Changes'
 import { Conversation, type ConversationMeta, type Pending } from '../../../../../../../src/components/Conversation'
 import { Markdown } from '../../../../../../../src/components/Markdown'
 import { ReadAloud } from '../../../../../../../src/components/ReadAloud'
-import { Block, Button, ConfirmRow, EmptyState, Group, HStack, LoadingRows, Note, Page, Row, Segmented, StatusDot, TextArea, Txt } from '../../../../../../../src/components/ui'
+import { Block, Button, ConfirmRow, EmptyState, NotPaired, Group, HStack, LoadingRows, Note, Page, Row, Segmented, StatusDot, TextArea, Txt } from '../../../../../../../src/components/ui'
 import { useAction } from '../../../../../../../src/components/useAction'
 import { useLoad } from '../../../../../../../src/components/useLoad'
 import type { Effort } from '@afterhours/protocol'
@@ -23,7 +24,8 @@ import { useTheme } from '../../../../../../../src/theme'
 type View = 'activity' | 'changes' | 'answer'
 
 export default function TaskScreen() {
-  const { id, job } = useLocalSearchParams<{ id: string; job: string }>()
+  // `view`: which view to open on (a link from the Telegram bot: answer, activity, or the plan).
+  const { id, job, view: linked } = useLocalSearchParams<{ id: string; job: string; view?: string }>()
   const jobId = Number(job)
   const m = useMachine(id)
   const { machines } = useHub()
@@ -32,8 +34,8 @@ export default function TaskScreen() {
   const live = m ? findJob(m, jobId) : null
   const [detail, setDetail] = useState<Detail | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showPlan, setShowPlan] = useState(false)
-  const [view, setView] = useState<View | null>(null)
+  const [showPlan, setShowPlan] = useState(linked === 'plan')
+  const [view, setView] = useState<View | null>(linked === 'plan' ? 'answer' : linked === 'answer' || linked === 'activity' || linked === 'changes' ? linked : null)
   const [meta, setMeta] = useState<ConversationMeta | null>(null)
   const [pending, setPending] = useState<Pending[]>([])
   const [message, setMessage] = useState('')
@@ -67,6 +69,14 @@ export default function TaskScreen() {
     }
   }, [id, jobId, online, stage])
 
+  // Opened on a view (a link from the Telegram bot): it scrolls there once the task has loaded.
+  const [scrolled, setScrolled] = useState(!linked)
+  useEffect(() => {
+    if (scrolled || !detail || Platform.OS !== 'web') return
+    setScrolled(true)
+    requestAnimationFrame(() => document.querySelector(`[data-testid="${linked === 'plan' ? 'task-plan' : 'task-view'}"]`)?.scrollIntoView({ block: 'start' }))
+  }, [scrolled, detail, linked])
+
   const hasTimeline = m ? supports(m, 'timeline') : false
   const stored = useLoad(id, hasTimeline && online ? { type: 'timeline', job: jobId } : null, Timeline, `timeline:${jobId}:${stage}`)
   const seen = useMemo(() => (m ? timeline(m, jobId) : []), [m, jobId])
@@ -75,7 +85,7 @@ export default function TaskScreen() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }

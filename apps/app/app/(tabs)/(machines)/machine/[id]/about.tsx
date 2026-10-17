@@ -5,7 +5,7 @@
 import { router, Stack, useLocalSearchParams } from 'expo-router'
 import { useMachine } from '../../../../../src/app-state'
 import { Terminal } from '../../../../../src/components/bits'
-import { Block, ConfirmRow, EmptyState, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
+import { Block, ConfirmRow, EmptyState, NotPaired, Group, LoadingRows, Note, Page, Row, Txt } from '../../../../../src/components/ui'
 import { useAction } from '../../../../../src/components/useAction'
 import { useLoad } from '../../../../../src/components/useLoad'
 import { bytes, duration } from '../../../../../src/lib/format'
@@ -30,7 +30,7 @@ export default function About() {
   if (!m) {
     return (
       <Page>
-        <EmptyState title="Not paired" text="This device isn’t paired with that machine any more." />
+        <NotPaired />
       </Page>
     )
   }
