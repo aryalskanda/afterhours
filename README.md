@@ -89,11 +89,12 @@ Check everything at any time with `cq doctor`.
 | **🤝 Take over** / **⏳ Wait instead** | For a chat that's open in VS Code or a terminal: close it there when the task starts, or wait until you close it ([more](#continue-a-vs-code-chat-from-your-phone)) |
 | **🌿 Own branch** / **📂 Work in place** | For a new conversation: run it on its own branch, or in your checkout |
 | **🔗 Live link** | End with a live link: a claude.ai page showing the result, to open on your phone ([more](#live-links)) |
+| **⏰ Later** | When it may start: in an hour, tonight at 23:00, 07:00, or a time you type (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`) |
 
 The buttons under the text box:
 
 - **➕ New task**: pick the folder first, then send the prompt.
-- **📋 Queue**: every waiting task, with **⬆️** / **⬇️** (move it), **⏸** (hold it in its place; **▶️** lets it go) and **🗑**, and **🧹 Clear** (tap twice).
+- **📋 Queue**: every waiting task, with **⬆️** / **⬇️** (move it), **⏸** (hold it in its place; **▶️** lets it go), **✏️** (change its prompt, mode, models, effort, live link or time, then **💾 Save**) and **🗑**, and **🧹 Clear** (tap twice).
 - **📊 Status**: the current task and what it last did, anything waiting on you (with its **✅ Allow** / **❌ Deny** right there), what's next, your 5-hour and weekly usage as bars, and **⏸ Pause** / **▶️ Resume**.
 - **👀 Peek**: the running task's screen, with **⌨️ Type** (type into it) and **🔘 Keys** (press 1, 2, 3, Enter, Esc, arrows) for a screen Afterhours can't answer.
 - **💬 Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **✍️ Write here**: everything you type goes into that chat until you tap **⬅️ Leave chat**.
@@ -109,7 +110,7 @@ The buttons under the text box:
 | ⚠️ / ❌ A task paused or failed | **▶️ Go**, **🛑 Kill**, **👀 Peek**, **⌨️ Type**, **🔘 Keys** |
 | ⚠️ A task's chat is open in VS Code | **🤝 Take over**, **🍴 Continue in a copy**, **🛑 Kill** |
 | ⏸ Your chat in VS Code hit a usage limit | **✖️ Don't continue**, **🤝 Continue here instead**, **✏️ Follow up…** |
-| ✅ A task is done | Claude's final answer, formatted and in full (a few messages, or a file when it's very long), then **➕ Follow up**: the next prompt for the same folder and conversation, and **🔗 Live link** (or **🔗 Get a live link**). |
+| ✅ A task is done | Claude's final answer, formatted and in full (a few messages, or a file when it's very long), then **➕ Follow up**: the next prompt for the same folder and conversation, and **🔗 Live link** (or **🔗 Get a live link**). On its own branch: **🌿 Merge** and **🗑 Discard branch** (tap twice). |
 | 🔗 A live link | **🔗 Open the live link** |
 
 Keeping it tidy:
@@ -123,15 +124,19 @@ If Telegram can't be reached, messages wait on the Mac and arrive in order once 
 
 **🛑 Kill** (tap it twice) ends a stuck task now: Claude and everything it started stop, whatever it waited on from you is settled, and the queue moves on ([more](#kill-a-stuck-task)). It's also on the task's card, **📊 Status** and **👀 Peek**, and `/kill` does it.
 
-Commands in the menu: `/app /new /chats /leave /queue /status /peek /kill /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
+**🖥 /mac** shows what's open on the Mac and what keeps it awake, to quit an app or put the Mac to sleep, now or once the queue is done; **/sleep** goes straight there ([more](#quit-apps-and-sleep-the-mac)).
+
+Commands in the menu: `/app /new /chats /leave /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
 
 ### The app inside Telegram
 
-A chat has limits: buttons in a row share its width, so long labels get cut, and long text arrives in parts. So the bot can open the whole Afterhours app inside Telegram instead, as a Mini App: full screen, light or dark like Telegram, with Telegram's own Back button. It needs no app store and no account anywhere. Your Mac serves the app, and Tailscale Funnel gives it the public https address Telegram requires.
+The bot does everything above by itself. As an extra, it can also open the whole Afterhours app inside Telegram, as a Mini App: full screen, light or dark like Telegram, with Telegram's own Back button. It needs no app store and no account anywhere. Your Mac serves the app, and Tailscale Funnel gives it the public https address Telegram requires.
 
 1. Install [Tailscale](https://tailscale.com/download), sign in and connect. Turn on **HTTPS Certificates** once (Tailscale's admin page → DNS).
 2. On the Mac: `cq app setup`. It copies the app's web build (from the apps' repository next to this one, or `--web <its app/dist-web>`), runs the relay inside Afterhours (on `127.0.0.1:7788`), and opens it to the internet with `tailscale funnel`. The first time, Tailscale shows a link to allow Funnel. Open it, then run `cq app setup` again.
 3. In Telegram, send `/app` to your bot and tap **Finish setup**. That pairs this Telegram with your Mac in one tap. The link works once, for 10 minutes, and the Mac also checks Telegram's signed proof that you're the bot's owner.
+
+4. In the bot, `/settings` → **📱 Turn the app inside Telegram on**.
 
 From then on:
 
@@ -144,7 +149,7 @@ From then on:
   - ⚠️ / ❌ paused or failed: **▶️ Go** · **⏭ Skip** · **Open ↗**
 - A prompt you type still gets a card: **▶️ Queue** as it is, or **Change ↗** in the app.
 - The buttons under the text box go away, since the app has them all. The typed commands still work.
-- `/settings` → **📄 Full messages instead** brings back the full messages and buttons.
+- `/settings` → **📄 Turn the app inside Telegram off** brings back the full messages and every button, and the commands menu.
 
 Inside the app, everything goes end to end through the relay, not through Telegram; the bot's short notices still pass through Telegram, as before. The app only opens while the Mac is awake and online, and so does the bot. `cq app status` checks it's reachable; `cq app off` stops serving it. Every newly paired device is announced in your chat.
 
@@ -187,7 +192,10 @@ The machine decides what apps may do, and no app can change it:
 - `cq remote allow <folder>`: apps run tasks only in these folders (default: your home folder).
 - `cq remote bypass on|off`: tasks that skip permission prompts (off by default).
 - `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task.
+- `cq remote mac on|off`: whether owners may quit apps on this Mac and put it to sleep (on by default).
 - `cq devices` lists paired devices; `cq devices remove <name>` cuts one off at once; `cq audit` shows what apps did.
+
+To move to another relay (a hosted one, say): `cq remote relay wss://relay.example.com/v1`. It checks the relay answers first, waiting up to a minute for a free host to wake. Apps connected at that moment hear the new address and follow by themselves; any other app pairs again. `cq remote status` and `cq doctor` say whether the relay answers, and how fast.
 
 The relay can also run inside Afterhours, serving the app's web build at the same address: that's how [the app inside Telegram](#the-app-inside-telegram) works (`cq app setup`). To serve the app from a relay you run yourself, set `APP_DIR` to the app's web build.
 
@@ -222,6 +230,15 @@ When you're away from the Mac and want to see what a task made, ask for a **live
 - Ask when you queue the task (**Live link at the end**, **🔗 Live link**, `q … link: …`), or later: a running task ends with one, and a finished one gets a short task of its own, next, in the same conversation (**Get a live link**, `cq link #14`).
 - The task's answer stays Claude's answer; the link is kept beside it. If Claude can't make one, the task still ends and says why.
 - Only when you ask. The task may use Claude Code's Artifact tool for that, nothing else changes.
+
+## Quit apps and sleep the Mac
+
+For when you're away: quit an app (Vorssaint, say, which keeps the Mac awake) and put the Mac to sleep, from the app (**This Mac**, owners only), the bot (`/mac`, `/sleep`) or a text (`apps`, `quit <app>`, `quit! <app>`, `sleep`, `sleep done`, `sleep cancel`).
+
+- Quitting asks the app the way the Dock does, with no permission prompt. An app that asks about unsaved work stays open, and **Force quit** closes it without asking.
+- Keep-awake apps turn sleep off entirely (`pmset disablesleep`: even closing the lid doesn't sleep the Mac). Sleeping quits them first, waits for sleep to be allowed again, then sleeps a few seconds later, so the reply reaches you first. If sleep stays off, it says why and stays awake.
+- **Sleep when the queue is done**: once nothing is running or can start, a minute has passed, and nobody has used the Mac for 5 minutes. Then the switch turns itself off.
+- A running task pauses while the Mac sleeps. The phone can't wake it: open its lid or press a key. The app shows when it went to sleep.
 
 ## What happens to a task
 

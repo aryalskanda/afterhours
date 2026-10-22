@@ -32,7 +32,7 @@ As of October 15, 2026. This replaces the Mac-app and iOS-app plan in [saas-plan
 ```
 
 - **`packages/protocol`**: keys, Noise, frames, pairing links, message schemas, the app's client (`AppClient`) and the machine's side (`Host`). The engine, the relay, the tests and the apps all use it.
-- **`relay/`**: about 400 lines of Bun. It keeps keys, links and connection times in SQLite. It runs in Docker anywhere.
+- **`relay/`**: about 400 lines of Bun. It keeps keys, links and connection times in SQLite. It runs in Docker anywhere. Its tests (and the relay part of `test/remote.test.ts`) also run against any other build of the relay, given its program in `AFTERHOURS_RELAY_BIN`; a relay that keeps everything in memory, as a hosted one may, passes them all but the one about links on disk.
 - **`src/daemon/remote/`**: the engine's side. Requests from apps go to the same Runner and Store calls the Telegram bot uses. It adds devices, the machine's rules, the event log apps catch up from, and the audit trail.
 
 ### The app inside Telegram
@@ -97,6 +97,8 @@ The same web build also runs inside Telegram, as a Mini App the bot opens (`cq a
 - Every request has an id. Changes are remembered for a day, so a retry gets the first answer instead of running twice.
 - Every change is audited: device, action, and a short detail. Never the prompt or what was typed. See it with `cq audit`.
 
+**The Mac.** On a Mac, owners may quit its apps and put it to sleep (`mac` requests; `remote.allowMac`, on by default). Quitting goes through NSRunningApplication (the quit event, no Automation permission); only apps from its list (regular ones, and menu-bar apps in an Applications folder) can be quit. Quitting and sleeping are audited.
+
 **The relay.**
 - It signs peers in with a fresh challenge per connection.
 - It forwards data only between a machine and the devices it linked, or to a device holding a live pairing offer.
@@ -130,7 +132,8 @@ The protocol and the crypto get an external review before a public launch.
   - A key stays a machine or a device for good.
 - **Control messages** (JSON):
   - from peers: `ping`, `links` (machines: the full list of allowed devices, sent after every sign-in), `link`, `unlink`, `offer`, `offer.close`;
-  - from the relay: `pong`, `presence` (a linked peer came or went), `undeliverable` (`offline`, `not-linked`, `no-offer`), `error`.
+  - from the relay: `pong`, `presence` (a linked peer came or went, or was just linked by `links`), `undeliverable` (`offline`, `not-linked`, `no-offer`), `error`.
+  - Until a machine has sent `links` since the relay started, frames between it and a device it hasn't linked are `offline`, not `not-linked`: an app takes `not-linked` as being unpaired, and a relay that just started (keeping links in memory) can't tell that from a machine that hasn't linked it again yet.
 - **Data frames** (binary):
   - layout: `version(1) kind(1) peer(32) session(16) [offer(16)] payload`;
   - `kind` is `session`, `pairing` or `reset`;
