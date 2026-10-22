@@ -122,6 +122,18 @@ export interface RemoteConfig {
   publicUrl: string | null
 }
 
+/** Whether `relay` is the relay this machine runs itself (remote.serve), at its public address. */
+export function isOwnRelay(remote: Pick<RemoteConfig, 'relay' | 'publicUrl'>): boolean {
+  if (!remote.relay || !remote.publicUrl) return false
+  try {
+    const relay = new URL(remote.relay)
+    const own = new URL(remote.publicUrl)
+    return relay.protocol === 'wss:' && own.protocol === 'https:' && relay.host === own.host
+  } catch {
+    return false
+  }
+}
+
 export const DEFAULT_CONFIG: Config = {
   port: 7787,
   defaults: { plan: true, review: false, execMode: 'auto', model: 'sonnet', effort: 'high' },

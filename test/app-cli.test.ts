@@ -5,7 +5,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { appConfig, appSource, installWeb, tailscaleInfo } from '../src/cli/app'
-import { DEFAULT_CONFIG } from '../src/shared/config'
+import { healthUrl, relayHealth } from '../src/cli/remote'
+import { DEFAULT_CONFIG, isOwnRelay } from '../src/shared/config'
 
 test("Tailscale's status: connected or not, this machine's name, and whether HTTPS and Funnel are allowed", () => {
   const running = JSON.stringify({
@@ -68,4 +69,33 @@ test("the app's own folder: AFTERHOURS_APP_DIR, else the apps' repository next t
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test("the relay is this machine's own only at its public address", () => {
+  const own = { relay: 'wss://mac.tail1234.ts.net/v1', publicUrl: 'https://mac.tail1234.ts.net' }
+  expect(isOwnRelay(own)).toBe(true)
+  expect(isOwnRelay({ ...own, publicUrl: 'https://mac.tail1234.ts.net/' })).toBe(true)
+  // A hosted relay, or one whose name only starts the same, is another relay.
+  expect(isOwnRelay({ ...own, relay: 'wss://afterhours-relay.onrender.com/v1' })).toBe(false)
+  expect(isOwnRelay({ ...own, relay: 'wss://mac.tail1234.ts.net.example.com/v1' })).toBe(false)
+  expect(isOwnRelay({ ...own, publicUrl: null })).toBe(false)
+  expect(isOwnRelay({ relay: 'not a url', publicUrl: own.publicUrl })).toBe(false)
+})
+
+test("a relay's health: its /health address, an answer, and waiting while a free host wakes", async () => {
+  expect(healthUrl('wss://relay.example.com/v1')).toBe('https://relay.example.com/health')
+  expect(healthUrl('ws://192.168.1.10:8787/v1?x=1')).toBe('http://192.168.1.10:8787/health')
+  const answer = (res: Response) => (async () => res) as unknown as typeof fetch
+  expect(await relayHealth('wss://r.example/v1', { fetch: answer(Response.json({ ok: true, protocol: 1 })) })).toMatchObject({ ok: true })
+  expect(await relayHealth('wss://r.example/v1', { fetch: answer(new Response('hello')) })).toEqual({ ok: false, error: 'it answered 200, not as a relay' })
+  expect(await relayHealth('wss://r.example/v1', { fetch: answer(new Response('no', { status: 404 })) })).toEqual({ ok: false, error: 'it answered 404, not as a relay' })
+  // Asleep at first: it waits, says so once, and takes the answer when it comes.
+  let calls = 0
+  let waits = 0
+  const waking = (async () => {
+    if (++calls < 2) throw new Error('connection refused')
+    return Response.json({ ok: true })
+  }) as unknown as typeof fetch
+  expect(await relayHealth('wss://r.example/v1', { fetch: waking, waitMs: 10_000, onWait: () => waits++, sleep: async () => {} })).toMatchObject({ ok: true })
+  expect([calls, waits]).toEqual([2, 1])
 })

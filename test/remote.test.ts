@@ -121,6 +121,7 @@ function machine(o: { remote?: Partial<Config['remote']>; appDir?: string } = {}
     identityPath: join(dir, 'identity.json'),
     appDir: o.appDir ?? join(dir, 'no-app'),
     relayDb: ':memory:',
+    relayMoveMs: 100,
   })
   remote.apply()
   cleanups.push(() => {
@@ -162,6 +163,36 @@ async function pairedApp(m: ReturnType<typeof machine>, o: { role?: Role; name?:
 }
 
 describe('remote access', () => {
+  test('a hosted relay is used even while this machine runs its own for the app inside Telegram', async () => {
+    const m = machine({ remote: { serve: { port: 0 }, publicUrl: 'https://mac.example.ts.net' } })
+    const app = await pairedApp(m)
+    expect(app.snapshots[0]!.relay).toBe(relay.url)
+    // Its own relay still runs, serving the app inside Telegram.
+    expect(m.remote.status().serving?.listening).toBeGreaterThan(0)
+  })
+
+  test('its own relay, at its public address, is reached on this machine', async () => {
+    const m = machine({ remote: { serve: { port: 0 }, publicUrl: 'https://mac.example.ts.net', relay: 'wss://mac.example.ts.net/v1' } })
+    await until(() => m.remote.status().connected)
+    expect(m.remote.status().relay).toBe('wss://mac.example.ts.net/v1')
+  })
+
+  test('moving to another relay: connected apps hear the new address first, then the machine moves there', async () => {
+    const m = machine()
+    const app = await pairedApp(m)
+    const other = await testRelay()
+    cleanups.push(() => void other.stop())
+    m.setRemote({ relay: other.url })
+    m.remote.apply()
+    await until(() => app.events.some(e => e.notice.type === 'relay'))
+    expect(app.events.find(e => e.notice.type === 'relay')!.notice).toEqual({ type: 'relay', url: other.url })
+    // An app following it there reaches the machine, with no pairing again.
+    const there = app.client.connect({ ...app.record, relay: other.url })
+    await until(() => there.status === 'connected')
+    const reply = await there.request({ type: 'snapshot' })
+    expect(reply.ok).toBe(true)
+  })
+
   test('a paired app gets a snapshot with the machine, its role and the rules', async () => {
     const m = machine()
     const app = await pairedApp(m)

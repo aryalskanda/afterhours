@@ -30,6 +30,50 @@ async function status(): Promise<RemoteStatus | null> {
 
 const NOT_RUNNING = `${BRAND.name} isn't running. Start it (cq install, or cq daemon in another terminal), then try again.`
 
+/** A relay's /health address, from its wss://…/v1 address. */
+export function healthUrl(relay: string): string {
+  const url = new URL(relay)
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
+  url.pathname = '/health'
+  url.search = ''
+  url.hash = ''
+  return url.toString()
+}
+
+/**
+ * Asks a relay whether it's up, and how long that took. A relay on a free plan may be asleep and
+ * take a minute to wake, so this asks again until `waitMs` is up (`onWait` says it's waiting).
+ */
+export async function relayHealth(
+  relay: string,
+  o: { waitMs?: number; onWait?: () => void; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<{ ok: true; ms: number } | { ok: false; error: string }> {
+  const get = o.fetch ?? fetch
+  const pause = o.sleep ?? Bun.sleep
+  const end = Date.now() + (o.waitMs ?? 5000)
+  let error = 'no answer'
+  let told = false
+  for (;;) {
+    const started = Date.now()
+    try {
+      const res = await get(healthUrl(relay), { signal: AbortSignal.timeout(Math.max(1000, Math.min(15_000, end - started))) })
+      const body = (await res.json().catch(() => null)) as { ok?: boolean } | null
+      if (res.ok && body?.ok === true) return { ok: true, ms: Date.now() - started }
+      error = `it answered ${res.status}${body ? '' : ', not as a relay'}`
+      // A host waking up answers with a server error, or not at all; any other answer is final.
+      if (res.status < 500 && res.status !== 429) return { ok: false, error }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+    }
+    if (Date.now() + 2000 > end) return { ok: false, error }
+    if (!told) {
+      told = true
+      o.onWait?.()
+    }
+    await pause(2000)
+  }
+}
+
 /** wss://host → wss://host/v1; anything that isn't ws:// or wss:// is refused. */
 export function relayAddress(text: string): string | null {
   let url: URL
@@ -248,6 +292,10 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
       console.log(`Remote access: ${r.enabled ? 'on' : 'off'}${r.relay ? ` · relay ${r.relay}` : ' · no relay set'}`)
       if (s?.machine) console.log(`This machine: ${s.machine.name} · key ${s.machine.fingerprint}`)
       if (r.enabled) console.log(s ? `Relay: ${s.connected ? 'connected' : `not connected${s.error ? ` (${s.error})` : ''}`} · ${s.devices} device(s) paired · ${s.sessions} connected now` : NOT_RUNNING)
+      if (r.relay) {
+        const health = await relayHealth(r.relay)
+        console.log(health.ok ? `The relay answers in ${health.ms} ms (${healthUrl(r.relay)})` : `The relay doesn't answer at ${healthUrl(r.relay)} (${health.error})`)
+      }
       console.log(`Apps may run tasks in: ${r.allowedRoots.length ? r.allowedRoots.join(', ') : 'your home folder'}`)
       console.log(`Skip-permission tasks from apps: ${r.allowBypass ? 'allowed' : 'not allowed'} · screens: ${r.allowScreens ? 'shown' : 'hidden'} · typing: ${r.allowTyping ? 'allowed' : 'not allowed'}`)
       return true
@@ -263,11 +311,22 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
     case 'relay': {
       const relay = rest[0] ? relayAddress(rest[0]) : null
       if (!relay) {
-        console.error('Usage: cq remote relay wss://<your relay>')
+        console.error('Usage: cq remote relay wss://<your relay> [--anyway]')
+        return false
+      }
+      const health = await relayHealth(relay, {
+        waitMs: 90_000,
+        onWait: () => console.log('No answer yet. A relay on a free plan can take a minute to wake; waiting…'),
+      })
+      if (!health.ok && !rest.includes('--anyway')) {
+        console.error(`The relay at ${relay} doesn't answer (${health.error}). Check the address, or set it anyway: cq remote relay ${relay} --anyway`)
         return false
       }
       r.relay = relay
-      return save(`Relay set to ${relay}. Devices paired through another relay can't reach this machine until you pair them again (cq pair).`)
+      return save(
+        `Relay set to ${relay}${health.ok ? ` (it answered in ${health.ms} ms)` : ''}.\n` +
+          'Apps connected right now follow this machine there by themselves. Any other app pairs again: cq pair.',
+      )
     }
     case 'name':
       r.name = rest.join(' ').trim() || null

@@ -22,7 +22,7 @@ import {
   type SocketFactory,
 } from '@afterhours/protocol'
 import { startRelay, type Relay } from '../../../relay/src/server'
-import { paths, writeFileAtomic, type Config } from '../../shared/config'
+import { isOwnRelay, paths, writeFileAtomic, type Config } from '../../shared/config'
 import type { JobSpec } from '../../shared/types'
 import type { ChatSource } from '../chats'
 import type { FolderMap } from '../folders'
@@ -67,7 +67,11 @@ export interface RemoteDeps {
   relayDb?: string
   /** A device was just paired (the Telegram bot says so in your chat). */
   onPaired?: (device: { name: string; platform: string }, role: Role) => void
+  /** How long connected apps get to hear about a new relay before the machine moves there. */
+  relayMoveMs?: number
 }
+
+const RELAY_MOVE_MS = 3000
 
 export interface RemoteStatus {
   enabled: boolean
@@ -91,6 +95,8 @@ export class Remote {
   private readonly lastTouch = new Map<string, number>()
   private host: Host | null = null
   private running = ''
+  /** On the way to another relay: apps were told, and the machine follows when the timer fires. */
+  private moving: { to: string; timer: ReturnType<typeof setTimeout> } | null = null
   /** The relay this machine runs: the port config asked for (0 picks one), and the server. */
   private relay: { port: number; server: Relay } | null = null
   private relayError: string | null = null
@@ -140,10 +146,34 @@ export class Remote {
   apply(): void {
     const r = this.d.config().remote
     this.applyServe(r.enabled ? r.serve : null)
-    // Running the relay here: this machine reaches it locally, and links give apps its public address.
+    // The relay apps use is the one this machine runs: reach it locally (links give apps its public
+    // address). Any other relay, a hosted one, say, is used as it is, even while this one runs.
     const local = this.relay ? `ws://127.0.0.1:${this.relay.server.port}/v1` : null
-    const want = r.enabled && r.relay ? (r.serve ? (local ?? '') : r.relay) : ''
-    if (want === this.running) return
+    const want = !r.enabled || !r.relay ? '' : r.serve && isOwnRelay(r) ? (local ?? '') : r.relay
+    if (this.moving && this.moving.to !== want) {
+      clearTimeout(this.moving.timer)
+      this.moving = null
+    }
+    if (want === this.running || this.moving) return
+    // Moving to another relay: apps connected now hear the new address first and follow, with no
+    // pairing again; then this machine moves.
+    if (want && r.relay && this.running && this.host?.connected && this.host.liveSessions().length > 0) {
+      this.feed.relayMoved(r.relay)
+      this.d.log(`remote: moving to the relay at ${r.relay}`)
+      this.moving = {
+        to: want,
+        timer: setTimeout(() => {
+          this.moving = null
+          this.connect(want)
+        }, this.d.relayMoveMs ?? RELAY_MOVE_MS),
+      }
+      return
+    }
+    this.connect(want)
+  }
+
+  /** Connects to the relay at `want` (none for ''), dropping the connection there was. */
+  private connect(want: string): void {
     this.host?.stop()
     this.host = null
     this.running = want
@@ -182,6 +212,8 @@ export class Remote {
   }
 
   stop(): void {
+    if (this.moving) clearTimeout(this.moving.timer)
+    this.moving = null
     this.host?.stop()
     this.host = null
     this.running = ''

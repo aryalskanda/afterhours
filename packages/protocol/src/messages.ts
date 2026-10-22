@@ -252,6 +252,8 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('link'), job: JobInfo, url: z.string().nullable(), title: z.string().nullable(), note: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
+  /** The machine moves to another relay: save its address (as with the snapshot's `relay`) and follow. */
+  z.object({ type: z.literal('relay'), url: z.string().max(2048) }),
   /** A pending approval was answered (from any app, Telegram or the terminal), or expired. */
   z.object({
     type: z.literal('resolved'),

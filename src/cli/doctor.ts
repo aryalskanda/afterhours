@@ -9,6 +9,7 @@ import { codeRoots, findExecutable, loadConfig, paths, readToken } from '../shar
 import { installHint, isMac, osLabel } from '../platform/os'
 import { service } from '../platform/service'
 import { launcherPath } from './install'
+import { relayHealth } from './remote'
 import { daemonHealth, run } from './util'
 
 export interface Check {
@@ -64,8 +65,10 @@ export async function checks(): Promise<Check[]> {
     if (isMac && health.fullDiskAccess) ok('Full Disk Access: yes (Claude sessions can work in your folders unattended)')
     else if (isMac) bad(`Full Disk Access: missing. Add ${existsSync(launcherPath) ? launcherPath : paths.binary} in System Settings → Privacy & Security → Full Disk Access, then cq restart`)
     const r = health.remote
-    if (r?.enabled && r.connected) ok(`Remote access: connected to ${r.relay} · ${r.devices} device(s) paired`)
-    else if (r?.enabled) bad(`Remote access: not connected to ${r.relay}${r.error ? ` (${r.error})` : ''}`)
+    const relayAnswers = r?.enabled && r.relay ? await relayHealth(r.relay) : null
+    const answers = relayAnswers?.ok ? `, which answers in ${relayAnswers.ms} ms` : ''
+    if (r?.enabled && r.connected) ok(`Remote access: connected to ${r.relay}${answers} · ${r.devices} device(s) paired`)
+    else if (r?.enabled) bad(`Remote access: not connected to ${r.relay}${r.error ? ` (${r.error})` : ''}${relayAnswers && !relayAnswers.ok ? `; it doesn't answer (${relayAnswers.error})` : answers}`)
     else info('Remote access: off (cq pair sets it up)')
     const tg = health.telegram
     if ('bot' in tg && tg.ok && tg.paired) ok(`Telegram: ${tg.bot} · paired with ${tg.owner ?? 'you'}`)

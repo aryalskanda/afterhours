@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { RemoteStatus } from '../daemon/remote'
 import { BRAND } from '../shared/brand'
-import { findExecutable, loadConfig, paths, readToken, saveConfig, type Config } from '../shared/config'
+import { findExecutable, isOwnRelay, loadConfig, paths, readToken, saveConfig, type Config } from '../shared/config'
 import { daemonUrl } from './util'
 
 /** The port of 127.0.0.1 the relay listens on (next to the engine's own). */
@@ -241,7 +241,7 @@ async function status(): Promise<boolean> {
 async function off(): Promise<boolean> {
   const config = loadConfig()
   const port = config.remote.serve?.port
-  const wasPublic = config.remote.publicUrl && config.remote.relay?.startsWith(config.remote.publicUrl.replace(/^https:/, 'wss:'))
+  const wasPublic = isOwnRelay(config.remote)
   config.remote.serve = null
   config.remote.publicUrl = null
   // Its public address only worked while the relay ran here.

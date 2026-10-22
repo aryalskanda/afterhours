@@ -32,6 +32,11 @@ export class Feed {
     this.publish(wireNotice(notice), text)
   }
 
+  /** The machine is moving to another relay: apps save its address and follow. */
+  relayMoved(url: string): void {
+    this.publish({ type: 'relay', url }, `This machine now uses the relay at ${url}.`)
+  }
+
   /** Sends a session what it missed after `since`, then the snapshot. */
   catchUp(session: HostSession, since: number, snapshot: Snapshot): void {
     for (const e of this.d.db.eventsAfter(since, REPLAY_LIMIT)) {
