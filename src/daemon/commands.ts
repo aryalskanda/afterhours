@@ -196,7 +196,7 @@ q myapp plan opus max: <prompt> · options before the colon
   take = close that conversation where it's open (VS Code, a terminal) and continue it here
   branch = on its own git branch · here = in your checkout
 ls · st · peek [lines] · plan [#] · chats [project]
-pause · go · stop · skip · rm <#> · top <#>
+pause · go · stop · skip · kill [#] (ends it now, and what it started) · rm <#> · top <#>
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
 y <code> · n <code> [note] · a <code> <answer>
 projects · alias <name> <path> · trust <name|path> · default <options> · notify all|important|off`
@@ -494,6 +494,13 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       return ctx.runner.stop()
     case 'skip':
       return ctx.runner.skip()
+    case 'kill': {
+      // kill: the running task; kill 14: that one (a queued one comes off the queue).
+      const id = rest ? Number(rest.replace(/^#/, '')) : ctx.store.active()?.id
+      if (id === undefined) return 'Nothing is running.'
+      if (!Number.isInteger(id)) return 'Usage: kill [#id]'
+      return ctx.runner.kill(id, { by: ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this Mac' })
+    }
     case 'rm':
     case 'del':
     case 'remove':

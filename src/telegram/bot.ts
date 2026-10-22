@@ -79,6 +79,7 @@ const COMMANDS = [
   { command: 'queue', description: 'Waiting and running jobs' },
   { command: 'status', description: 'Current job and usage limits' },
   { command: 'peek', description: "The running job's screen" },
+  { command: 'kill', description: 'End the running task now, and what it started' },
   { command: 'pause', description: 'Stop starting new jobs' },
   { command: 'resume', description: 'Resume the queue or a paused job' },
   { command: 'settings', description: 'Notifications and the folder map' },
@@ -100,6 +101,7 @@ const WORDS: Record<string, string> = {
 }
 
 const PENDING_TTL = 30 * 60_000
+const KILL_CONFIRM_MS = 15_000
 const MAX_PAIR_ATTEMPTS = 5
 
 function errorText(err: unknown): string {
@@ -158,6 +160,8 @@ export class TelegramBridge {
   private peekMessages = new Set<number>()
   private ticking = false
   private pairAttempts = new Map<number, number>()
+  /** 🛑 Kill tapped once, by task: a second tap within KILL_CONFIRM_MS kills it. */
+  private killArmed = new Map<number, number>()
   private username: string | null = null
   /** The menu button last set, and when setting it last failed (tried again after a while). */
   private menuFailedAt = 0
@@ -648,6 +652,13 @@ export class TelegramBridge {
         return this.showStatus(chat)
       case 'peek':
         return this.showPeek(chat)
+      case 'kill': {
+        // /kill ends the running task; /kill 14 ends #14 (a queued one comes off the queue).
+        const arg = /^\/kill(?:@\S+)?\s+#?(\d+)\s*$/.exec(text)?.[1]
+        const id = arg ? Number(arg) : this.o.store.active()?.id
+        await this.sendText(chat, id === undefined ? 'Nothing is running.' : await this.o.runner.kill(id, { by: 'Telegram' }))
+        return
+      }
       case 'pause':
         this.o.runner.setPaused(true)
         await this.sendText(chat, '⏸ Paused. The current job keeps going; nothing new starts until /resume.')
@@ -1181,6 +1192,18 @@ export class TelegramBridge {
         return
       case 'stop':
         return active ? this.o.runner.stop() : `#${id} isn't running.`
+      case 'kill': {
+        if (job.status !== 'running' && job.status !== 'held' && job.status !== 'queued') return `#${id} has already ended.`
+        const armed = this.killArmed.get(id)
+        if (!armed || this.o.now() - armed > KILL_CONFIRM_MS) {
+          this.killArmed.set(id, this.o.now())
+          return `Tap 🛑 Kill again to end #${id} now: Claude and everything it started stop.`
+        }
+        this.killArmed.delete(id)
+        reply = await this.o.runner.kill(id, { by: 'Telegram' })
+        await this.settle(chat, message, reply)
+        return reply
+      }
       case 'go':
         return active ? this.o.runner.go() : `#${id} isn't the current job.`
       case 'now':

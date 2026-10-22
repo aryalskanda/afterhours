@@ -235,6 +235,8 @@ export const Notice = z.discriminatedUnion('type', [
     jobId: z.number().optional(),
   }),
   z.object({ type: z.literal('recovered'), job: JobInfo }),
+  /** A task you ended (Kill): Claude and everything it started stopped. `by`: the device. */
+  z.object({ type: z.literal('killed'), job: JobInfo, by: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
   /** A pending approval was answered (from any app, Telegram or the terminal), or expired. */
@@ -315,7 +317,16 @@ export const Request = z.discriminatedUnion('type', [
     mode: ExecMode.optional(),
   }),
   /** Acts on the running task; `job` makes sure it's still the one you meant. */
-  withId({ type: z.literal('control'), action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover']), job: z.number().int().optional() }),
+  /**
+   * The queue and the running task. `kill`: end task `job` now, whatever it's doing (a queued one
+   * comes off the queue); `pause` also pauses the queue.
+   */
+  withId({
+    type: z.literal('control'),
+    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill']),
+    job: z.number().int().optional(),
+    pause: z.boolean().optional(),
+  }),
   /** A queued task: remove it, run it next, change it (`prompt`, `options`), or move it to place `to` (0 = next). */
   withId({
     type: z.literal('job'),

@@ -282,6 +282,23 @@ describe('remote access', () => {
     expect(conn.lastSeq).toBe(3)
   })
 
+  test("an app kills the running task, and the other apps hear who did; a viewer can't", async () => {
+    const m = machine()
+    const phone = await pairedApp(m, { name: 'Phone' })
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'Tablet' })
+    const job = m.runner.enqueue({ projectDir: m.project, prompt: 'x', plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    await m.runner.tick()
+    expect(m.store.getJob(job.id)!.status).toBe('running')
+    expect(await viewer.conn.request({ type: 'control', action: 'kill', job: job.id })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await phone.conn.request({ type: 'control', action: 'kill', job: job.id })).toMatchObject({ ok: true, text: `Killed #${job.id}. Queue empty.` })
+    expect(m.store.getJob(job.id)).toMatchObject({ status: 'cancelled', error: 'Killed by Phone' })
+    m.remote.tick()
+    await until(() => viewer.events.some(e => e.notice.type === 'killed'))
+    expect(viewer.events.find(e => e.notice.type === 'killed')!.notice).toMatchObject({ by: 'Phone', job: { id: job.id, status: 'cancelled' } })
+    expect(await phone.conn.request({ type: 'control', action: 'kill', job: job.id })).toMatchObject({ ok: false, code: 'gone' })
+    expect(await phone.conn.request({ type: 'control', action: 'kill' })).toMatchObject({ ok: false, code: 'invalid' })
+  })
+
   test('the first answer wins, and other apps hear who answered', async () => {
     const m = machine()
     const phone = await pairedApp(m, { name: 'Phone' })

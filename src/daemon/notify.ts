@@ -59,6 +59,8 @@ export type Notice =
   | { type: 'chat_continue'; chat: Conversation; where: string; how: 'inbox' | 'takeover' | 'resume'; jobId?: number }
   /** The task's window was gone (the Mac restarted, or tmux stopped), so it was started again. */
   | { type: 'recovered'; job: Job }
+  /** You ended a task (Kill, Skip): Claude and everything it started stopped. `by`: which device. */
+  | { type: 'killed'; job: Job; by: string | null }
   /** Something in the setup needs you (shown once a day at most). */
   | { type: 'setup_warning'; message: string }
   | { type: 'empty' }
@@ -213,6 +215,8 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
     }
     case 'recovered':
       return `🔁 #${n.job.id}'s window was gone (the Mac restarted?), so it continues where it left off.`
+    case 'killed':
+      return `🛑 #${n.job.id} killed${n.by ? ` by ${n.by}` : ''} · ${projectLabel(n.job.projectDir, aliases)}`
     case 'setup_warning':
       return `⚠️ ${n.message}`
     case 'empty':

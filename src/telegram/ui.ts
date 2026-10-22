@@ -533,7 +533,7 @@ export function taskCard(job: Job, card: Card, ctx: UiContext): View {
       card.plan !== undefined ? `📝 Plan approved (${esc(card.plan)})` : '',
     ]
     const open = openBtn(l, appPath.task(l, job.id))
-    return { html: lines.filter(Boolean).join('\n'), keyboard: ended ? [[open]] : [[open, btn('⏹ Stop', `j:${job.id}:stop`)]], silent: true }
+    return { html: lines.filter(Boolean).join('\n'), keyboard: ended ? [[open]] : [[open, btn('⏹ Stop', `j:${job.id}:stop`), btn('🛑 Kill', `j:${job.id}:kill`)]], silent: true }
   }
   const lines = [`▶️ <b>#${job.id} started</b> · ${jobHeader(job, ctx)}`, quote(job.prompt, 600)]
   if (card.plan !== undefined) lines.push(`📝 Plan approved (${esc(card.plan)})${job.planText ? `\n${quote(markdownToPlain(job.planText), 500)}` : ''}`)
@@ -542,7 +542,14 @@ export function taskCard(job: Job, card: Card, ctx: UiContext): View {
     lines.push(job.status === 'done' ? `✅ <b>Done</b>${took}` : job.status === 'failed' ? `❌ <b>Failed</b>${took}` : '✖️ <b>Cancelled</b>')
   }
   const plan = card.plan !== undefined && job.planText ? [btn('📄 Full plan', `j:${job.id}:plan`)] : []
-  const keyboard = ended ? (plan.length > 0 ? [plan] : undefined) : [[...plan, btn('👀 Peek', `j:${job.id}:peek`), btn('⏹ Stop', `j:${job.id}:stop`)]]
+  const keyboard = ended
+    ? plan.length > 0
+      ? [plan]
+      : undefined
+    : [
+        [...plan, btn('👀 Peek', `j:${job.id}:peek`), btn('⏹ Stop', `j:${job.id}:stop`)],
+        [btn('🛑 Kill', `j:${job.id}:kill`)],
+      ]
   return { html: lines.filter(Boolean).join('\n'), keyboard, silent: true }
 }
 
@@ -651,7 +658,7 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : 'reset time unknown; retrying every 15 minutes'
       return {
         html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own`,
-        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), btn('👀 Peek', `j:${n.job.id}:peek`)]],
+        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), btn('👀 Peek', `j:${n.job.id}:peek`)], [btn('🛑 Kill', `j:${n.job.id}:kill`)]],
       }
     }
     case 'resumed':
@@ -676,14 +683,14 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       return {
         html: `⚠️ <b>#${n.job.id} paused</b>: ${esc(n.reason)}${n.screen ? `\n<pre>${esc(clip(n.screen, 1500))}</pre>` : ''}`,
         keyboard: [
-          [btn('▶️ Go', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`), btn('👀 Peek', `j:${n.job.id}:peek`)],
+          [btn('▶️ Go', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`), btn('👀 Peek', `j:${n.job.id}:peek`)],
           [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
         ],
       }
     case 'failed':
       return {
         html: `❌ <b>#${n.job.id} failed</b>: ${esc(n.reason)}${n.screen ? `\n<pre>${esc(clip(n.screen, 1500))}</pre>` : ''}`,
-        keyboard: [[btn('▶️ Retry', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`)]],
+        keyboard: [[btn('▶️ Retry', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
       }
     case 'conflict': {
       const id = n.job.id
@@ -699,7 +706,7 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
         html,
         keyboard: [
           [...(n.state === 'waiting' ? [] : [btn('🤝 Take over', `j:${id}:take`)]), btn('🍴 Continue in a copy', `j:${id}:fork`)],
-          [btn('⏭ Skip', `j:${id}:skip`)],
+          [btn('🛑 Kill', `j:${id}:kill`)],
         ],
       }
     }
@@ -760,9 +767,11 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
     case 'recovered':
       return {
         html: `🔁 <b>#${n.job.id}'s window was gone</b> (the Mac restarted?), so it continues where it left off.`,
-        keyboard: [[btn('👀 Peek', `j:${n.job.id}:peek`), btn('⏹ Stop', `j:${n.job.id}:stop`)]],
+        keyboard: [[btn('👀 Peek', `j:${n.job.id}:peek`), btn('⏹ Stop', `j:${n.job.id}:stop`), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
         silent: true,
       }
+    case 'killed':
+      return { html: `🛑 <b>#${n.job.id} killed</b>${n.by ? ` by ${esc(n.by)}` : ''} · ${esc(ctx.label(n.job.projectDir))}`, silent: true }
     case 'setup_warning':
       return { html: `⚠️ ${esc(n.message)}` }
     case 'empty':
@@ -847,6 +856,7 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
     [btn('🔄 Refresh', 'g:st'), s.paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'), btn('👀 Peek', 'g:peek')],
     [btn('📋 Queue', 'g:q'), btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
   )
+  if (a) keyboard.push([btn(`🛑 Kill #${a.id}`, `j:${a.id}:kill`)])
   return { html: lines.join('\n'), keyboard }
 }
 
@@ -867,7 +877,7 @@ export function peekView(jobId: number | null, screen: string): View {
     html: `👀 <b>#${jobId}</b>\n<pre>${esc(clip(screen, 3500)) || '(blank screen)'}</pre>`,
     keyboard: [
       [btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)],
-      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
+      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys'), btn('🛑 Kill', `j:${jobId}:kill`)],
     ],
   }
 }
@@ -997,24 +1007,24 @@ export function shortNoticeView(n: Notice, ctx: NoticeContext, l: AppLinks): Vie
     case 'held':
       return {
         html: `⚠️ <b>#${n.job.id} paused</b>: ${esc(clip(n.reason, 300))}`,
-        keyboard: [[btn('▶️ Go', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`), openBtn(l, appPath.screen(l))]],
+        keyboard: [[btn('▶️ Go', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`), openBtn(l, appPath.screen(l))]],
       }
     case 'failed':
       return {
         html: `❌ <b>#${n.job.id} failed</b>: ${esc(clip(n.reason, 300))}`,
-        keyboard: [[btn('▶️ Retry', `j:${n.job.id}:go`), btn('⏭ Skip', `j:${n.job.id}:skip`), openBtn(l, appPath.task(l, n.job.id))]],
+        keyboard: [[btn('▶️ Retry', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`), openBtn(l, appPath.task(l, n.job.id))]],
       }
     case 'limit': {
       const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : 'reset time unknown'
       return {
         html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own`,
-        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), openBtn(l, appPath.task(l, n.job.id))]],
+        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), openBtn(l, appPath.task(l, n.job.id)), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
       }
     }
     case 'recovered':
       return {
         html: `🔁 <b>#${n.job.id}'s window was gone</b>, so it continues where it left off.`,
-        keyboard: [[openBtn(l, appPath.task(l, n.job.id)), btn('⏹ Stop', `j:${n.job.id}:stop`)]],
+        keyboard: [[openBtn(l, appPath.task(l, n.job.id)), btn('⏹ Stop', `j:${n.job.id}:stop`), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
         silent: true,
       }
     default:
@@ -1030,7 +1040,10 @@ export function shortPeekView(jobId: number | null, screen: string, l: AppLinks)
   const tail = lines.slice(-12).map(x => clip(x, 60)).join('\n')
   return {
     html: `👀 <b>#${jobId}</b>\n<pre>${esc(tail) || '(blank screen)'}</pre>`,
-    keyboard: [[openBtn(l, appPath.screen(l), 'Screen ↗'), btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)]],
+    keyboard: [
+      [openBtn(l, appPath.screen(l), 'Screen ↗'), btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)],
+      [btn('🛑 Kill', `j:${jobId}:kill`)],
+    ],
   }
 }
 

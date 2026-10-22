@@ -9,10 +9,11 @@ import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import type { JobSpec } from '../src/shared/types'
+import type { Procs } from '../src/daemon/procs'
 import { FakeTmux } from './fakes'
 import { PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
 
-function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean } = {}) {
+function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean; procs?: Procs; slowSnapshot?: Promise<void> } = {}) {
   let now = Date.UTC(2026, 9, 14, 14, 0)
   const project = mkdtempSync(join(tmpdir(), 'cq-run-'))
   const gitCalls: string[] = []
@@ -65,6 +66,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
         return true
       },
       snapshot: async dir => {
+        if (opts.slowSnapshot) await opts.slowSnapshot
         gitCalls.push(`snapshot ${dir}`)
         return opts.gitRepo ? `tree-${gitCalls.filter(c => c.startsWith('snapshot')).length}` : null
       },
@@ -78,6 +80,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     reopenInVsCode: sid => reopened.push(sid),
     activity: a => activity.push(a),
     uploadsDir: '/tmp/cqhome/uploads',
+    procs: opts.procs,
   })
   const spec = (over: Partial<JobSpec> = {}): JobSpec => ({
     projectDir: project,
@@ -679,9 +682,97 @@ describe('problems', () => {
     expect(j.window.input).toEqual(['Escape'])
     await h.runner.onHook('Stop', j.id, { permission_mode: 'auto' })
     expect(h.store.getJob(j.id)!.status).toBe('held') // your stop sticks
-    expect(await h.runner.skip()).toBe(`Skipped #${j.id}. Next up: #${j.id + 1}.`)
+    expect(await h.runner.skip()).toBe(`Killed #${j.id}. Next up: #${j.id + 1}.`)
     await h.runner.tick()
     expect(h.store.active()?.id).toBe(j.id + 1)
+  })
+})
+
+describe('killing a task', () => {
+  /** Fake processes: the window's process 500 with Claude (501) and a dev server (502) below it. */
+  function fakeProcs(o: { stubborn?: number[] } = {}) {
+    const alive = new Set([500, 501, 502])
+    const signals: string[] = []
+    const procs: Procs = {
+      tree: async root => (root === 500 ? [500, 501, 502] : [root]),
+      signal: (pid, sig) => {
+        if (!alive.has(pid)) return false
+        signals.push(`${sig} ${pid}`)
+        if (sig === 'SIGKILL' || !o.stubborn?.includes(pid)) alive.delete(pid)
+        return true
+      },
+      alive: pid => alive.has(pid),
+    }
+    return { procs, signals, alive }
+  }
+
+  test('a running task ends with everything it started; what waited on you is settled; the queue moves on', async () => {
+    const p = fakeProcs({ stubborn: [502] })
+    const h = setup({}, { procs: p.procs })
+    const j = await startJob(h, { plan: false })
+    j.window.pid = 500
+    h.runner.enqueue(h.spec({ plan: false, prompt: 'second' }))
+    const asking = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', tool_input: { command: 'npm run dev' } })
+    await Bun.sleep(0)
+    expect(await h.runner.kill(j.id, { by: 'iPhone' })).toBe(`Killed #${j.id}. Next up: #${j.id + 1}.`)
+    expect(p.signals).toEqual(['SIGTERM 500', 'SIGTERM 501', 'SIGTERM 502', 'SIGKILL 502'])
+    expect(p.alive.size).toBe(0)
+    expect(h.tmux.windows.has(windowName(j.id))).toBe(false)
+    expect(await asking).toMatchObject({ hookSpecificOutput: { decision: { behavior: 'deny' } } })
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'cancelled', error: 'Killed by iPhone', phase: null, holdReason: null })
+    expect(h.notices.at(-1)).toMatchObject({ type: 'killed', by: 'iPhone' })
+    await h.runner.tick()
+    expect(h.store.active()?.id).toBe(j.id + 1)
+  })
+
+  test('waiting for a chat open in VS Code: it ends, and never starts by itself afterwards', async () => {
+    const h = setup()
+    const sid = 'bbbbbbbb-1111-2222-3333-444444444444'
+    h.setHolders([{ pid: 77, sessionId: sid, entrypoint: 'claude-vscode', status: 'idle' }])
+    const job = h.runner.enqueue(h.spec({ plan: false, sessionPolicy: 'session', sessionId: sid }))
+    await h.runner.tick()
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'held', holdReason: 'conflict' })
+    expect(await h.runner.kill(job.id, { pause: true })).toBe(`Killed #${job.id}. The queue is paused.`)
+    h.setHolders([])
+    await h.runner.tick()
+    expect(h.store.getJob(job.id)!.status).toBe('cancelled')
+    expect(h.tmux.windows.size).toBe(0)
+    expect(h.runner.paused).toBe(true)
+  })
+
+  test('killed while it was starting: it never starts', async () => {
+    let release!: () => void
+    const h = setup({}, { slowSnapshot: new Promise<void>(resolve => (release = resolve)) })
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    const ticking = h.runner.tick()
+    await Bun.sleep(0)
+    // The launch is waiting for git (the task isn't running yet); now it's killed.
+    expect(await h.runner.kill(job.id)).toBe(`Removed #${job.id} from the queue.`)
+    release()
+    await ticking
+    expect(h.store.getJob(job.id)!.status).toBe('cancelled')
+    expect(h.tmux.windows.size).toBe(0)
+  })
+
+  test('a queued task just comes off the queue; an ended one stays as it was', async () => {
+    const h = setup()
+    const a = await startJob(h, { plan: false })
+    const b = h.runner.enqueue(h.spec({ plan: false, prompt: 'later' }))
+    expect(await h.runner.kill(b.id, { by: 'iPhone' })).toBe(`Removed #${b.id} from the queue.`)
+    expect(h.store.getJob(b.id)).toMatchObject({ status: 'cancelled', error: 'Removed by iPhone' })
+    expect(h.store.getJob(a.id)!.status).toBe('running')
+    await h.runner.kill(a.id)
+    expect(await h.runner.kill(a.id)).toBe(`#${a.id} has already ended.`)
+    expect(await h.runner.kill(999)).toBe('No task #999.')
+  })
+
+  test('a task taken over from VS Code gives the chat back to VS Code', async () => {
+    const h = setup()
+    const sid = 'cccccccc-1111-2222-3333-444444444444'
+    const j = await startJob(h, { plan: false, sessionPolicy: 'session', sessionId: sid })
+    h.store.updateJob(j.id, { tookFrom: 'claude-vscode' })
+    await h.runner.kill(j.id)
+    expect(h.reopened).toEqual([sid])
   })
 })
 

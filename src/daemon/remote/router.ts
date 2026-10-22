@@ -70,6 +70,7 @@ export const FEATURES = [
   'invite',
   'push',
   'report',
+  'kill',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -397,7 +398,14 @@ export class Router {
           case 'stop':
             return { ok: true, text: await runner.stop() }
           case 'skip':
-            return { ok: true, text: await runner.skip() }
+            return { ok: true, text: await runner.skip(name) }
+          case 'kill': {
+            if (r.job === undefined) return { ok: false, code: 'invalid', error: 'Say which task to kill.' }
+            const job = store.getJob(r.job)
+            if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
+            if (job.status !== 'queued' && job.status !== 'running' && job.status !== 'held') return { ok: false, code: 'gone', error: `#${r.job} has already ended.` }
+            return { ok: true, text: await runner.kill(r.job, { by: name, pause: r.pause === true }) }
+          }
           case 'continue':
             return { ok: true, text: await runner.continueNow() }
           case 'fork':
@@ -408,7 +416,7 @@ export class Router {
         break
       }
       case 'job':
-        if (r.action === 'remove') return { ok: true, text: await runner.remove(r.job) }
+        if (r.action === 'remove') return { ok: true, text: await runner.remove(r.job, name) }
         if (r.action === 'top') return { ok: true, text: runner.top(r.job) }
         return this.changeQueued(r)
       case 'peek': {

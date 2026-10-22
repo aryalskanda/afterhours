@@ -36,6 +36,7 @@ import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
 import { isMac, osLabel } from '../platform/os'
+import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF } from './tmux'
 import { SessionWatcher } from './watch'
 
@@ -128,6 +129,7 @@ export async function runDaemon(): Promise<void> {
     // Folders an "allow" rule from an app may add: only ones the machine shares with apps.
     allowedDir: dir => isAllowed(dir, allowedRoots(config)),
     uploadsDir: paths.uploads,
+    procs: systemProcs,
   })
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })

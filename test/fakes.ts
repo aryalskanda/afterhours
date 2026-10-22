@@ -21,6 +21,8 @@ export interface FakeWindow {
   deadStatus: number | null
   screen: string
   input: string[]
+  /** The pane's process, for a test with fake processes (see kill). */
+  pid?: number
 }
 
 /** Records what the runner does to tmux; tests set `screen`/`dead` to play Claude's side. */
@@ -32,7 +34,8 @@ export class FakeTmux implements TmuxDriver {
   }
   async pane(name: string): Promise<PaneInfo | null> {
     const w = this.windows.get(name)
-    return w ? { dead: w.dead, deadStatus: w.deadStatus, pid: 4242 } : null
+    // No real process behind a fake window, unless a test gives it one (and fake processes).
+    return w ? { dead: w.dead, deadStatus: w.deadStatus, pid: w.pid ?? null } : null
   }
   async sendKeys(name: string, ...keys: string[]): Promise<void> {
     this.must(name).input.push(...keys)

@@ -16,6 +16,7 @@ import { tail, type TmuxDriver } from './tmux'
 import { suggestionLabel, usableSuggestions } from './rules'
 import { toolName, toolSummary } from './tools'
 import { withAttachments } from './uploads'
+import { endProcesses, systemProcs, type Procs } from './procs'
 import { costOf, readTranscript, usageOf } from './transcript'
 
 /** A tool call starting or ending in the running task, for apps watching it live. */
@@ -63,6 +64,8 @@ export interface RunnerDeps {
   allowedDir?: (dir: string) => boolean
   /** Where apps' attachments are kept; a task with some may read there. */
   uploadsDir?: string
+  /** Finding and ending a task's processes (tests use a fake). */
+  procs?: Procs
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -286,6 +289,15 @@ export class Runner {
     this.d.log(`#${job.id} repeats daily: #${again.id} is queued for ${next.toISOString()}`)
   }
 
+  /**
+   * Whether a task has ended (killed, skipped, finished) since the code holding it last looked:
+   * then that code must leave it alone, so a task killed mid-launch never starts again.
+   */
+  private ended(id: number): boolean {
+    const status = this.d.store.getJob(id)?.status
+    return status === undefined || status === 'cancelled' || status === 'done' || status === 'failed'
+  }
+
   private runtime(job: Job): Runtime {
     let rt = this.runtimes.get(job.id)
     if (!rt) {
@@ -304,6 +316,7 @@ export class Runner {
   }
 
   private async launch(job: Job, promptOverride?: string, opts: { skipConflictCheck?: boolean } = {}): Promise<void> {
+    if (this.ended(job.id)) return
     const now = this.d.now()
     const config = this.d.config()
     if (!existsSync(job.projectDir)) {
@@ -336,6 +349,7 @@ export class Runner {
         tookFrom = whereLabel(holders[0]!)
         tookEntry = holders[0]!.entrypoint ?? 'claude'
         const left = await this.release(sessionId, holders)
+        if (this.ended(job.id)) return
         stuck = left.length > 0
         holders = left
       }
@@ -394,6 +408,7 @@ export class Runner {
     })
     const startHead = job.launches === 0 ? await this.d.git.head(cwd) : job.startHead
     const startTree = job.launches === 0 ? await this.d.git.snapshot(cwd) : job.startTree
+    if (this.ended(job.id)) return
     const updated = this.d.store.updateJob(job.id, {
       status: 'running',
       phase: 'launching',
@@ -423,9 +438,15 @@ export class Runner {
         [...this.d.selfCommand, 'launch', String(job.id)],
       )
     } catch (err) {
+      if (this.ended(job.id)) return
       const reason = `couldn't start tmux: ${err instanceof Error ? err.message : err}`
       this.d.store.updateJob(job.id, { status: 'failed', phase: null, finishedAt: now, error: reason })
       this.d.notify({ type: 'failed', job: updated, reason })
+      return
+    }
+    // Killed while its window was opening: close it again.
+    if (this.ended(job.id)) {
+      await this.d.tmux.killWindow(window)
       return
     }
     // Without the prompt or the session name (which quotes it), so the log stays free of prompts.
@@ -459,6 +480,7 @@ export class Runner {
   }
 
   private hold(job: Job, reason: string, screen?: string, kind: 'held' | 'failed' = 'held'): void {
+    if (this.ended(job.id)) return
     const updated = this.d.store.updateJob(job.id, { status: 'held', holdReason: reason, error: kind === 'failed' ? reason : job.error })
     this.d.notify({ type: kind, job: updated, reason, screen })
   }
@@ -764,6 +786,7 @@ export class Runner {
     const diff = await this.d.git.diffStat(job.workDir ?? job.projectDir, job.startHead)
     await this.d.tmux.killWindow(windowName(job.id))
     const ending = await this.endState(job)
+    if (this.ended(job.id)) return
     const done = this.d.store.updateJob(job.id, { status: 'done', phase: null, finishedAt: now, summary: diff, ...ending })
     this.runtimes.delete(job.id)
     // Taken from VS Code: open it there again (unless more is queued for it), so VS Code is up to date.
@@ -1156,12 +1179,55 @@ export class Runner {
     return `Stopped #${job.id}. Reply go to continue it or skip to drop it.`
   }
 
-  async skip(): Promise<string> {
+  /** Skip: the running task ends now (a kill), and the queue moves on. */
+  async skip(by?: string): Promise<string> {
     const job = this.d.store.active()
     if (!job) return 'Nothing is running.'
-    await this.cancelActive(job)
-    const next = this.d.store.queued()[0]
-    return `Skipped #${job.id}.${next ? ` Next up: #${next.id}.` : ' Queue empty.'}`
+    return this.kill(job.id, { by })
+  }
+
+  /**
+   * Ends a task now, whatever it's doing: running, paused, waiting for a chat that's open
+   * elsewhere, at a usage limit, starting or finishing. Claude and everything it started stop,
+   * whatever it waited on from you is settled, and the queue moves on unless `pause`. A queued task
+   * just comes off the queue.
+   */
+  async kill(id: number, o: { by?: string; pause?: boolean } = {}): Promise<string> {
+    const job = this.d.store.getJob(id)
+    if (!job) return `No task #${id}.`
+    if (o.pause) this.setPaused(true)
+    const paused = o.pause ? ' The queue is paused.' : ''
+    if (job.status === 'queued') {
+      this.d.store.updateJob(id, { status: 'cancelled', finishedAt: this.d.now(), error: o.by ? `Removed by ${o.by}` : null })
+      return `Removed #${id} from the queue.${paused}`
+    }
+    if (job.status !== 'running' && job.status !== 'held') return `#${id} has already ${job.status === 'done' ? 'finished' : job.status === 'failed' ? 'failed' : 'ended'}.`
+    // The record first: anything still working on this task (a launch, a supervision pass) sees
+    // it ended and leaves it alone.
+    this.d.store.updateJob(id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now(), error: o.by ? `Killed by ${o.by}` : 'Killed' })
+    for (const a of this.d.store.pendingApprovals(id)) {
+      this.d.store.resolveApproval(a.code, 'expired', null, this.d.now())
+      this.waiters.get(a.code)?.({ status: 'expired', answer: null })
+    }
+    const window = windowName(id)
+    const procs = this.d.procs ?? systemProcs
+    const pane = await this.d.tmux.pane(window).catch(() => null)
+    // Never this engine itself, or init.
+    const pids = (pane?.pid ? await procs.tree(pane.pid).catch(() => [pane.pid!]) : []).filter(pid => pid > 1 && pid !== process.pid)
+    await this.d.tmux.killWindow(window)
+    const forced = await endProcesses(pids, { procs, sleep: this.d.sleep })
+    this.d.log(`#${id}: killed${o.by ? ` by ${o.by}` : ''} (${pids.length} process${pids.length === 1 ? '' : 'es'}${forced.length ? `, ${forced.length} needed SIGKILL` : ''})`)
+    // Where it left the files and what it used, if that comes quickly.
+    const ending = job.launches > 0 ? await Promise.race([this.endState(job), (this.d.sleep ?? Bun.sleep)(3000).then(() => ({}))]) : {}
+    const killed = this.d.store.updateJob(id, ending)
+    this.runtimes.delete(id)
+    this.limitNotified.delete(id)
+    // Taken from VS Code: it gets its conversation back.
+    if (job.tookFrom === 'claude-vscode' && job.sessionId && this.d.config().reopenInVsCode) this.d.reopenInVsCode?.(job.sessionId)
+    this.d.notify({ type: 'killed', job: killed, by: o.by ?? null })
+    this.scheduleRepeat(killed)
+    const next = this.paused ? null : this.d.store.queued()[0]
+    return `Killed #${id}.${paused || (next ? ` Next up: #${next.id}.` : ' Queue empty.')}`
   }
 
   /** Where the task left the files, and the tokens its conversation used: kept when it ends. */
@@ -1182,28 +1248,14 @@ export class Runner {
     return ending
   }
 
-  private async cancelActive(job: Job): Promise<void> {
-    await this.d.tmux.killWindow(windowName(job.id))
-    for (const a of this.d.store.pendingApprovals(job.id)) {
-      this.d.store.resolveApproval(a.code, 'expired', null, this.d.now())
-      this.waiters.get(a.code)?.({ status: 'expired', answer: null })
-    }
-    const ending = job.launches > 0 ? await this.endState(job) : {}
-    const cancelled = this.d.store.updateJob(job.id, { status: 'cancelled', phase: null, holdReason: null, finishedAt: this.d.now(), ...ending })
-    this.runtimes.delete(job.id)
-    this.limitNotified.delete(job.id)
-    this.scheduleRepeat(cancelled)
-    // A usage limit, if any, still applies: the next job waits for the same reset.
-  }
-
-  async remove(id: number): Promise<string> {
+  async remove(id: number, by?: string): Promise<string> {
     const job = this.d.store.getJob(id)
     if (!job) return `No job #${id}.`
     if (job.status === 'queued') {
       this.d.store.updateJob(id, { status: 'cancelled', finishedAt: this.d.now() })
       return `Removed #${id}.`
     }
-    if (job.status === 'running' || job.status === 'held') return this.skip()
+    if (job.status === 'running' || job.status === 'held') return this.kill(id, { by })
     return `#${id} is already ${job.status}.`
   }
 

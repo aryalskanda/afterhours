@@ -814,7 +814,7 @@ describe('reading and answering on a phone', () => {
     expect(h.api.sent.length).toBe(before)
     let view = h.api.view(card.id)
     expect(view.html).toContain('📝 Plan approved (auto mode)')
-    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan', '👀 Peek', '⏹ Stop'])
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan', '👀 Peek', '⏹ Stop', '🛑 Kill'])
 
     await h.tap(button(view.keyboard, '📄 Full plan'), card.id)
     expect(h.api.last().html).toContain('1. Do it')
@@ -882,6 +882,39 @@ describe('reading and answering on a phone', () => {
     for (const row of rows) expect(Math.max(...row.map(x => labelWidth(x.text) + 2)) * row.length).toBeLessThanOrEqual(ROW_COLUMNS)
     expect(labelWidth('😀a')).toBe(3)
     expect(labelWidth(fit('x'.repeat(100)))).toBeLessThanOrEqual(ROW_COLUMNS - 2)
+  })
+})
+
+describe('killing a stuck task', () => {
+  test('🛑 Kill asks for a second tap, then ends the task and says so on the message', async () => {
+    const h = await paired()
+    const job = await running(h)
+    await h.bridge.notify({ type: 'held', job: h.store.getJob(job.id)!, reason: 'no activity for 20m' })
+    const msg = h.api.last()
+    const kill = button(h.api.view(msg.id).keyboard, '🛑 Kill')
+    await h.tap(kill, msg.id)
+    expect(h.api.answers.at(-1)!.text).toContain('Tap 🛑 Kill again')
+    expect(h.store.getJob(job.id)!.status).toBe('running')
+    await h.tap(kill, msg.id)
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'cancelled', error: 'Killed by Telegram' })
+    expect(h.api.view(msg.id).html).toContain(`Killed #${job.id}`)
+    expect(h.api.view(msg.id).keyboard).toEqual([])
+    // Its card and the kill itself arrive quietly.
+    expect(h.api.sent.some(m => m.html.includes(`#${job.id} killed`) && m.silent)).toBe(true)
+  })
+
+  test('/kill ends the running task; /kill <#> a given one; Status has Kill', async () => {
+    const h = await paired()
+    const job = await running(h)
+    await h.say('/status')
+    expect(h.api.view(h.api.last().id).keyboard.flat().map(b => b.text)).toContain(`🛑 Kill #${job.id}`)
+    await h.say('/kill 999')
+    expect(h.api.last().html).toContain('No task #999.')
+    await h.say('/kill')
+    expect(h.api.last().html).toContain(`Killed #${job.id}.`)
+    expect(h.store.getJob(job.id)!.status).toBe('cancelled')
+    await h.say('/kill')
+    expect(h.api.last().html).toContain('Nothing is running.')
   })
 })
 
