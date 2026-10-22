@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
-import { startRelay, type Relay } from '../relay/src/server'
+import { testRelay, type TestRelay } from '../relay/test/target'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
 import type { FolderMap } from '../src/daemon/folders'
@@ -21,13 +21,13 @@ import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { checkInitData, signInitData } from '../src/telegram/webapp'
 import { FakeTmux } from './fakes'
 
-let relay: Relay
+let relay: TestRelay
 let dir: string
 const cleanups: (() => void)[] = []
 
-beforeEach(() => {
+beforeEach(async () => {
   conversations = []
-  relay = startRelay({ port: 0 })
+  relay = await testRelay()
   dir = mkdtempSync(join(tmpdir(), 'cq-remote-'))
 })
 

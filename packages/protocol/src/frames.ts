@@ -73,7 +73,11 @@ const SessionText = z.string().regex(/^[A-Za-z0-9_-]{22}$/)
 export const PeerControl = z.discriminatedUnion('t', [
   z.object({ t: z.literal('auth'), v: z.literal(RELAY_PROTOCOL_VERSION), id: PeerIdText, kind: z.enum(['agent', 'device']), sig: z.string().max(100) }),
   z.object({ t: z.literal('ping') }),
-  /** Machines only: the complete list of apps allowed to reach it (sent after every sign-in). */
+  /**
+   * Machines only: the complete list of apps allowed to reach it (sent after every sign-in). Until
+   * a machine has sent it, a relay answers frames between it and an app it hasn't linked with
+   * `offline`, not `not-linked`: a relay that just started can't tell the two apart.
+   */
   z.object({ t: z.literal('links'), peers: z.array(PeerIdText).max(1000) }),
   z.object({ t: z.literal('link'), peer: PeerIdText }),
   /** Machines drop an app; an app drops a machine. */

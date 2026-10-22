@@ -12,9 +12,9 @@ import {
   type Identity,
   type PeerKind,
 } from '@afterhours/protocol'
-import { startRelay, type Relay } from '../src/server'
+import { OTHER_RELAY, testRelay, type TestRelay } from './target'
 
-let relay: Relay | null = null
+let relay: TestRelay | null = null
 const clients: RelayClient[] = []
 
 afterEach(async () => {
@@ -58,14 +58,14 @@ const frame = (kind: DataFrame['kind'], to: string, payload = [1, 2, 3], offer?:
 
 describe('relay', () => {
   test('peers sign in with their key', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const machine = peer('agent')
     await machine.client.whenReady(2000)
-    expect(relay.stats().peers).toBe(1)
+    expect((await relay.stats()).peers).toBe(1)
   })
 
   test('a wrong signature is refused', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const who = newIdentity()
     const someoneElse = newIdentity()
     const ws = new WebSocket(relay.url)
@@ -85,7 +85,7 @@ describe('relay', () => {
   })
 
   test('a key is either a machine or a device, never both', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const identity = newIdentity()
     const asMachine = peer('agent', identity)
     await asMachine.client.whenReady(2000)
@@ -95,10 +95,13 @@ describe('relay', () => {
   })
 
   test('frames go only between a machine and the devices it linked', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const machine = peer('agent')
     const phone = peer('device')
     await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000)])
+    // As every machine does after signing in.
+    machine.client.control({ t: 'links', peers: [] })
+    await Bun.sleep(50)
 
     phone.client.send(frame('session', machine.id))
     await until(() => phone.undeliverable.length === 1)
@@ -125,7 +128,7 @@ describe('relay', () => {
   })
 
   test('the machine\'s link list replaces the old one', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const machine = peer('agent')
     const a = peer('device')
     const b = peer('device')
@@ -141,11 +144,12 @@ describe('relay', () => {
   })
 
   test('a pairing offer lets one unlinked device reach the machine, and the machine answer it', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const machine = peer('agent')
     const phone = peer('device')
     const stranger = peer('device')
     await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000), stranger.client.whenReady(2000)])
+    machine.client.control({ t: 'links', peers: [] })
     const secret = randomBytes(16)
     const offer = offerId(secret)
     machine.client.control({ t: 'offer', offer: toBase64url(offer), expires: Date.now() + 60_000 })
@@ -174,7 +178,7 @@ describe('relay', () => {
   })
 
   test('linked peers hear when the other comes and goes', async () => {
-    relay = startRelay({ port: 0 })
+    relay = await testRelay()
     const machine = peer('agent')
     const phone = peer('device')
     await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000)])
@@ -185,10 +189,11 @@ describe('relay', () => {
     expect(phone.client.isOnline(machine.id)).toBe(false)
   })
 
-  test('links survive a relay restart', async () => {
+  // This relay keeps links on disk; one that keeps them in memory gets them again from the machine.
+  test.skipIf(OTHER_RELAY !== null)('links survive a relay restart', async () => {
     const dir = await Bun.$`mktemp -d`.text()
     const db = `${dir.trim()}/relay.db`
-    relay = startRelay({ port: 0, db })
+    relay = await testRelay({ db })
     const machineId = newIdentity()
     const phoneId = newIdentity()
     let machine = peer('agent', machineId)
@@ -199,7 +204,7 @@ describe('relay', () => {
     for (const c of clients.splice(0)) c.stop()
     await relay.stop()
 
-    relay = startRelay({ port: 0, db })
+    relay = await testRelay({ db })
     machine = peer('agent', machineId)
     phone = peer('device', phoneId)
     await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000)])
@@ -207,8 +212,61 @@ describe('relay', () => {
     await until(() => machine.frames.length === 1)
   })
 
+  test('until a machine has sent its links, a device it hasn’t linked hears "offline", not "not-linked"', async () => {
+    relay = await testRelay()
+    const machine = peer('agent')
+    const phone = peer('device')
+    await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000)])
+    phone.client.send(frame('session', machine.id))
+    await until(() => phone.undeliverable.length === 1)
+    expect(phone.undeliverable[0]).toBe('offline')
+    machine.client.control({ t: 'links', peers: [] })
+    await Bun.sleep(50)
+    phone.client.send(frame('session', machine.id))
+    await until(() => phone.undeliverable.length === 2)
+    expect(phone.undeliverable[1]).toBe('not-linked')
+  })
+
+  test('after a relay restart, the machine’s links come back and both sides hear the other is there', async () => {
+    relay = await testRelay()
+    const port = relay.port
+    const phoneId = newIdentity()
+    let linksSent = 0
+    const phone = peer('device', phoneId)
+    const machineIdentity = newIdentity()
+    const frames: DataFrame[] = []
+    const machinePresence: [string, boolean][] = []
+    // A machine sends its links every time it signs in, as Host does.
+    const machine = new RelayClient({
+      url: relay.url,
+      identity: machineIdentity,
+      kind: 'agent',
+      onFrame: f => frames.push(f),
+      onPresence: (p, online) => machinePresence.push([p, online]),
+      onReady: () => {
+        linksSent++
+        machine.control({ t: 'links', peers: [phone.id] })
+      },
+      timing: { minBackoffMs: 100, maxBackoffMs: 200 },
+    })
+    clients.push(machine)
+    machine.start()
+    const machineId = peerId(machineIdentity.publicKey)
+    await until(() => phone.client.isOnline(machineId) === true, 5000)
+
+    const heard = phone.presence.length
+    const machineHeard = machinePresence.length
+    await relay.stop()
+    relay = await testRelay({ port })
+    await until(() => linksSent === 2 && phone.presence.slice(heard).some(([p, on]) => p === machineId && on), 8000)
+    await until(() => machinePresence.slice(machineHeard).some(([p, on]) => p === phone.id && on))
+    phone.client.send(frame('session', machineId, [4, 2]))
+    await until(() => frames.length === 1, 5000)
+    expect(frames[0]!.peer).toBe(phone.id)
+  })
+
   test('floods are cut off', async () => {
-    relay = startRelay({ port: 0, limits: { framesPerSecond: 5, burstSeconds: 1 } })
+    relay = await testRelay({ limits: { framesPerSecond: 5, burstSeconds: 1 } })
     const machine = peer('agent')
     const phone = peer('device')
     await Promise.all([machine.client.whenReady(2000), phone.client.whenReady(2000)])

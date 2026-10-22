@@ -24,13 +24,13 @@ import {
   type SocketFactory,
   type SocketLike,
 } from '@afterhours/protocol'
-import { startRelay, type Relay } from '../src/server'
+import { testRelay, type TestRelay } from './target'
 
-let relay: Relay | null = null
+let relay: TestRelay | null = null
 const stoppers: (() => void)[] = []
 
-beforeEach(() => {
-  relay = startRelay({ port: 0 })
+beforeEach(async () => {
+  relay = await testRelay()
 })
 
 afterEach(async () => {

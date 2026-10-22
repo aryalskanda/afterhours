@@ -174,6 +174,12 @@ export function startRelay(o: RelayOptions = {}): Relay {
   const machineLinks = new Map<string, Set<string>>()
   const deviceLinks = new Map<string, Set<string>>()
   for (const row of db.query<{ machine: string; device: string }, []>('SELECT machine, device FROM links').all()) addLinkCache(row.machine, row.device)
+  /**
+   * Machines that sent their link list since the relay started. Until a machine has, a pair that
+   * isn't linked may only not be linked again yet (a relay that keeps links in memory), so frames
+   * between them are "offline" rather than "not-linked", which an app takes as being unpaired.
+   */
+  const listed = new Set<string>()
   /** Open pairing offers: offer id → machine. */
   const offers = new Map<string, { machine: string; expires: number }>()
   /** Apps in the middle of pairing, per machine: the machine may answer them before any link exists. */
@@ -272,6 +278,7 @@ export function startRelay(o: RelayOptions = {}): Relay {
         if (!isMachine) return sendControl(ws, { t: 'error', code: 'forbidden', message: 'Only machines set links.' })
         const wanted = new Set(parsed.peers.filter(p => kinds.get(p) !== 'agent').slice(0, limits.linksPerMachine))
         const current = machineLinks.get(id) ?? new Set<string>()
+        const added = [...wanted].filter(device => !current.has(device))
         const t = now()
         db.transaction(() => {
           for (const device of current) if (!wanted.has(device)) db.query('DELETE FROM links WHERE machine = ? AND device = ?').run(id, device)
@@ -279,6 +286,14 @@ export function startRelay(o: RelayOptions = {}): Relay {
         })()
         for (const device of [...current]) if (!wanted.has(device)) dropLinkCache(id, device)
         for (const device of wanted) addLinkCache(id, device)
+        listed.add(id)
+        // Newly linked pairs hear about each other, as they would have when signing in.
+        for (const device of added) {
+          const other = newest(device)
+          if (!other) continue
+          sendControl(other, { t: 'presence', peer: id, online: true })
+          sendControl(ws, { t: 'presence', peer: device, online: true })
+        }
         return
       }
       case 'link': {
@@ -360,7 +375,7 @@ export function startRelay(o: RelayOptions = {}): Relay {
       // Pairing replies and resets travel between a machine and an app that is pairing with it.
       allowed = fromMachine ? pairingAllowed(from, to) : pairingAllowed(to, from)
     }
-    if (!allowed) return undeliverable('not-linked')
+    if (!allowed) return undeliverable(listed.has(fromMachine ? from : to) ? 'not-linked' : 'offline')
 
     const target = newest(to)
     if (!target) return undeliverable('offline')
