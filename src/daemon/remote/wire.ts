@@ -46,6 +46,10 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     group: job.group,
     onHold: job.onHold,
     workModel: job.workModel,
+    wantLink: job.wantLink,
+    links: job.links,
+    linkNote: job.linkNote,
+    linkFor: job.linkFor,
   }
 }
 

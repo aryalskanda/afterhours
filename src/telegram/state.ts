@@ -59,6 +59,8 @@ export interface Draft extends Choices {
   /** That conversation is open in another Claude window: close it there when the job starts. */
   takeover: boolean
   followJob: number | null
+  /** End with a live link (a claude.ai artifact). */
+  wantLink: boolean
   /** Folder the browser is showing. */
   browse: string | null
   messageId: number | null
@@ -85,13 +87,14 @@ const COLUMNS: Record<keyof Draft, string> = {
   sessionId: 'session_id',
   takeover: 'takeover',
   followJob: 'follow_job',
+  wantLink: 'want_link',
   browse: 'browse',
   messageId: 'message_id',
   status: 'status',
   jobId: 'job_id',
   createdAt: 'created_at',
 }
-const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover'])
+const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover', 'wantLink'])
 
 function toDraft(row: Row): Draft {
   const d = {} as Record<string, unknown>
@@ -113,7 +116,7 @@ export class TelegramState {
     db.exec(SCHEMA)
     // Columns added after the first release.
     const have = new Set(db.query<{ name: string }, []>('PRAGMA table_info(tg_drafts)').all().map(c => c.name))
-    for (const column of ['isolate', 'takeover']) {
+    for (const column of ['isolate', 'takeover', 'want_link']) {
       if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
     }
     if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')

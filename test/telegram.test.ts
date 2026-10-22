@@ -908,6 +908,35 @@ describe('two models from Telegram', () => {
   })
 })
 
+describe('live links from Telegram', () => {
+  test('🔗 Live link on the card; the link arrives as a button; a finished task offers Get a live link', async () => {
+    const h = await paired()
+    await h.say('Make the settings page dark')
+    const card = h.api.last().id
+    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
+    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '🔗 Live link'), card)
+    expect(h.api.view(card).html).toContain('ends with a live link')
+    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    const job = h.store.queued().at(-1)!
+    expect(job.wantLink).toBe(true)
+
+    await h.bridge.notify({ type: 'link', job, url: 'https://claude.ai/artifact/abc', title: 'Dark settings', note: null })
+    expect(h.api.last().html).toContain('Live link for')
+    const kb = h.api.last().markup && 'inline_keyboard' in h.api.last().markup! ? (h.api.last().markup as { inline_keyboard: InlineKeyboard }).inline_keyboard : []
+    expect(kb.flat()[0]).toEqual({ text: '🔗 Open the live link', url: 'https://claude.ai/artifact/abc' })
+
+    // A done task without a link: Get a live link queues one, next, in its conversation.
+    const done = { ...job, id: job.id, status: 'done' as const, sessionId: 'eeeeeeee-1111-2222-3333-444444444444', links: null, startedAt: h.now(), finishedAt: h.now(), lastMessage: 'Done.' }
+    h.store.updateJob(job.id, { status: 'done', sessionId: done.sessionId, finishedAt: h.now() })
+    await h.bridge.notify({ type: 'done', job: done, diff: null, next: null })
+    const msg = h.api.last().id
+    await h.tap(button(h.api.view(msg).keyboard, '🔗 Get a live link'), msg)
+    expect(h.store.queued()[0]).toMatchObject({ linkFor: job.id, sessionId: done.sessionId })
+  })
+})
+
 describe('the queue from Telegram', () => {
   test('⬆️ ⬇️ move a task, ⏸ holds it in its place, ▶️ lets it go, 🧹 Clear (twice) empties it', async () => {
     const h = await paired()

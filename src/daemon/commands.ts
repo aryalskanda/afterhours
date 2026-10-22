@@ -52,6 +52,8 @@ export interface QueueOptions {
   model?: string
   /** `opus>sonnet`: plan with opus, work with sonnet. */
   workModel?: string
+  /** `link`: end with a live link (a claude.ai artifact). */
+  wantLink?: boolean
   effort?: Effort
   policy?: SessionPolicy
   sessionId?: string
@@ -116,6 +118,10 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
   }
   if (t === 'branch') {
     out.isolate = true
+    return true
+  }
+  if (t === 'link') {
+    out.wantLink = true
     return true
   }
   if (t === 'here') {
@@ -189,6 +195,7 @@ export function buildSpec(text: string, ctx: CommandContext): JobSpec | string {
     execMode: options.execMode ?? d.execMode,
     model: options.model ?? d.model,
     workModel: options.workModel ?? (options.model === undefined ? d.workModel : undefined) ?? null,
+    wantLink: options.wantLink,
     effort: options.effort ?? d.effort,
     sessionPolicy: options.policy ?? 'continue',
     sessionId,
@@ -210,6 +217,7 @@ q myapp plan opus max: <prompt> · options before the colon
 ls · st · peek [lines] · plan [#] · chats [project]
 pause · go · stop · skip · kill [#] (ends it now, and what it started) · rm <#> · top <#>
 hold <#> (keeps its place, doesn't start) · release <#> · clear (empties the queue)
+link [#] (a live link: a claude.ai page showing the result) · q … link: <prompt> (ends with one)
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
 y <code> · n <code> [note] · a <code> <answer>
 projects · alias <name> <path> · trust <name|path> · default <options> · notify all|important|off`
@@ -509,6 +517,12 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       return ctx.runner.stop()
     case 'skip':
       return ctx.runner.skip()
+    case 'link': {
+      // link: a live link for the running task (at its end); link 14: for that one.
+      const id = rest ? Number(rest.replace(/^#/, '')) : (ctx.store.active()?.id ?? ctx.store.recentFinished(1)[0]?.id)
+      if (id === undefined || !Number.isInteger(id)) return 'Usage: link [#id]'
+      return ctx.runner.requestLink(id, ctx.source).text
+    }
     case 'kill': {
       // kill: the running task; kill 14: that one (a queued one comes off the queue).
       const id = rest ? Number(rest.replace(/^#/, '')) : ctx.store.active()?.id

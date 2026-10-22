@@ -722,6 +722,57 @@ describe('plan with one model, work with another', () => {
   })
 })
 
+describe('live links', () => {
+  const LINK = 'https://claude.ai/code/artifact/0a1b2c3d-4e5f-6789-abcd-ef0123456789'
+
+  test('at the end, Claude is asked for one; the link is kept and said, and the answer stays the answer', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, wantLink: true })
+    expect(JSON.parse(h.files.get(`/tmp/cqhome/jobs/${j.id}.settings.json`)!).permissions).toEqual({ allow: ['Artifact'] })
+    const first = await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'Added the dark mode toggle.' })
+    expect(first).toMatchObject({ decision: 'block' })
+    expect(String((first as { reason: string }).reason)).toContain('publish a Claude artifact')
+    expect(h.store.getJob(j.id)!.phase).not.toBe('finishing')
+    const second = await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', stop_hook_active: true, last_assistant_message: `Here it is: [Dark mode, before and after](${LINK})` })
+    expect(second).toEqual({})
+    expect(h.store.getJob(j.id)).toMatchObject({ links: [{ url: LINK, title: 'Dark mode, before and after' }], linkNote: null, lastMessage: 'Added the dark mode toggle.', phase: 'finishing' })
+    expect(lastNotice(h, 'link')).toMatchObject({ url: LINK, title: 'Dark mode, before and after' })
+  })
+
+  test("no link: the task still ends, and says why", async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, wantLink: true })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'Done.' })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', stop_hook_active: true, last_assistant_message: "I can't publish artifacts here." })
+    expect(h.store.getJob(j.id)).toMatchObject({ links: null, linkNote: "I can't publish artifacts here.", phase: 'finishing' })
+    expect(lastNotice(h, 'link')).toMatchObject({ url: null, note: "I can't publish artifacts here." })
+  })
+
+  test('asked for later: a queued or running task ends with one; a finished one gets a task of its own, next, and the link lands on it', async () => {
+    const h = setup()
+    const a = await startJob(h, { plan: false })
+    const queued = h.runner.enqueue(h.spec({ plan: false, prompt: 'later' }))
+    expect(h.runner.requestLink(queued.id).text).toBe(`#${queued.id} ends with a live link.`)
+    expect(h.store.getJob(queued.id)!.wantLink).toBe(true)
+    await finishTurn(h, a)
+    expect(h.store.getJob(a.id)!.status).toBe('done')
+    const asked = h.runner.requestLink(a.id)
+    expect(asked).toMatchObject({ ok: true })
+    const linkJob = asked.job!
+    expect(linkJob).toMatchObject({ linkFor: a.id, sessionId: a.sid, sessionPolicy: 'session', plan: false })
+    expect(h.store.queued()[0]!.id).toBe(linkJob.id)
+    expect(h.runner.requestLink(a.id).text).toBe(`A live link for #${a.id} is already queued as #${linkJob.id}.`)
+    // It runs, publishes, and the link shows on #a.
+    await h.runner.tick()
+    await h.runner.onHook('SessionStart', linkJob.id, { session_id: a.sid, transcript_path: '/tmp/t.jsonl' })
+    await h.runner.onHook('UserPromptSubmit', linkJob.id, { session_id: a.sid, permission_mode: 'auto' })
+    await h.runner.onHook('Stop', linkJob.id, { permission_mode: 'auto', last_assistant_message: LINK })
+    expect(h.store.getJob(a.id)!.links).toEqual([{ url: LINK, title: null }])
+    expect(lastNotice(h, 'link').job.id).toBe(a.id)
+    expect(h.runner.requestLink(999)).toMatchObject({ ok: false })
+  })
+})
+
 describe('the queue: hold, put back, clear', () => {
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()

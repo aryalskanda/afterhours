@@ -297,6 +297,23 @@ describe('remote access', () => {
     expect(m.store.getJob(id)!.workModel).toBeNull()
   })
 
+  test('a live link from an app: queued with one, or asked for later; the link reaches the app', async () => {
+    const m = machine()
+    const app = await pairedApp(m)
+    const r = await app.conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { plan: false, link: true } })
+    const id = (r.data as { job: { id: number; wantLink: boolean } }).job.id
+    expect(m.store.getJob(id)!.wantLink).toBe(true)
+    // A task that ended asks in a task of its own.
+    const done = m.runner.enqueue({ projectDir: m.project, prompt: 'y', plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    m.store.updateJob(done.id, { status: 'done', sessionId: 'dddddddd-1111-2222-3333-444444444444', finishedAt: Date.now() })
+    const asked = await app.conn.request({ type: 'link', job: done.id })
+    expect(asked).toMatchObject({ ok: true, data: { job: { linkFor: done.id } } })
+    expect(await app.conn.request({ type: 'link', job: 999 })).toMatchObject({ ok: false, code: 'not-found' })
+    m.remote.notice('link', { type: 'link', job: m.store.getJob(done.id)!, url: 'https://claude.ai/artifact/abc', title: 'It', note: null })
+    await until(() => app.events.some(e => e.notice.type === 'link'))
+    expect(app.events.find(e => e.notice.type === 'link')!.notice).toMatchObject({ url: 'https://claude.ai/artifact/abc', title: 'It' })
+  })
+
   test('the queue from an app: move, hold and release, remove and put back, clear', async () => {
     const m = machine()
     const { conn } = await pairedApp(m)

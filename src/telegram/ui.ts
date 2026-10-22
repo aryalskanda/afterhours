@@ -234,6 +234,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
     folder,
     `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)}${d.plan && d.workModel ? ` → ${esc(d.workModel)}` : ''} · ⚡ ${d.effort}`,
     chatLabel(d, ctx, chat),
+    ...(d.wantLink ? ['🔗 ends with a live link (a claude.ai page you can open on your phone)'] : []),
   ].join('\n')
   const chatButton = btn('💬 Chat…', `d:${id}:t`)
   const branchButton = startsNewChat(d, ctx) ? [btn(d.isolate ? '📂 Work in place' : '🌿 Own branch', `d:${id}:i`)] : []
@@ -247,7 +248,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
     html,
     keyboard: [
       [btn('📁 Folder', `d:${id}:f`), btn('🗺 Mode', `d:${id}:o`), btn('🧠 Model', `d:${id}:m`)],
-      [btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton],
+      ...layout([btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton, btn(d.wantLink ? '🔗 Live link ✓' : '🔗 Live link', `d:${id}:l`)]),
       [go, btn('✖️ Discard', `d:${id}:x`)],
     ],
   }
@@ -521,6 +522,12 @@ export function longView(
   return { html: head, silent: o.silent, follow, ...(truncated ? { file: { ...file, text } } : {}) }
 }
 
+/** A finished task's live link: open it, or ask for one. */
+function linkButton(job: Job): InlineButton {
+  const link = job.links?.[0]
+  return link ? { text: '🔗 Live link', url: link.url } : btn('🔗 Get a live link', `j:${job.id}:link`)
+}
+
 /** A job's whole plan, for 📄 Full plan. */
 export function planView(job: Job, ctx: UiContext): View {
   return longView(`📄 <b>#${job.id} plan</b> · ${esc(ctx.label(job.projectDir))}`, job.planText ?? '(no plan)', undefined, { name: `plan-${job.id}.md`, caption: `#${job.id}'s plan` }, { silent: true })
@@ -686,7 +693,7 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       ]
         .filter(Boolean)
         .join('\n')
-      return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`)]], {
+      return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`), linkButton(n.job)]], {
         name: `answer-${n.job.id}.md`,
         caption: `#${n.job.id}: Claude's full answer`,
       })
@@ -784,6 +791,10 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       }
     case 'killed':
       return { html: `🛑 <b>#${n.job.id} killed</b>${n.by ? ` by ${esc(n.by)}` : ''} · ${esc(ctx.label(n.job.projectDir))}`, silent: true }
+    case 'link':
+      return n.url
+        ? { html: `🔗 <b>Live link for #${n.job.id}</b>${n.title ? `: ${esc(n.title)}` : ''}\n<i>Opens where you're signed in to claude.ai.</i>`, keyboard: [[{ text: '🔗 Open the live link', url: n.url }]] }
+        : { html: `🔗 <b>No live link for #${n.job.id}</b>: ${esc(clip(n.note ?? 'Claude didn’t make one.', 300))}` }
     case 'setup_warning':
       return { html: `⚠️ ${esc(n.message)}` }
     case 'empty':
@@ -1025,7 +1036,7 @@ export function shortNoticeView(n: Notice, ctx: NoticeContext, l: AppLinks): Vie
       ]
       return {
         html: lines.filter(Boolean).join('\n'),
-        keyboard: [[openBtn(l, appPath.task(l, n.job.id, 'answer')), btn('➕ Follow up', `j:${n.job.id}:fu`)]],
+        keyboard: [[openBtn(l, appPath.task(l, n.job.id, 'answer')), btn('➕ Follow up', `j:${n.job.id}:fu`)], [linkButton(n.job)]],
       }
     }
     case 'held':

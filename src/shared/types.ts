@@ -90,6 +90,13 @@ export interface Job {
    * model carries it out (the same conversation, resumed). Null: `model` does both.
    */
   workModel: string | null
+  /** End with a live link: Claude publishes a claude.ai artifact showing the result. */
+  wantLink: boolean
+  /** The live links it got (claude.ai artifacts), and why there's none when that failed. */
+  links: { url: string; title: string | null }[] | null
+  linkNote: string | null
+  /** A task asking for a live link for an earlier one (Get a live link): that task's id. */
+  linkFor: number | null
 }
 
 export interface Usage {
@@ -122,6 +129,8 @@ export interface JobSpec {
   group?: string | null
   /** The model that carries out the approved plan, when it isn't `model`. */
   workModel?: string | null
+  wantLink?: boolean
+  linkFor?: number | null
 }
 
 export type ApprovalKind = 'permission' | 'question' | 'review' | 'trust'

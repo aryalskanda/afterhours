@@ -47,6 +47,8 @@ export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths):
     },
   }
   if (job.execMode === 'bypassPermissions') settings.skipDangerousModePermissionPrompt = true
+  // A live link: publishing the artifact is what this task was asked for.
+  if (job.wantLink || job.linkFor !== null) settings.permissions = { allow: ['Artifact'] }
   return settings
 }
 

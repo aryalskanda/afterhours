@@ -33,8 +33,11 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery
 }
 
-/** A button that sends `callback_data` to the bot, or (`web_app`) opens the app inside Telegram. */
-export type InlineButton = { text: string; callback_data: string; web_app?: never } | { text: string; web_app: { url: string }; callback_data?: never }
+/** A button that sends `callback_data` to the bot, opens the app inside Telegram (`web_app`), or opens a link (`url`). */
+export type InlineButton =
+  | { text: string; callback_data: string; web_app?: never; url?: never }
+  | { text: string; web_app: { url: string }; callback_data?: never; url?: never }
+  | { text: string; url: string; callback_data?: never; web_app?: never }
 
 export type InlineKeyboard = InlineButton[][]
 

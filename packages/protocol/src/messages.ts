@@ -121,6 +121,13 @@ export const JobInfo = z.object({
   onHold: z.boolean().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
+  /** It ends with a live link: Claude publishes a claude.ai artifact showing the result. */
+  wantLink: z.boolean().optional(),
+  /** The live links it got (claude.ai artifacts, opened signed in), and why there's none when it failed. */
+  links: z.array(z.object({ url: z.string(), title: z.string().nullable() })).nullable().optional(),
+  linkNote: z.string().nullable().optional(),
+  /** A task asking for a live link for an earlier one: that task. */
+  linkFor: z.number().int().nullable().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -241,6 +248,8 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('recovered'), job: JobInfo }),
   /** A task you ended (Kill): Claude and everything it started stopped. `by`: the device. */
   z.object({ type: z.literal('killed'), job: JobInfo, by: z.string().nullable() }),
+  /** A live link for the task (a claude.ai artifact); `url` null: Claude didn't make one, `note` says why. */
+  z.object({ type: z.literal('link'), job: JobInfo, url: z.string().nullable(), title: z.string().nullable(), note: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
   /** A pending approval was answered (from any app, Telegram or the terminal), or expired. */
@@ -264,6 +273,8 @@ export const QueueOptions = z.object({
   model: z.string().max(40).optional(),
   /** With a plan: the model that carries it out once it's approved (`model` writes it). */
   workModel: z.string().max(40).optional(),
+  /** End with a live link: Claude publishes a claude.ai artifact showing the result. */
+  link: z.boolean().optional(),
   effort: Effort.optional(),
   /** `continue` the folder's last conversation, start a `new` one, or continue `session`. */
   policy: z.enum(['continue', 'new', 'session']).optional(),
@@ -421,6 +432,11 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('branch'), job: z.number().int(), action: z.enum(['merge', 'discard', 'pr']) }),
   /** Opens a task's or a chat's conversation on the machine's screen, in VS Code. */
   withId({ type: z.literal('open'), job: z.number().int().optional(), session: z.string().max(64).optional() }),
+  /**
+   * A live link for task `job`: at its end if it's queued or running; if it has ended, now, in a task
+   * of its own that continues its conversation and runs next (the result's data: `{ job }`).
+   */
+  withId({ type: z.literal('link'), job: z.number().int() }),
   /**
    * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
    * reads a file; `query` searches file names.

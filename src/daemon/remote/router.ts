@@ -74,6 +74,7 @@ export const FEATURES = [
   'queue.hold',
   'queue.restore',
   'models.split',
+  'link',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -91,6 +92,7 @@ const NEEDS: Record<RequestType, Role> = {
   answer: 'operator',
   control: 'operator',
   job: 'operator',
+  link: 'operator',
   say: 'operator',
   keys: 'operator',
   'chat.write': 'operator',
@@ -435,6 +437,12 @@ export class Router {
           return { ok: true, text: runner.holdQueued(r.job, r.action === 'hold') }
         }
         return this.changeQueued(r)
+      case 'link': {
+        const job = store.getJob(r.job)
+        if (job && !isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
+        const asked = runner.requestLink(r.job)
+        return asked.ok ? { ok: true, text: asked.text, data: asked.job ? { job: jobInfo(asked.job) } : undefined } : { ok: false, code: job ? 'invalid' : 'not-found', error: asked.text }
+      }
       case 'peek': {
         if (!policy.allowScreens) return { ok: false, code: 'policy', error: 'This machine keeps its screens to itself (cq remote screens on).' }
         if (notRunning(r.job)) return { ok: false, code: 'gone', error: `#${r.job} isn't running.` }
@@ -814,6 +822,7 @@ export class Router {
       execMode: o.mode ?? d.execMode,
       model: o.model ?? d.model,
       workModel: o.workModel ?? (o.model === undefined ? d.workModel : undefined) ?? null,
+      wantLink: o.link === true,
       effort: o.effort ?? d.effort,
       sessionPolicy: o.policy ?? (sessionId ? 'session' : 'continue'),
       sessionId,

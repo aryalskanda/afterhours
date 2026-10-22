@@ -61,6 +61,8 @@ export type Notice =
   | { type: 'recovered'; job: Job }
   /** You ended a task (Kill, Skip): Claude and everything it started stopped. `by`: which device. */
   | { type: 'killed'; job: Job; by: string | null }
+  /** A live link Claude made for the task (a claude.ai artifact); `url` null: it couldn't, `note` says why. */
+  | { type: 'link'; job: Job; url: string | null; title: string | null; note: string | null }
   /** Something in the setup needs you (shown once a day at most). */
   | { type: 'setup_warning'; message: string }
   | { type: 'empty' }
@@ -81,6 +83,7 @@ const IMPORTANT = new Set<Notice['type']>([
   'recovered',
   'setup_warning',
   'empty',
+  'link',
 ])
 
 export type NotifyLevel = 'all' | 'important' | 'off'
@@ -217,6 +220,8 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       return `🔁 #${n.job.id}'s window was gone (the Mac restarted?), so it continues where it left off.`
     case 'killed':
       return `🛑 #${n.job.id} killed${n.by ? ` by ${n.by}` : ''} · ${projectLabel(n.job.projectDir, aliases)}`
+    case 'link':
+      return n.url ? `🔗 Live link for #${n.job.id}${n.title ? `: ${n.title}` : ''}\n${n.url}` : `🔗 No live link for #${n.job.id}: ${n.note ?? 'Claude didn’t make one.'}`
     case 'setup_warning':
       return `⚠️ ${n.message}`
     case 'empty':

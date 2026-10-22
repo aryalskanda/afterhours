@@ -1008,6 +1008,10 @@ export class TelegramBridge {
         d = this.state.updateDraft(d.id, { takeover: !d.takeover })
         await show(ui.draftCard(d, ctx))
         return d.takeover ? 'Takes it over when it starts.' : 'Waits until you close it there.'
+      case 'l':
+        d = this.state.updateDraft(d.id, { wantLink: !d.wantLink })
+        await show(ui.draftCard(d, ctx))
+        return d.wantLink ? 'Ends with a live link.' : 'No live link.'
       case 'i':
         d = this.state.updateDraft(d.id, { isolate: !d.isolate })
         await show(ui.draftCard(d, ctx))
@@ -1034,6 +1038,7 @@ export class TelegramBridge {
       execMode: d.execMode,
       model: d.model,
       workModel: d.plan ? d.workModel : null,
+      wantLink: d.wantLink,
       effort: d.effort,
       sessionPolicy: d.sessionId ? 'session' : d.newChat ? 'new' : 'continue',
       sessionId: d.sessionId ?? undefined,
@@ -1205,6 +1210,11 @@ export class TelegramBridge {
         return
       case 'stop':
         return active ? this.o.runner.stop() : `#${id} isn't running.`
+      case 'link': {
+        const asked = this.o.runner.requestLink(id, 'telegram')
+        if (asked.ok && message) await this.settle(chat, message, asked.text)
+        return asked.text
+      }
       case 'kill': {
         if (job.status !== 'running' && job.status !== 'held' && job.status !== 'queued') return `#${id} has already ended.`
         const armed = this.killArmed.get(id)

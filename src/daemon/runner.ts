@@ -17,6 +17,7 @@ import { suggestionLabel, usableSuggestions } from './rules'
 import { toolName, toolSummary } from './tools'
 import { withAttachments } from './uploads'
 import { endProcesses, systemProcs, type Procs } from './procs'
+import { artifactLinks, LINK_REQUEST, LINK_TASK, linksInTranscript } from './links'
 import { costOf, readTranscript, usageOf } from './transcript'
 
 /** A tool call starting or ending in the running task, for apps watching it live. */
@@ -124,6 +125,8 @@ interface Runtime {
   /** Work time not yet written to the job, and when it was last counted. */
   unsaved?: number
   countedAt?: number
+  /** Asked for a live link at the end: when, and Claude's answer before that (the task's answer). */
+  linkAsked?: { at: number; answer: string | null }
 }
 
 const NUDGE =
@@ -992,8 +995,65 @@ export class Runner {
       return {}
     }
     rt.background = undefined
+    // A live link: once the work is done, Claude is asked for one before the task ends.
+    if (job.wantLink && !rt.linkAsked && !payload.stop_hook_active) {
+      rt.linkAsked = { at: this.d.now(), answer: payload.last_assistant_message ?? job.lastMessage }
+      this.d.log(`#${job.id}: asking Claude for a live link`)
+      return { decision: 'block', reason: LINK_REQUEST }
+    }
+    if (job.wantLink || job.linkFor !== null) this.collectLinks(job, rt, payload)
     this.beginFinish(job, rt)
     return {}
+  }
+
+  /** The live link Claude made: kept on the task (and on the one it was for), and said. */
+  private collectLinks(job: Job, rt: Runtime, payload: HookPayload): void {
+    const said = payload.last_assistant_message ?? ''
+    let links = artifactLinks(said)
+    if (links.length === 0 && job.transcriptPath) links = linksInTranscript(job.transcriptPath, rt.linkAsked?.at ?? taskStart(job))
+    const note = links.length > 0 ? null : excerpt(said || 'Claude didn’t say why.', 300)
+    // The task's answer stays Claude's answer, not its reply about the link.
+    const answer = rt.linkAsked?.answer
+    let target = this.d.store.updateJob(job.id, { links: links.length ? links : null, linkNote: note, ...(answer ? { lastMessage: answer } : {}) })
+    if (job.linkFor !== null) {
+      const original = this.d.store.getJob(job.linkFor)
+      if (original) target = this.d.store.updateJob(original.id, { links: links.length ? [...(original.links ?? []), ...links] : original.links, linkNote: note })
+    }
+    this.d.log(`#${target.id}: ${links.length ? `live link ${links[0]!.url}` : 'no live link'}`)
+    this.d.notify({ type: 'link', job: target, url: links[0]?.url ?? null, title: links[0]?.title ?? null, note })
+  }
+
+  /**
+   * A live link for a task, when you ask: at the end of a queued or running one; for one that has
+   * ended, now, in a task of its own that continues its conversation (and runs next).
+   */
+  requestLink(id: number, source = 'remote'): { ok: boolean; text: string; job?: Job } {
+    const job = this.d.store.getJob(id)
+    if (!job) return { ok: false, text: `No task #${id}.` }
+    if (job.status === 'queued' || job.status === 'running' || job.status === 'held') {
+      if (job.wantLink) return { ok: true, text: `#${id} already ends with a live link.` }
+      this.d.store.updateJob(id, { wantLink: true })
+      return { ok: true, text: `#${id} ends with a live link.` }
+    }
+    if (!job.sessionId) return { ok: false, text: `#${id} has no conversation to make a live link from.` }
+    const asked = this.d.store.queued().find(j => j.linkFor === id)
+    if (asked) return { ok: true, text: `A live link for #${id} is already queued as #${asked.id}.`, job: asked }
+    const linkJob = this.enqueue({
+      projectDir: job.projectDir,
+      prompt: LINK_TASK,
+      plan: false,
+      review: false,
+      execMode: job.execMode === 'plan' ? 'auto' : job.execMode,
+      model: job.workModel ?? job.model,
+      effort: job.effort,
+      sessionPolicy: 'session',
+      sessionId: job.sessionId,
+      takeover: true,
+      front: true,
+      source,
+      linkFor: id,
+    })
+    return { ok: true, text: `A live link for #${id} is next, as #${linkJob.id}.`, job: linkJob }
   }
 
   private onStopFailure(job: Job, rt: Runtime, payload: HookPayload): HookResponse {
