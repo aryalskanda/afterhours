@@ -4,7 +4,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { appConfig, installWeb, tailscaleInfo } from '../src/cli/app'
+import { appConfig, appSource, installWeb, tailscaleInfo } from '../src/cli/app'
 import { DEFAULT_CONFIG } from '../src/shared/config'
 
 test("Tailscale's status: connected or not, this machine's name, and whether HTTPS and Funnel are allowed", () => {
@@ -46,6 +46,25 @@ test("the app's web build is copied whole; something that isn't one is refused",
     expect(readFileSync(join(to, '_expo', 'entry.js'), 'utf8')).toBe('js')
     expect(() => readFileSync(join(to, 'old.js'))).toThrow()
     expect(() => installWeb(join(dir, 'nothing'), to)).toThrow("isn't the app's web build")
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("the app's own folder: AFTERHOURS_APP_DIR, else the apps' repository next to the engine's", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cq-appsrc-'))
+  try {
+    const engine = join(dir, 'automate', 'src', 'cli')
+    const sibling = join(dir, 'afterhours-app', 'app')
+    const elsewhere = join(dir, 'elsewhere')
+    for (const d of [engine, sibling, elsewhere]) mkdirSync(d, { recursive: true })
+    expect(appSource({}, engine)).toBeNull()
+    writeFileSync(join(sibling, 'app.json'), '{}')
+    expect(appSource({}, engine)).toBe(sibling)
+    writeFileSync(join(elsewhere, 'app.json'), '{}')
+    expect(appSource({ AFTERHOURS_APP_DIR: elsewhere }, engine)).toBe(elsewhere)
+    // Set but not an app: the one next door still counts.
+    expect(appSource({ AFTERHOURS_APP_DIR: join(dir, 'nothing') }, engine)).toBe(sibling)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

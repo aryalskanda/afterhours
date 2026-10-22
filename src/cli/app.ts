@@ -53,10 +53,15 @@ export function appConfig(config: Config, o: { dnsName: string; port: number }):
   }
 }
 
-/** The app's web build in this source tree (apps/app), when cq runs from source. */
-function sourceApp(): string | null {
-  const dir = resolve(import.meta.dir, '../../apps/app')
-  return existsSync(join(dir, 'app.json')) ? dir : null
+/**
+ * The app's own folder, to build and copy its web build from: AFTERHOURS_APP_DIR, else (when cq
+ * runs from source) the apps' repository next to this one (../afterhours-app/app).
+ */
+export function appSource(env: Record<string, string | undefined> = process.env, here = import.meta.dir): string | null {
+  for (const dir of [env.AFTERHOURS_APP_DIR, resolve(here, '../../../afterhours-app/app')]) {
+    if (dir && existsSync(join(dir, 'app.json'))) return resolve(dir)
+  }
+  return null
 }
 
 /** Copies the app's web build to where the relay serves it. */
@@ -126,13 +131,13 @@ async function setup(args: string[]): Promise<boolean> {
 
   // 1. The app's web build, where the relay serves it.
   const webArg = flag(args, '--web')
-  const source = sourceApp()
+  const source = appSource()
   const from = webArg ? resolve(webArg) : source ? join(source, 'dist-web') : null
   if (!webArg && source && !existsSync(join(source, 'dist-web', 'index.html'))) {
     console.log('Building the app for the web (npm run export:web) …')
     const built = await runFor(['npm', 'run', 'export:web'], 10 * 60_000, source)
     if (!built.ok) {
-      console.error(`Couldn't build it:\n${built.out.split('\n').slice(-15).join('\n')}\nIn apps/app: npm install, then npm run export:web, then cq app setup again.`)
+      console.error(`Couldn't build it:\n${built.out.split('\n').slice(-15).join('\n')}\nIn ${source}: npm install, then npm run export:web, then cq app setup again.`)
       return false
     }
   }
@@ -142,7 +147,7 @@ async function setup(args: string[]): Promise<boolean> {
   } else if (existsSync(join(paths.web, 'index.html'))) {
     console.log(`✓ The app: ${paths.web}`)
   } else {
-    console.error(`The app's web build isn't here. Build it in the source tree (apps/app: npm run export:web), then run: cq app setup --web <apps/app/dist-web>`)
+    console.error(`The app's web build isn't here. Build it in the apps' repository (in app/: npm run export:web), then run: cq app setup --web <that app/dist-web>`)
     return false
   }
 

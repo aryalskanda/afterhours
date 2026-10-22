@@ -63,7 +63,7 @@ export interface RelayOptions {
   log?: (line: string) => void
   now?: () => number
   limits?: Partial<RelayLimits>
-  /** The app's web build (apps/app/dist-web), served at every other address. */
+  /** The app's web build (the app's dist-web), served at every other address. */
   appDir?: string
 }
 

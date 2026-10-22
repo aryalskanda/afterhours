@@ -126,7 +126,7 @@ Commands in the menu: `/app /new /chats /leave /queue /status /peek /pause /resu
 A chat has limits: buttons in a row share its width, so long labels get cut, and long text arrives in parts. So the bot can open the whole Afterhours app inside Telegram instead, as a Mini App: full screen, light or dark like Telegram, with Telegram's own Back button. It needs no app store and no account anywhere. Your Mac serves the app, and Tailscale Funnel gives it the public https address Telegram requires.
 
 1. Install [Tailscale](https://tailscale.com/download), sign in and connect. Turn on **HTTPS Certificates** once (Tailscale's admin page → DNS).
-2. On the Mac: `cq app setup`. It copies the app's web build, runs the relay inside Afterhours (on `127.0.0.1:7788`), and opens it to the internet with `tailscale funnel`. The first time, Tailscale shows a link to allow Funnel. Open it, then run `cq app setup` again.
+2. On the Mac: `cq app setup`. It copies the app's web build (from the apps' repository next to this one, or `--web <its app/dist-web>`), runs the relay inside Afterhours (on `127.0.0.1:7788`), and opens it to the internet with `tailscale funnel`. The first time, Tailscale shows a link to allow Funnel. Open it, then run `cq app setup` again.
 3. In Telegram, send `/app` to your bot and tap **Finish setup**. That pairs this Telegram with your Mac in one tap. The link works once, for 10 minutes, and the Mac also checks Telegram's signed proof that you're the bot's owner.
 
 From then on:
@@ -164,7 +164,7 @@ Your phone sees every chat: **💬 Chats** lists them all, and the same conversa
 
 The Telegram bot is being replaced by the Afterhours app, for iPhone, Android, the web, and the Mac, Windows and Linux desktop. It talks to your machines end-to-end encrypted, through a small relay that machines and apps both connect out to, so a machine needs no open ports, whether it's the Mac at home or a server in the cloud. The design and the plan are in [docs/architecture.md](docs/architecture.md).
 
-The app is in [apps/app](apps/app/README.md), and the desktop app in [apps/desktop](apps/desktop/README.md). Until they're in the stores, run the app with Expo Go on your phone or in a browser, or build the desktop app:
+The apps (the phone and web app, and the desktop app around it) live in their own repository, which isn't open source; this one has everything they talk to: the engine, the relay and the protocol (`packages/protocol`). Until the apps are in the stores:
 
 ```sh
 # 1. A relay, anywhere both sides can reach (put TLS in front for wss://):
@@ -174,8 +174,6 @@ docker build -f relay/Dockerfile -t afterhours-relay . && docker run -d -p 8787:
 cq pair --relay wss://relay.example.com
 
 # 3. The app: scan the code, or paste the link
-cd apps/app && npm install && npx expo start      # Expo Go on your phone; or: npm run web
-cd apps/desktop && npm install && npm start        # the desktop app; npm run dist:mac (dist:win, dist:linux) for installers
 ```
 
 A command-line app does the same from any computer: `bun scripts/remote-client.ts pair '<the link>'`, then `status`, `queue` and `watch`.
@@ -187,7 +185,7 @@ The machine decides what apps may do, and no app can change it:
 - `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task.
 - `cq devices` lists paired devices; `cq devices remove <name>` cuts one off at once; `cq audit` shows what apps did.
 
-The relay can also run inside Afterhours, serving the app's web build at the same address: that's how [the app inside Telegram](#the-app-inside-telegram) works (`cq app setup`). To serve the app from a relay you run yourself, set `APP_DIR=apps/app/dist-web`.
+The relay can also run inside Afterhours, serving the app's web build at the same address: that's how [the app inside Telegram](#the-app-inside-telegram) works (`cq app setup`). To serve the app from a relay you run yourself, set `APP_DIR` to the app's web build.
 
 ## What happens to a task
 
@@ -350,7 +348,7 @@ Where things are:
 - `src/daemon/screens.ts`: the screens answered with keystrokes.
 - `src/daemon/commands.ts`: the text commands.
 - `src/telegram/`: the bot.
-- `packages/protocol/`: keys, Noise sessions, pairing and the messages apps and machines exchange (shared with the apps).
+- `packages/protocol/`: keys, Noise sessions, pairing and the messages apps and machines exchange. The apps' repository keeps a copy of it.
 - `relay/`: the relay server and its Docker image.
 - `src/daemon/remote/`: the machine's side of remote access: devices, rules, events, audit.
 - `src/cli/`: `cq` and `cq setup`.
