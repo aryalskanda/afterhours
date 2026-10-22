@@ -860,14 +860,26 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   return { html: lines.join('\n'), keyboard }
 }
 
+/**
+ * 📋 Queue: the running task, then each waiting one with ⬆️ ⬇️ (move it), ⏸ / ▶️ (hold it in its
+ * place, or let it start again) and 🗑, by its number.
+ */
 export function queueView(active: Job | null, queued: Job[], ctx: UiContext, paused: boolean): View {
   const lines: string[] = ['📋 <b>Queue</b>']
   if (active) lines.push(`▶ <b>#${active.id}</b> ${jobHeader(active, ctx)}\n   “${esc(oneLine(active.prompt, 90))}”`)
-  queued.forEach((job, i) => lines.push(`${i + 1}. <b>#${job.id}</b> ${jobHeader(job, ctx)}\n   “${esc(oneLine(job.prompt, 90))}”`))
+  queued.forEach((job, i) =>
+    lines.push(`${i + 1}. <b>#${job.id}</b>${job.onHold ? ' ⏸ <i>on hold</i>' : ''} ${jobHeader(job, ctx)}\n   “${esc(oneLine(job.prompt, 90))}”`),
+  )
   if (!active && queued.length === 0) lines.push('<i>Nothing queued. Send a prompt to add one.</i>')
   if (paused) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
-  const keyboard: InlineKeyboard = queued.slice(0, 20).map(job => [btn(`⬆️ #${job.id} next`, `j:${job.id}:top`), btn(`🗑 #${job.id}`, `j:${job.id}:rm`)])
-  keyboard.push([btn('🔄 Refresh', 'g:q'), paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause')])
+  const shown = queued.slice(0, 20)
+  const keyboard: InlineKeyboard = shown.map((job, i) => [
+    ...(i > 0 ? [btn(`⬆️ ${job.id}`, `j:${job.id}:up`)] : []),
+    ...(i < queued.length - 1 ? [btn(`⬇️ ${job.id}`, `j:${job.id}:down`)] : []),
+    job.onHold ? btn(`▶️ ${job.id}`, `j:${job.id}:rel`) : btn(`⏸ ${job.id}`, `j:${job.id}:hold`),
+    btn(`🗑 ${job.id}`, `j:${job.id}:rm`),
+  ])
+  keyboard.push([btn('🔄 Refresh', 'g:q'), paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'), ...(queued.length > 1 ? [btn('🧹 Clear', 'g:clear')] : [])])
   return { html: lines.join('\n'), keyboard }
 }
 

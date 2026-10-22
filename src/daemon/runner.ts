@@ -164,6 +164,9 @@ export function canTakeOver(job: Pick<Job, 'takeoverAt'>, holders: LiveSession[]
   return holders.every(h => (h.kind ?? 'interactive') === 'interactive' && h.status !== 'busy' && (h.startedAt ?? 0) <= since)
 }
 
+/** How long a task taken off the queue can be put back. */
+const RESTORE_MS = 10 * 60_000
+
 /** After asking the other windows to close, how long to wait for them to let go of the conversation. */
 const RELEASE_WAIT_MS = 10_000
 /** And how long to watch for one opening it again (an editor that restarts its Claude process). */
@@ -247,7 +250,8 @@ export class Runner {
     const blockedUntil = this.limits().blockedUntil
     if (blockedUntil && now < blockedUntil) return
     for (const job of this.d.store.queued()) {
-      // Scheduled for later: it keeps its place, and the next one may go first.
+      // On hold, or scheduled for later: it keeps its place, and the next one may go first.
+      if (job.onHold) continue
       if (job.notBefore && now < job.notBefore) continue
       if (job.afterJob !== null) {
         const before = this.d.store.getJob(job.afterJob)
@@ -1257,6 +1261,33 @@ export class Runner {
     }
     if (job.status === 'running' || job.status === 'held') return this.kill(id, { by })
     return `#${id} is already ${job.status}.`
+  }
+
+  /** Keeps a queued task in its place without starting it (`on`), or lets it start again. */
+  holdQueued(id: number, on: boolean): string {
+    const job = this.d.store.getJob(id)
+    if (!job || job.status !== 'queued') return `#${id} isn't waiting in the queue.`
+    this.d.store.updateJob(id, { onHold: on })
+    return on ? `#${id} is on hold: it keeps its place and doesn't start.` : `#${id} can start again.`
+  }
+
+  /** Puts a task removed in the last ten minutes (that never started) back in its place in the queue. */
+  restore(id: number): string {
+    const job = this.d.store.getJob(id)
+    if (!job) return `No task #${id}.`
+    if (job.status === 'queued') return `#${id} is already in the queue.`
+    const recent = job.finishedAt !== null && this.d.now() - job.finishedAt <= RESTORE_MS
+    if (job.status !== 'cancelled' || job.launches > 0 || !recent) return `#${id} can't go back in the queue: put it in again as a new task.`
+    this.d.store.updateJob(id, { status: 'queued', finishedAt: null, error: null })
+    return `#${id} is back in the queue.`
+  }
+
+  /** Takes every task off the queue (the running one goes on); returns them, so they can be put back. */
+  clear(): number[] {
+    const now = this.d.now()
+    const removed = this.d.store.queued().map(j => j.id)
+    for (const id of removed) this.d.store.updateJob(id, { status: 'cancelled', finishedAt: now })
+    return removed
   }
 
   top(id: number): string {

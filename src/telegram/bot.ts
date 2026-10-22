@@ -162,6 +162,8 @@ export class TelegramBridge {
   private pairAttempts = new Map<number, number>()
   /** 🛑 Kill tapped once, by task: a second tap within KILL_CONFIRM_MS kills it. */
   private killArmed = new Map<number, number>()
+  /** 🧹 Clear tapped once: when. */
+  private clearArmed = 0
   private username: string | null = null
   /** The menu button last set, and when setting it last failed (tried again after a while). */
   private menuFailedAt = 0
@@ -1224,6 +1226,18 @@ export class TelegramBridge {
       case 'top':
         reply = this.o.runner.top(id)
         break
+      case 'up':
+      case 'down': {
+        const at = this.o.store.queued().findIndex(j => j.id === id)
+        if (at < 0) return `#${id} isn't waiting in the queue.`
+        this.o.store.moveTo(id, Math.max(0, at + (op === 'up' ? -1 : 1)))
+        reply = `#${id} moved ${op}.`
+        break
+      }
+      case 'hold':
+      case 'rel':
+        reply = this.o.runner.holdQueued(id, op === 'hold')
+        break
       case 'rm':
         reply = await this.o.runner.remove(id)
         break
@@ -1416,6 +1430,16 @@ export class TelegramBridge {
       case 'app':
         await this.showApp(chat, true)
         return
+      case 'clear': {
+        if (this.o.now() - this.clearArmed > KILL_CONFIRM_MS) {
+          this.clearArmed = this.o.now()
+          return 'Tap 🧹 Clear again to take every task off the queue.'
+        }
+        this.clearArmed = 0
+        const removed = this.o.runner.clear()
+        await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
+        return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} off the queue.`
+      }
       case 'rescan':
         await this.o.folders.rebuild()
         if (at) await this.edit(chat, at, this.settingsView())

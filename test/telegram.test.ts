@@ -394,7 +394,7 @@ describe('notifications with buttons', () => {
     expect(follow).toMatchObject({ prompt: 'Now add tests for it', projectDir: job.projectDir, sessionPolicy: 'session', sessionId: job.sessionId })
   })
 
-  test('queue view: run next and remove', async () => {
+  test('queue view: move up and remove', async () => {
     const h = await paired()
     for (const p of ['one', 'two', 'three']) {
       await h.say(p)
@@ -411,9 +411,10 @@ describe('notifications with buttons', () => {
     await h.say(KEYS.queue)
     const list = h.api.last().id
     const [one, two, three] = h.store.queued()
-    await h.tap(button(h.api.view(list).keyboard, `⬆️ #${three!.id} next`), list)
+    await h.tap(button(h.api.view(list).keyboard, `⬆️ ${three!.id}`), list)
+    await h.tap(button(h.api.view(list).keyboard, `⬆️ ${three!.id}`), list)
     expect(h.store.queued().map(j => j.id)).toEqual([three!.id, one!.id, two!.id])
-    await h.tap(button(h.api.view(list).keyboard, `🗑 #${one!.id}`), list)
+    await h.tap(button(h.api.view(list).keyboard, `🗑 ${one!.id}`), list)
     expect(h.store.queued().map(j => j.id)).toEqual([three!.id, two!.id])
     expect(h.api.view(list).html).not.toContain(`#${one!.id}</b>`)
   })
@@ -882,6 +883,33 @@ describe('reading and answering on a phone', () => {
     for (const row of rows) expect(Math.max(...row.map(x => labelWidth(x.text) + 2)) * row.length).toBeLessThanOrEqual(ROW_COLUMNS)
     expect(labelWidth('😀a')).toBe(3)
     expect(labelWidth(fit('x'.repeat(100)))).toBeLessThanOrEqual(ROW_COLUMNS - 2)
+  })
+})
+
+describe('the queue from Telegram', () => {
+  test('⬆️ ⬇️ move a task, ⏸ holds it in its place, ▶️ lets it go, 🧹 Clear (twice) empties it', async () => {
+    const h = await paired()
+    const ids = ['one', 'two', 'three'].map(prompt => h.runner.enqueue({ projectDir: h.root, prompt, plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' }).id)
+    await h.say('/queue')
+    const msg = h.api.last().id
+    let kb = h.api.view(msg).keyboard
+    // The first can't go up, the last can't go down.
+    expect(kb[0]!.map(b => b.text)).toEqual([`⬇️ ${ids[0]}`, `⏸ ${ids[0]}`, `🗑 ${ids[0]}`])
+    expect(kb[2]!.map(b => b.text)).toEqual([`⬆️ ${ids[2]}`, `⏸ ${ids[2]}`, `🗑 ${ids[2]}`])
+    await h.tap(button(kb, `⬆️ ${ids[2]}`), msg)
+    expect(h.store.queued().map(j => j.id)).toEqual([ids[0]!, ids[2]!, ids[1]!])
+    kb = h.api.view(msg).keyboard
+    await h.tap(button(kb, `⏸ ${ids[0]}`), msg)
+    expect(h.store.getJob(ids[0]!)!.onHold).toBe(true)
+    expect(h.api.view(msg).html).toContain('on hold')
+    await h.tap(button(h.api.view(msg).keyboard, `▶️ ${ids[0]}`), msg)
+    expect(h.store.getJob(ids[0]!)!.onHold).toBe(false)
+    await h.tap(button(h.api.view(msg).keyboard, '🧹 Clear'), msg)
+    expect(h.api.answers.at(-1)!.text).toContain('again')
+    expect(h.store.queued()).toHaveLength(3)
+    await h.tap(button(h.api.view(msg).keyboard, '🧹 Clear'), msg)
+    expect(h.store.queued()).toHaveLength(0)
+    expect(h.api.view(msg).html).toContain('Nothing queued')
   })
 })
 

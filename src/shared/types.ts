@@ -83,6 +83,8 @@ export interface Job {
   attachments: string[] | null
   /** Tasks queued together to compare. */
   group: string | null
+  /** Kept in its place in the queue, but not started until it's released. */
+  onHold: boolean
 }
 
 export interface Usage {

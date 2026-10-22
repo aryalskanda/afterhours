@@ -71,6 +71,8 @@ export const FEATURES = [
   'push',
   'report',
   'kill',
+  'queue.hold',
+  'queue.restore',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -399,6 +401,10 @@ export class Router {
             return { ok: true, text: await runner.stop() }
           case 'skip':
             return { ok: true, text: await runner.skip(name) }
+          case 'clear': {
+            const removed = runner.clear()
+            return { ok: true, text: removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} task${removed.length === 1 ? '' : 's'} off the queue.`, data: { removed } }
+          }
           case 'kill': {
             if (r.job === undefined) return { ok: false, code: 'invalid', error: 'Say which task to kill.' }
             const job = store.getJob(r.job)
@@ -418,6 +424,14 @@ export class Router {
       case 'job':
         if (r.action === 'remove') return { ok: true, text: await runner.remove(r.job, name) }
         if (r.action === 'top') return { ok: true, text: runner.top(r.job) }
+        if (r.action === 'restore') {
+          const text = runner.restore(r.job)
+          return store.getJob(r.job)?.status === 'queued' ? { ok: true, text } : { ok: false, code: 'gone', error: text }
+        }
+        if (r.action === 'hold' || r.action === 'release') {
+          if (store.getJob(r.job)?.status !== 'queued') return { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue.` }
+          return { ok: true, text: runner.holdQueued(r.job, r.action === 'hold') }
+        }
         return this.changeQueued(r)
       case 'peek': {
         if (!policy.allowScreens) return { ok: false, code: 'policy', error: 'This machine keeps its screens to itself (cq remote screens on).' }

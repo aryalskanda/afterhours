@@ -157,9 +157,10 @@ const COLUMNS = {
   branchNote: 'branch_note',
   attachments: 'attachments',
   group: 'job_group',
+  onHold: 'on_hold',
 } as const satisfies Record<keyof Job, string>
 
-const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved'])
+const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved', 'onHold'])
 
 /** Columns added after the first release, for databases created before them. */
 const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
@@ -183,6 +184,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'branch_note', 'TEXT'],
   ['jobs', 'attachments', 'TEXT'],
   ['jobs', 'job_group', 'TEXT'],
+  ['jobs', 'on_hold', 'INTEGER NOT NULL DEFAULT 0'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments'])
 

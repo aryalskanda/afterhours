@@ -688,6 +688,44 @@ describe('problems', () => {
   })
 })
 
+describe('the queue: hold, put back, clear', () => {
+  test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
+    const h = setup()
+    const a = h.runner.enqueue(h.spec({ plan: false, prompt: 'first' }))
+    const b = h.runner.enqueue(h.spec({ plan: false, prompt: 'second' }))
+    expect(h.runner.holdQueued(a.id, true)).toContain('on hold')
+    await h.runner.tick()
+    expect(h.store.active()?.id).toBe(b.id)
+    expect(h.store.queued().map(j => [j.id, j.onHold])).toEqual([[a.id, true]])
+    expect(h.runner.holdQueued(a.id, false)).toBe(`#${a.id} can start again.`)
+    expect(h.runner.holdQueued(b.id, true)).toBe(`#${b.id} isn't waiting in the queue.`)
+  })
+
+  test('a removed task goes back in its place for ten minutes, if it never started', async () => {
+    const h = setup()
+    const [a, b, c] = ['one', 'two', 'three'].map(prompt => h.runner.enqueue(h.spec({ plan: false, prompt })))
+    await h.runner.remove(b!.id)
+    expect(h.runner.restore(b!.id)).toBe(`#${b!.id} is back in the queue.`)
+    expect(h.store.queued().map(j => j.id)).toEqual([a!.id, b!.id, c!.id])
+    expect(h.runner.restore(b!.id)).toBe(`#${b!.id} is already in the queue.`)
+    await h.runner.remove(c!.id)
+    h.advance(11 * 60_000)
+    expect(h.runner.restore(c!.id)).toContain("can't go back in the queue")
+    expect(h.runner.restore(999)).toBe('No task #999.')
+  })
+
+  test('clear takes every waiting task off, and they can go back', async () => {
+    const h = setup()
+    const running = await startJob(h, { plan: false })
+    const ids = ['two', 'three'].map(prompt => h.runner.enqueue(h.spec({ plan: false, prompt })).id)
+    expect(h.runner.clear()).toEqual(ids)
+    expect(h.store.queued()).toEqual([])
+    expect(h.store.getJob(running.id)!.status).toBe('running')
+    for (const id of ids) h.runner.restore(id)
+    expect(h.store.queued().map(j => j.id)).toEqual(ids)
+  })
+})
+
 describe('killing a task', () => {
   /** Fake processes: the window's process 500 with Claude (501) and a dev server (502) below it. */
   function fakeProcs(o: { stubborn?: number[] } = {}) {

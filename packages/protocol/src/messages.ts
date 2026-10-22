@@ -117,6 +117,8 @@ export const JobInfo = z.object({
   attachments: z.array(z.string()).nullable().optional(),
   /** Tasks queued together to compare. */
   group: z.string().nullable().optional(),
+  /** Kept in its place in the queue, but not started until it's released. */
+  onHold: z.boolean().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -319,18 +321,23 @@ export const Request = z.discriminatedUnion('type', [
   /** Acts on the running task; `job` makes sure it's still the one you meant. */
   /**
    * The queue and the running task. `kill`: end task `job` now, whatever it's doing (a queued one
-   * comes off the queue); `pause` also pauses the queue.
+   * comes off the queue); `pause` also pauses the queue. `clear`: take every task off the queue
+   * (the result's data says which, `{ removed }`, to put them back).
    */
   withId({
     type: z.literal('control'),
-    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill']),
+    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill', 'clear']),
     job: z.number().int().optional(),
     pause: z.boolean().optional(),
   }),
-  /** A queued task: remove it, run it next, change it (`prompt`, `options`), or move it to place `to` (0 = next). */
+  /**
+   * A queued task: remove it, run it next, change it (`prompt`, `options`), move it to place `to`
+   * (0 = next), `hold` it in its place without starting it, or `release` it. `restore` puts a task
+   * removed in the last ten minutes back in its place.
+   */
   withId({
     type: z.literal('job'),
-    action: z.enum(['remove', 'top', 'edit', 'move']),
+    action: z.enum(['remove', 'top', 'edit', 'move', 'hold', 'release', 'restore']),
     job: z.number().int(),
     prompt: z.string().min(1).max(100_000).optional(),
     options: QueueOptions.optional(),

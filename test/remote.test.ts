@@ -282,6 +282,28 @@ describe('remote access', () => {
     expect(conn.lastSeq).toBe(3)
   })
 
+  test('the queue from an app: move, hold and release, remove and put back, clear', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const ids: number[] = []
+    for (const prompt of ['one', 'two', 'three']) {
+      const r = await conn.request({ type: 'queue', folder: m.project, prompt })
+      ids.push((r.data as { job: { id: number } }).job.id)
+    }
+    expect(await conn.request({ type: 'job', action: 'move', job: ids[2]!, to: 0 })).toMatchObject({ ok: true })
+    expect(m.store.queued().map(j => j.id)).toEqual([ids[2]!, ids[0]!, ids[1]!])
+    expect(await conn.request({ type: 'job', action: 'hold', job: ids[2]! })).toMatchObject({ ok: true })
+    expect(m.store.getJob(ids[2]!)!.onHold).toBe(true)
+    expect(await conn.request({ type: 'job', action: 'release', job: ids[2]! })).toMatchObject({ ok: true })
+    expect(await conn.request({ type: 'job', action: 'remove', job: ids[0]! })).toMatchObject({ ok: true })
+    expect(await conn.request({ type: 'job', action: 'restore', job: ids[0]! })).toMatchObject({ ok: true, text: `#${ids[0]} is back in the queue.` })
+    expect(await conn.request({ type: 'job', action: 'hold', job: 999 })).toMatchObject({ ok: false, code: 'gone' })
+    const cleared = await conn.request({ type: 'control', action: 'clear' })
+    expect(cleared).toMatchObject({ ok: true, data: { removed: [ids[2]!, ids[0]!, ids[1]!] } })
+    expect(m.store.queued()).toEqual([])
+    expect(await conn.request({ type: 'job', action: 'restore', job: ids[1]! })).toMatchObject({ ok: true })
+  })
+
   test("an app kills the running task, and the other apps hear who did; a viewer can't", async () => {
     const m = machine()
     const phone = await pairedApp(m, { name: 'Phone' })

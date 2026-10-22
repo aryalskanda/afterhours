@@ -197,6 +197,7 @@ q myapp plan opus max: <prompt> · options before the colon
   branch = on its own git branch · here = in your checkout
 ls · st · peek [lines] · plan [#] · chats [project]
 pause · go · stop · skip · kill [#] (ends it now, and what it started) · rm <#> · top <#>
+hold <#> (keeps its place, doesn't start) · release <#> · clear (empties the queue)
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
 y <code> · n <code> [note] · a <code> <answer>
 projects · alias <name> <path> · trust <name|path> · default <options> · notify all|important|off`
@@ -280,7 +281,7 @@ function list(ctx: CommandContext): string {
     lines.push(`   “${oneLine(active.prompt, 80)}”`)
   }
   ctx.store.queued().forEach((job, i) => {
-    lines.push(`${i + 1}. ${jobLine(job, config.aliases)}`)
+    lines.push(`${i + 1}. ${jobLine(job, config.aliases)}${job.onHold ? ' · on hold' : ''}`)
     lines.push(`   “${oneLine(job.prompt, 80)}”`)
   })
   if (lines.length === 0) lines.push('Queue empty.')
@@ -507,6 +508,15 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       return withId(rest, id => ctx.runner.remove(id))
     case 'top':
       return withId(rest, id => ctx.runner.top(id))
+    case 'hold':
+      return withId(rest, id => ctx.runner.holdQueued(id, true))
+    case 'release':
+    case 'unhold':
+      return withId(rest, id => ctx.runner.holdQueued(id, false))
+    case 'clear': {
+      const removed = ctx.runner.clear()
+      return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.map(id => `#${id}`).join(', ')} off the queue.`
+    }
     case 'say':
       return rest ? ctx.runner.say(rest) : 'Usage: say <text>'
     case 'keys':

@@ -44,6 +44,7 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     branchNote: job.branchNote,
     attachments: job.attachments?.map(p => p.slice(p.lastIndexOf('/') + 1)) ?? null,
     group: job.group,
+    onHold: job.onHold,
   }
 }
 
