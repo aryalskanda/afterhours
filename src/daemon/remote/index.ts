@@ -28,6 +28,7 @@ import type { ChatSource } from '../chats'
 import type { FolderMap } from '../folders'
 import type { Notice } from '../notify'
 import type { Runner, ToolActivity } from '../runner'
+import type { MacControl } from '../mac'
 import type { Store } from '../store'
 import { RemoteDb, type AuditEntry } from './db'
 import { Feed } from './feed'
@@ -69,6 +70,8 @@ export interface RemoteDeps {
   onPaired?: (device: { name: string; platform: string }, role: Role) => void
   /** How long connected apps get to hear about a new relay before the machine moves there. */
   relayMoveMs?: number
+  /** Quitting apps and sleeping the Mac; null on other systems. */
+  mac?: MacControl | null
 }
 
 const RELAY_MOVE_MS = 3000
@@ -112,6 +115,7 @@ export class Remote {
     this.pusher = new PushSender({ ...d.push, gone: token => this.db.dropPushToken(token), log: d.log, now: d.now })
     this.feed = new Feed({ db: this.db, store: d.store, runner: d.runner, host: () => this.host, resolvedBy: this.resolvedBy, now: d.now })
     this.router = new Router({
+      mac: d.mac ?? null,
       runner: d.runner,
       store: d.store,
       chats: d.chats,

@@ -6,6 +6,7 @@ import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration, modeLabel } from '../daemon/format'
 import { formatClock, windowLabel } from '../daemon/limits'
+import type { MacStatus } from '../daemon/mac'
 import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { InlineButton, InlineKeyboard, ReplyKeyboard } from './api'
 import { htmlToText, inlineMarkdown, markdownParts, markdownToPlain } from './markdown'
@@ -797,6 +798,13 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
         : { html: `🔗 <b>No live link for #${n.job.id}</b>: ${esc(clip(n.note ?? 'Claude didn’t make one.', 300))}` }
     case 'setup_warning':
       return { html: `⚠️ ${esc(n.message)}` }
+    case 'sleeping':
+      if (n.failed) return { html: `😴 <b>The Mac didn't go to sleep.</b> ${esc(n.failed)}` }
+      return {
+        html:
+          `😴 <b>The Mac is going to sleep</b>${n.by ? ` (asked from ${esc(n.by)})` : ''}${n.quit.length ? `, after quitting ${esc(n.quit.join(', '))}` : ''}.\n` +
+          "<i>It can't be woken from here: open its lid or press a key.</i>",
+      }
     case 'empty':
       return { html: '🏁 Queue empty.', silent: true }
   }
@@ -946,6 +954,50 @@ export function settingsView(o: {
       [btn('🔄 Rescan folders', 'g:rescan')],
       ...(o.messages ? [[btn(o.messages === 'short' ? '📄 Full messages instead' : '📱 Short messages, with Open ↗', 'g:msgs')]] : []),
     ],
+  }
+}
+
+/** 🖥 /mac: what's open, what keeps the Mac awake, and buttons to quit an app or sleep. */
+export function macView(s: MacStatus): View {
+  const names = (pids: number[]) => s.apps.filter(a => pids.includes(a.pid)).map(a => esc(a.name))
+  const keeping = s.apps.filter(a => a.keepsAwake).map(a => esc(a.name))
+  const lines = ['🖥 <b>This Mac</b>']
+  if (s.sleepDisabled) {
+    const first = names(s.quitFirst)
+    lines.push(first.length ? `😴 Sleep is turned off while ${first.join(', ')} runs; 😴 Sleep quits it first.` : '😴 Sleep is turned off on this Mac (pmset disablesleep).')
+  } else if (keeping.length) {
+    lines.push(`☕ ${keeping.join(', ')} ${keeping.length === 1 ? 'keeps' : 'keep'} it from sleeping by itself.`)
+  }
+  if (s.sleepWhenDone.on) lines.push(`🌙 Sleeps once the queue is done${s.sleepWhenDone.waiting ? ` (waiting for ${esc(s.sleepWhenDone.waiting)})` : ''}.`)
+  if (s.running !== null) lines.push(`▶️ #${s.running} is running: it pauses while the Mac sleeps.`)
+  lines.push('', '<i>Tap an app to quit it (tap again to confirm).</i>')
+  const apps = [...s.apps].sort((a, b) => Number(b.keepsAwake) - Number(a.keepsAwake))
+  const appRows: InlineButton[][] = []
+  for (let i = 0; i < apps.length; i += 2) {
+    appRows.push(apps.slice(i, i + 2).map(a => btn(`✖️ ${clip(a.name, 24)}${a.kind === 'menu' ? ' ☰' : ''}`, `m:q:${a.pid}`)))
+  }
+  return {
+    html: lines.join('\n'),
+    keyboard: [
+      [btn('😴 Sleep now', 'm:s'), btn(s.sleepWhenDone.on ? '🌙 Sleep when done ✓' : '🌙 Sleep when done', 'm:d')],
+      ...appRows,
+      [btn('🔄 Refresh', 'm:r')],
+    ],
+  }
+}
+
+/** 😴 /sleep: what sleeping does, with the button that does it. */
+export function sleepView(s: MacStatus): View {
+  const first = s.apps.filter(a => s.quitFirst.includes(a.pid)).map(a => esc(a.name))
+  const lines = [
+    '😴 <b>Put the Mac to sleep?</b>',
+    first.length ? `It quits ${first.join(', ')} first (sleep is turned off while it runs).` : '',
+    s.running !== null ? `#${s.running} pauses until it wakes.` : '',
+    "<i>It can't be woken from here: open its lid or press a key.</i>",
+  ]
+  return {
+    html: lines.filter(Boolean).join('\n'),
+    keyboard: [[btn('😴 Sleep now', 'm:S'), btn(s.sleepWhenDone.on ? '🌙 Already: when done' : '🌙 When the queue is done', 'm:D')]],
   }
 }
 

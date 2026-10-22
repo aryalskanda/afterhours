@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
+import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MacInfo, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
 import { testRelay, type TestRelay } from '../relay/test/target'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
 import type { FolderMap } from '../src/daemon/folders'
+import { MacControl } from '../src/daemon/mac'
 import type { Notice } from '../src/daemon/notify'
 import { Remote } from '../src/daemon/remote'
 import { RemoteDb } from '../src/daemon/remote/db'
@@ -19,7 +20,7 @@ import { Store } from '../src/daemon/store'
 import { git } from '../src/daemon/system'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { checkInitData, signInitData } from '../src/telegram/webapp'
-import { FakeTmux } from './fakes'
+import { FakeMac, FakeTmux } from './fakes'
 
 let relay: TestRelay
 let dir: string
@@ -63,7 +64,7 @@ const chats: ChatSource = {
 }
 const folders = { search: async () => [] } as unknown as FolderMap
 
-function machine(o: { remote?: Partial<Config['remote']>; appDir?: string } = {}) {
+function machine(o: { remote?: Partial<Config['remote']>; appDir?: string; mac?: FakeMac } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -98,7 +99,11 @@ function machine(o: { remote?: Partial<Config['remote']>; appDir?: string } = {}
     log: () => {},
     sleep: async () => {},
   })
+  const mac = o.mac
+    ? new MacControl({ system: o.mac, store, runner, notify: n => remote?.notice(n.type, n), now: Date.now, log: () => {}, sleep: async () => {}, later: () => {} })
+    : null
   remote = new Remote({
+    mac,
     store,
     runner,
     chats,
@@ -175,6 +180,37 @@ describe('remote access', () => {
     const m = machine({ remote: { serve: { port: 0 }, publicUrl: 'https://mac.example.ts.net', relay: 'wss://mac.example.ts.net/v1' } })
     await until(() => m.remote.status().connected)
     expect(m.remote.status().relay).toBe('wss://mac.example.ts.net/v1')
+  })
+
+  test('owners quit apps and put the Mac to sleep, when the machine lets them; nobody else may', async () => {
+    const sys = new FakeMac()
+    const m = machine({ mac: sys })
+    const owner = await pairedApp(m)
+    expect(owner.snapshots[0]!.features).toContain('mac')
+    expect(owner.snapshots[0]!.policy.allowMac).toBe(true)
+    const status = await owner.conn.request({ type: 'mac', action: 'status' })
+    expect((status.data as MacInfo).quitFirst).toEqual([83628])
+    expect(await owner.conn.request({ type: 'mac', action: 'quit', pid: 9002 })).toMatchObject({ ok: true, text: 'Quit Monosnap.' })
+    sys.stubborn.add(19268)
+    expect(await owner.conn.request({ type: 'mac', action: 'quit', pid: 19268 })).toMatchObject({ ok: false, code: 'failed', data: { open: true } })
+    expect((await owner.conn.request({ type: 'mac', action: 'sleep', quit: [83628] })).ok).toBe(true)
+    await until(() => owner.events.some(e => e.notice.type === 'sleeping'))
+    expect(owner.events.find(e => e.notice.type === 'sleeping')!.notice).toEqual({ type: 'sleeping', by: 'Test phone', quit: ['Vorssaint'] })
+    // Looking changes nothing and isn't audited; quitting and sleeping are.
+    expect(m.remote.auditLog(20).filter(e => e.action === 'mac').map(e => `${e.detail}${e.ok ? '' : ' (refused)'}`)).toEqual(['sleep', 'quit 19268 (refused)', 'quit 9002'])
+
+    const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
+    expect(await operator.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'forbidden' })
+    m.setRemote({ allowMac: false })
+    expect(await owner.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await owner.conn.request({ type: 'command', text: 'sleep' })).toMatchObject({ ok: false, code: 'policy' })
+  })
+
+  test('a machine that is not a Mac offers no Mac controls', async () => {
+    const m = machine()
+    const app = await pairedApp(m)
+    expect(app.snapshots[0]!.features).not.toContain('mac')
+    expect(await app.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'unsupported' })
   })
 
   test('moving to another relay: connected apps hear the new address first, then the machine moves there', async () => {

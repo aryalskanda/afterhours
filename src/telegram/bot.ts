@@ -8,6 +8,7 @@ import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { formatClock } from '../daemon/limits'
+import type { MacControl } from '../daemon/mac'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
 import type { Store } from '../daemon/store'
@@ -42,6 +43,8 @@ export interface TelegramOptions {
   commandContext: () => CommandContext
   /** The app inside Telegram: short messages with Open ↗, the menu button, /app. */
   app?: TelegramAppLink
+  /** Quitting apps and sleeping the Mac; null or missing on other systems. */
+  mac?: MacControl | null
   now: () => number
   log: (line: string) => void
 }
@@ -80,6 +83,8 @@ const COMMANDS = [
   { command: 'status', description: 'Current job and usage limits' },
   { command: 'peek', description: "The running job's screen" },
   { command: 'kill', description: 'End the running task now, and what it started' },
+  { command: 'mac', description: "What's open on the Mac: quit an app, or sleep" },
+  { command: 'sleep', description: 'Put the Mac to sleep' },
   { command: 'pause', description: 'Stop starting new jobs' },
   { command: 'resume', description: 'Resume the queue or a paused job' },
   { command: 'settings', description: 'Notifications and the folder map' },
@@ -98,6 +103,9 @@ const WORDS: Record<string, string> = {
   resume: 'resume',
   go: 'resume',
   help: 'help',
+  mac: 'mac',
+  apps: 'mac',
+  sleep: 'sleep',
 }
 
 const PENDING_TTL = 30 * 60_000
@@ -164,6 +172,8 @@ export class TelegramBridge {
   private killArmed = new Map<number, number>()
   /** 🧹 Clear tapped once: when. */
   private clearArmed = 0
+  /** A Mac button tapped once (quit an app, sleep): the second tap within KILL_CONFIRM_MS does it. */
+  private macArmed: { what: string; at: number } | null = null
   private username: string | null = null
   /** The menu button last set, and when setting it last failed (tried again after a while). */
   private menuFailedAt = 0
@@ -655,6 +665,14 @@ export class TelegramBridge {
         return this.showStatus(chat)
       case 'peek':
         return this.showPeek(chat)
+      case 'mac':
+        return this.showMac(chat)
+      case 'sleep': {
+        const mac = this.o.mac
+        if (!mac) return void (await this.sendText(chat, 'Only a Mac can do that.'))
+        await this.send(chat, ui.sleepView(await mac.status()))
+        return
+      }
       case 'kill': {
         // /kill ends the running task; /kill 14 ends #14 (a queued one comes off the queue).
         const arg = /^\/kill(?:@\S+)?\s+#?(\d+)\s*$/.exec(text)?.[1]
@@ -802,6 +820,71 @@ export class TelegramBridge {
   }
 
   /** 📊 Status; `messageId` refreshes one already shown. */
+  /** 🖥 /mac: what's open and what keeps the Mac awake, with buttons to quit an app or sleep. */
+  private async showMac(chat: number, messageId?: number): Promise<void> {
+    const mac = this.o.mac
+    if (!mac) return void (await this.sendText(chat, 'Only a Mac can do that.'))
+    const view = ui.macView(await mac.status())
+    if (messageId) await this.edit(chat, messageId, view)
+    else await this.send(chat, view)
+  }
+
+  /**
+   * m:q:<pid> quit an app · m:f:<pid> force quit it · m:s sleep · m:S sleep (already confirmed) ·
+   * m:d sleep when done on/off · m:D sleep when done · m:r refresh. Quitting and sleeping take a
+   * second tap, as Kill does.
+   */
+  private async onMacButton(chat: number, message: TgMessage | undefined, op: string, pid: number): Promise<string | undefined> {
+    const mac = this.o.mac
+    if (!mac) return 'Only a Mac can do that.'
+    const at = message?.message_id
+    const refresh = async () => {
+      if (at) await this.showMac(chat, at).catch(() => {})
+    }
+    const armed = (what: string) => {
+      const again = this.macArmed?.what === what && this.o.now() - this.macArmed.at <= KILL_CONFIRM_MS
+      this.macArmed = again ? null : { what, at: this.o.now() }
+      return again
+    }
+    switch (op) {
+      case 'r':
+        await refresh()
+        return 'Up to date.'
+      case 'q':
+      case 'f': {
+        const app = (await mac.apps()).find(a => a.pid === pid)
+        if (!app) {
+          await refresh()
+          return "That app isn't open any more."
+        }
+        if (!armed(`${op}:${pid}`)) return `Tap again to ${op === 'f' ? 'force quit' : 'quit'} ${app.name}.`
+        const r = await mac.quit(pid, { force: op === 'f' })
+        if (r.open) {
+          await this.send(chat, { html: `⚠️ ${ui.esc(r.text)}`, keyboard: [[ui.btn(`⚠️ Force quit ${ui.clip(app.name, 30)}`, `m:f:${pid}`)]] })
+        }
+        await refresh()
+        return r.text
+      }
+      case 's':
+      case 'S': {
+        if (op === 's' && !armed('sleep')) return 'Tap 😴 Sleep now again to put the Mac to sleep.'
+        const s = await mac.status()
+        const r = await mac.sleepNow({ quit: s.quitFirst, by: 'Telegram' })
+        if (!r.ok) await this.sendText(chat, `😴 ${r.text}`)
+        return r.ok ? 'Going to sleep.' : "It didn't sleep."
+      }
+      case 'd':
+      case 'D': {
+        const on = op === 'D' || !(await mac.status()).sleepWhenDone.on
+        const r = await mac.sleepWhenDone({ on, by: 'Telegram' })
+        await this.sendText(chat, `${on ? '🌙' : '☀️'} ${r.text}`)
+        await refresh()
+        return on ? 'Sleeps when the queue is done.' : 'Stays awake.'
+      }
+    }
+    return undefined
+  }
+
   private async showStatus(chat: number, messageId?: number): Promise<void> {
     const view = this.withOpen(ui.statusView(this.statusInfo(), this.noticeContext()))
     if (messageId) await this.edit(chat, messageId, view)
@@ -881,6 +964,9 @@ export class TelegramBridge {
           break
         case 'c':
           toast = await this.onChatsButton(chat, q.message, parts[0]!, parts[1])
+          break
+        case 'm':
+          toast = await this.onMacButton(chat, q.message, parts[0]!, Number(parts[1]))
           break
       }
     } catch (err) {

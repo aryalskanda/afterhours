@@ -65,6 +65,8 @@ export type Notice =
   | { type: 'link'; job: Job; url: string | null; title: string | null; note: string | null }
   /** Something in the setup needs you (shown once a day at most). */
   | { type: 'setup_warning'; message: string }
+  /** The Mac is going to sleep (after quitting `quit`); `failed`: it was meant to and couldn't. */
+  | { type: 'sleeping'; by: string | null; quit: string[]; failed?: string }
   | { type: 'empty' }
 
 const IMPORTANT = new Set<Notice['type']>([
@@ -84,6 +86,7 @@ const IMPORTANT = new Set<Notice['type']>([
   'setup_warning',
   'empty',
   'link',
+  'sleeping',
 ])
 
 export type NotifyLevel = 'all' | 'important' | 'off'
@@ -224,6 +227,12 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       return n.url ? `🔗 Live link for #${n.job.id}${n.title ? `: ${n.title}` : ''}\n${n.url}` : `🔗 No live link for #${n.job.id}: ${n.note ?? 'Claude didn’t make one.'}`
     case 'setup_warning':
       return `⚠️ ${n.message}`
+    case 'sleeping':
+      if (n.failed) return `😴 The Mac didn't go to sleep: ${n.failed}`
+      return (
+        `😴 The Mac is going to sleep${n.by ? ` (asked from ${n.by})` : ''}${n.quit.length ? `, after quitting ${n.quit.join(', ')}` : ''}.\n` +
+        "It can't be woken from your phone: open its lid or press a key."
+      )
     case 'empty':
       return '🏁 Queue empty.'
   }

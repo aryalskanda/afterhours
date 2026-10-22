@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat } from '../src/daemon/chats'
 import { applyOption, parseQueueText, runCommand, type QueueOptions } from '../src/daemon/commands'
+import { MacControl } from '../src/daemon/mac'
 import type { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
+import { FakeMac } from './fakes'
 
 const project = mkdtempSync(join(tmpdir(), 'cq-proj-'))
 const config: Config = { ...DEFAULT_CONFIG, aliases: { nacho: project } }
@@ -139,5 +141,45 @@ describe('chats', () => {
   test('an empty folder, and an unknown one', async () => {
     expect(await runCommand('chats', ctx([]))).toBe('No Claude Code chats in nacho yet.')
     expect(await runCommand('chats /definitely/not/here', ctx([]))).toBe('Folder not found: /definitely/not/here')
+  })
+})
+
+describe('the Mac, in text', () => {
+  const ctx = (sys: FakeMac | null) => {
+    const store = new Store(':memory:')
+    const runner = { paused: false } as Runner
+    const notices: string[] = []
+    const mac = sys
+      ? new MacControl({ system: sys, store, runner, notify: n => notices.push(n.type), now: Date.now, log: () => {}, sleep: async () => {}, later: () => {} })
+      : null
+    return { notices, ctx: { runner, store, config: () => config, saveConfig: () => {}, now: Date.now, source: 'imessage' as const, mac } }
+  }
+
+  test("apps: what's open, what keeps the Mac awake, and that sleep is off", async () => {
+    const { ctx: c } = ctx(new FakeMac())
+    expect(await runCommand('apps', c)).toBe(
+      ['Open: Code, Mail', 'In the menu bar: Monosnap, Vorssaint (keeps the Mac awake)', 'Sleep is turned off; sleep quits Vorssaint first.'].join('\n'),
+    )
+  })
+
+  test('quit by name or the start of one; quit! forces; a name that fits two asks which', async () => {
+    const sys = new FakeMac()
+    sys.apps.push({ pid: 9100, name: 'Mailspring', bundleId: 'com.mailspring', path: '/Applications/Mailspring.app', policy: 0 })
+    const { ctx: c } = ctx(sys)
+    expect(await runCommand('quit vors', c)).toBe('Quit Vorssaint.')
+    expect(await runCommand('quit mai', c)).toBe('"mai" could be Mail, Mailspring. Say which.')
+    sys.stubborn.add(19268)
+    expect(await runCommand('quit mail', c)).toContain('Mail is still open')
+    expect(await runCommand('quit! mail', c)).toBe('Force quit Mail.')
+    expect(await runCommand('quit Photoshop', c)).toBe('Nothing called "Photoshop" is open. apps lists what is.')
+  })
+
+  test('sleep, sleep done and sleep cancel; off a Mac, a plain no', async () => {
+    const { ctx: c, notices } = ctx(new FakeMac())
+    expect(await runCommand('sleep done', c)).toBe('The Mac sleeps once the queue is done, after quitting Vorssaint.')
+    expect(await runCommand('sleep cancel', c)).toBe('The Mac stays awake after the queue is done.')
+    expect(await runCommand('sleep', c)).toContain('Going to sleep, after quitting Vorssaint.')
+    expect(notices).toEqual(['sleeping'])
+    expect(await runCommand('sleep', ctx(null).ctx)).toBe('Only a Mac can do that.')
   })
 })

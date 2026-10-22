@@ -25,6 +25,7 @@ import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
+import { MacControl } from './mac'
 import { Notifier } from './notify'
 import { Remote, type RemoteStatus } from './remote'
 import { allowedRoots, isAllowed } from './remote/router'
@@ -35,6 +36,7 @@ import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
+import { macSystem } from '../platform/mac'
 import { isMac, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF } from './tmux'
@@ -156,6 +158,10 @@ export async function runDaemon(): Promise<void> {
     now: Date.now,
   })
 
+  // Quitting apps and sleeping the Mac, from the apps, the bot and text commands (macOS only).
+  const macSys = macSystem()
+  const mac = macSys ? new MacControl({ system: macSys, store, runner, notify: notice => notifier.send(notice), now: Date.now, log }) : null
+
   const commandContext = (source: 'cli' | 'imessage' | 'remote', cwd?: string) => ({
     runner,
     store,
@@ -165,6 +171,7 @@ export async function runDaemon(): Promise<void> {
     cwd,
     source,
     chats,
+    mac,
   })
   const command = (text: string, source: 'cli' | 'imessage', cwd?: string) => runCommand(text, commandContext(source, cwd))
 
@@ -201,6 +208,7 @@ export async function runDaemon(): Promise<void> {
     },
     // Every new device, said in your Telegram chat (telegram is set below).
     onPaired: (device, role) => void telegram?.devicePaired(device, role),
+    mac,
     log,
     now: Date.now,
   })
@@ -226,6 +234,7 @@ export async function runDaemon(): Promise<void> {
       config: getConfig,
       saveConfig: putConfig,
       commandContext: () => commandContext('cli'),
+      mac,
       app: {
         url: () => remote.appUrl(),
         machine: () => {
@@ -410,6 +419,7 @@ export async function runDaemon(): Promise<void> {
     }
     await runner.tick()
     remote.tick()
+    void mac?.tick()
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
     keepAwake.set(config.keepAwake && runner.hasWork())

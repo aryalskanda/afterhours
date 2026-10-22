@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { FolderMap } from '../src/daemon/folders'
+import { MacControl } from '../src/daemon/mac'
 import { Runner, windowName } from '../src/daemon/runner'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
@@ -13,7 +14,7 @@ import { TelegramBridge, type TelegramAppLink } from '../src/telegram/bot'
 import { signInitData } from '../src/telegram/webapp'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
-import { FakeTmux, makeTree } from './fakes'
+import { FakeMac, FakeTmux, makeTree } from './fakes'
 
 const OWNER = 7001
 const STRANGER = 9009
@@ -86,7 +87,7 @@ function button(keyboard: InlineKeyboard, label: string | RegExp): string {
   throw new Error(`no button ${label} in ${JSON.stringify(keyboard.map(r => r.map(b => b.text)))}`)
 }
 
-function setup(o: { app?: TelegramAppLink } = {}) {
+function setup(o: { app?: TelegramAppLink; mac?: FakeMac } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -135,12 +136,17 @@ function setup(o: { app?: TelegramAppLink } = {}) {
     sleep: async () => {},
   })
   const folders = new FolderMap({ roots: () => [root], maxDepth: () => 6, cachePath: join(home, 'folders.json'), now: () => now, log: () => {} })
+  const later: (() => void)[] = []
+  const mac = o.mac
+    ? new MacControl({ system: o.mac, store, runner, notify: n => void bridge.notify(n), now: () => now, log: () => {}, sleep: async () => {}, later: run => later.push(run) })
+    : null
   bridge = new TelegramBridge({
     api,
     store,
     runner,
     folders,
     chats,
+    mac,
     config: () => config,
     saveConfig: c => {
       config = c
@@ -169,6 +175,8 @@ function setup(o: { app?: TelegramAppLink } = {}) {
     chatList,
     killed,
     setHolders: (h: LiveSession[]) => (holders = h),
+    /** What runs a moment later (the Mac going to sleep). */
+    later,
     config: () => config,
     say,
     tap,
@@ -179,7 +187,7 @@ function setup(o: { app?: TelegramAppLink } = {}) {
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { app?: TelegramAppLink } = {}): Promise<Harness> {
+async function paired(o: { app?: TelegramAppLink; mac?: FakeMac } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -994,6 +1002,66 @@ describe('killing a stuck task', () => {
     expect(h.store.getJob(job.id)!.status).toBe('cancelled')
     await h.say('/kill')
     expect(h.api.last().html).toContain('Nothing is running.')
+  })
+})
+
+describe('the Mac, from the bot', () => {
+  test("/mac: what keeps it awake, and quitting an app takes a second tap; one that won't offers Force quit", async () => {
+    const sys = new FakeMac()
+    const h = await paired({ mac: sys })
+    await h.say('/mac')
+    const msg = h.api.last()
+    expect(msg.html).toContain('Sleep is turned off while Vorssaint runs')
+    const labels = h.api.view(msg.id).keyboard.flat().map(b => b.text)
+    expect(labels).toEqual(['😴 Sleep now', '🌙 Sleep when done', '✖️ Vorssaint ☰', '✖️ Code', '✖️ Mail', '✖️ Monosnap ☰', '🔄 Refresh'])
+    const monosnap = button(h.api.view(msg.id).keyboard, 'Monosnap')
+    await h.tap(monosnap, msg.id)
+    expect(h.api.answers.at(-1)!.text).toBe('Tap again to quit Monosnap.')
+    expect(sys.asked).toEqual([])
+    await h.tap(monosnap, msg.id)
+    expect(h.api.answers.at(-1)!.text).toBe('Quit Monosnap.')
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).not.toContain('✖️ Monosnap ☰')
+
+    sys.stubborn.add(19268)
+    const mail = button(h.api.view(msg.id).keyboard, 'Mail')
+    await h.tap(mail, msg.id)
+    await h.tap(mail, msg.id)
+    const warning = h.api.last()
+    expect(warning.html).toContain('Mail is still open')
+    const force = button(h.api.view(warning.id).keyboard, 'Force quit Mail')
+    await h.tap(force, warning.id)
+    await h.tap(force, warning.id)
+    expect(h.api.answers.at(-1)!.text).toBe('Force quit Mail.')
+  })
+
+  test('/sleep: quits Vorssaint, says the Mac is going to sleep, then it sleeps', async () => {
+    const sys = new FakeMac()
+    const h = await paired({ mac: sys })
+    await h.say('sleep')
+    const card = h.api.last()
+    expect(card.html).toContain('It quits Vorssaint first')
+    await h.tap(button(h.api.view(card.id).keyboard, '😴 Sleep now'), card.id)
+    expect(h.api.answers.at(-1)!.text).toBe('Going to sleep.')
+    expect(h.api.sent.some(m => m.html.includes('The Mac is going to sleep</b> (asked from Telegram), after quitting Vorssaint'))).toBe(true)
+    expect(sys.slept).toBe(0)
+    h.later.forEach(run => run())
+    await Bun.sleep(0)
+    expect(sys.slept).toBe(1)
+  })
+
+  test('🌙 Sleep when done, on and off; without a Mac, a plain no', async () => {
+    const h = await paired({ mac: new FakeMac() })
+    await h.say('/mac')
+    const msg = h.api.last()
+    await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done'), msg.id)
+    expect(h.api.sent.some(m => m.html.includes('The Mac sleeps once the queue is done, after quitting Vorssaint.'))).toBe(true)
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done ✓')
+    await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done ✓'), msg.id)
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done')
+
+    const plain = await paired()
+    await plain.say('/mac')
+    expect(plain.api.last().html).toContain('Only a Mac can do that.')
   })
 })
 

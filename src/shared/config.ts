@@ -113,6 +113,8 @@ export interface RemoteConfig {
   allowScreens: boolean
   /** Whether apps may type and press keys in a running task. */
   allowTyping: boolean
+  /** Whether owners' apps may quit apps on this Mac and put it to sleep. */
+  allowMac: boolean
   /**
    * Run the relay inside Afterhours, on this port of 127.0.0.1, serving the app's web build too
    * (cq app setup). This machine then reaches it locally; apps use `relay`, its public address.
@@ -160,7 +162,7 @@ export const DEFAULT_CONFIG: Config = {
   autoContinueChats: true,
   reopenInVsCode: true,
   keepAwake: true,
-  remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, serve: null, publicUrl: null },
+  remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
 }
 
 export function ensureHome(): void {

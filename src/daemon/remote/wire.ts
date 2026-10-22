@@ -111,6 +111,8 @@ export function wireNotice(n: Notice): WireNotice {
       return { type: n.type, chat: chatInfo(n.chat), where: n.where, how: n.how, jobId: n.jobId }
     case 'setup_warning':
       return { type: n.type, message: n.message }
+    case 'sleeping':
+      return { type: n.type, by: n.by, quit: n.quit, ...(n.failed ? { failed: n.failed } : {}) }
     case 'empty':
       return { type: n.type }
     default:

@@ -14,6 +14,7 @@ import type {
   FilePatch,
   FilesResult,
   HostSession,
+  MacInfo,
   MachineInfo,
   Notice as WireNotice,
   PolicyInfo,
@@ -35,6 +36,7 @@ import { slashCommands } from '../slash'
 import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
 import type { FolderMap } from '../folders'
+import type { MacControl } from '../mac'
 import { taskStart, type Runner } from '../runner'
 import { findSessions } from '../sessions'
 import type { Store } from '../store'
@@ -118,8 +120,10 @@ const NEEDS: Record<RequestType, Role> = {
   'pair.offer': 'owner',
   'push.register': 'viewer',
   report: 'viewer',
+  mac: 'owner',
 }
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
+const MAC_OFF = "This machine doesn't let apps quit its apps or put it to sleep (cq remote mac on)."
 /** Requests that change something: audited, and answered from memory when retried. */
 const CHANGES = new Set<RequestType>([
   'queue',
@@ -140,6 +144,7 @@ const CHANGES = new Set<RequestType>([
   'pair.offer',
   'push.register',
   'report',
+  'mac',
 ])
 
 export interface RouterDeps {
@@ -175,6 +180,8 @@ export interface RouterDeps {
   openOffer: (role: Role) => { link: string; expires: number } | string
   /** Restarts the engine: its service starts it again. */
   restart: () => void
+  /** Quitting apps and sleeping the Mac; null on other systems. */
+  mac?: MacControl | null
   now: () => number
   log: (line: string) => void
 }
@@ -205,6 +212,7 @@ export function policyInfo(config: Config): PolicyInfo {
     allowBypass: config.remote.allowBypass,
     allowScreens: config.remote.allowScreens,
     allowTyping: config.remote.allowTyping,
+    allowMac: config.remote.allowMac,
   }
 }
 
@@ -237,6 +245,8 @@ function auditDetail(r: Request): string | null {
       return r.device.slice(0, 12)
     case 'command':
       return r.text.trim().split(/\s+/)[0] ?? null
+    case 'mac':
+      return r.pid !== undefined ? `${r.action} ${r.pid}${r.force ? ', forced' : ''}` : r.on !== undefined ? `${r.action} ${r.on ? 'on' : 'off'}` : r.action
     case 'branch':
       return `${r.action} #${r.job}`
     case 'upload':
@@ -286,7 +296,8 @@ export class Router {
       }
     }
     const result: Result = { type: 'result', id: request.id, ...outcome }
-    if (changes) {
+    // Looking at the Mac changes nothing.
+    if (changes && !(request.type === 'mac' && request.action === 'status')) {
       this.d.db.remember(session.device, request.id, result, this.d.now())
       this.d.db.audit({ at: this.d.now(), device: session.device, deviceName: name, action: request.type, detail: auditDetail(request), ok: outcome.ok })
     }
@@ -322,7 +333,7 @@ export class Router {
         isolate: config.isolate,
       },
       models: [...new Set([...config.models, config.defaults.model])],
-      features: FEATURES,
+      features: this.d.mac ? [...FEATURES, 'mac'] : FEATURES,
       ...(config.remote.relay ? { relay: config.remote.relay } : {}),
     }
   }
@@ -513,11 +524,35 @@ export class Router {
           return { ok: false, code: 'policy', error: "This machine doesn't let apps type into tasks (cq remote typing on)." }
         }
         if (word === 'peek' && !policy.allowScreens) return { ok: false, code: 'policy', error: 'This machine keeps its screens to itself (cq remote screens on).' }
+        if ((word === 'apps' || word === 'quit' || word === 'quit!' || word === 'sleep') && !policy.allowMac) return { ok: false, code: 'policy', error: MAC_OFF }
         if ((word === 'default' || word === 'defaults') && /\b(yolo|bypass)\b/i.test(r.text) && !policy.allowBypass) {
           return { ok: false, code: 'policy', error: "This machine doesn't let apps make skipping permission prompts the default (cq remote bypass on)." }
         }
         const text = await this.d.command(r.text, spec => this.guard(spec))
         return text === null ? { ok: false, code: 'invalid', error: `Unknown command "${word}". Try help.` } : { ok: true, text }
+      }
+      case 'mac': {
+        const mac = this.d.mac
+        if (!mac) return { ok: false, code: 'unsupported', error: "This machine isn't a Mac." }
+        if (!policy.allowMac) return { ok: false, code: 'policy', error: MAC_OFF }
+        switch (r.action) {
+          case 'status':
+            return { ok: true, data: (await mac.status()) satisfies MacInfo }
+          case 'quit': {
+            if (r.pid === undefined) return { ok: false, code: 'invalid', error: 'Which app? (pid)' }
+            const q = await mac.quit(r.pid, { force: r.force })
+            return q.ok ? { ok: true, text: q.text, data: { open: false } } : { ok: false, code: 'failed', error: q.text, data: { open: q.open } }
+          }
+          case 'sleep': {
+            const s = await mac.sleepNow({ quit: r.quit ?? [], by: name })
+            return s.ok ? { ok: true, text: s.text } : { ok: false, code: 'failed', error: s.text }
+          }
+          case 'sleepWhenDone': {
+            const s = await mac.sleepWhenDone({ on: r.on ?? true, quit: r.quit, by: name })
+            return { ok: true, text: s.text }
+          }
+        }
+        return { ok: false, code: 'invalid', error: 'Unknown action.' }
       }
       case 'transcript':
         return this.transcript(r, roots)

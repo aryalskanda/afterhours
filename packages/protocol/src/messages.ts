@@ -196,6 +196,8 @@ export const PolicyInfo = z.object({
   allowBypass: z.boolean(),
   allowScreens: z.boolean(),
   allowTyping: z.boolean(),
+  /** Owners may quit apps and sleep the Mac (missing from machines before it). */
+  allowMac: z.boolean().optional(),
 })
 export type PolicyInfo = z.infer<typeof PolicyInfo>
 
@@ -252,6 +254,8 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('link'), job: JobInfo, url: z.string().nullable(), title: z.string().nullable(), note: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
+  /** The Mac is going to sleep, after quitting `quit`; `failed`: it was meant to and couldn't, and why. */
+  z.object({ type: z.literal('sleeping'), by: z.string().nullable(), quit: z.array(z.string()), failed: z.string().optional() }),
   /** The machine moves to another relay: save its address (as with the snapshot's `relay`) and follow. */
   z.object({ type: z.literal('relay'), url: z.string().max(2048) }),
   /** A pending approval was answered (from any app, Telegram or the terminal), or expired. */
@@ -439,6 +443,20 @@ export const Request = z.discriminatedUnion('type', [
    * of its own that continues its conversation and runs next (the result's data: `{ job }`).
    */
   withId({ type: z.literal('link'), job: z.number().int() }),
+  /**
+   * Owners, on a Mac that lets them (policy.allowMac): `status` lists the open apps and what keeps
+   * the Mac awake (the result's data: MacInfo); `quit` an app by `pid` (`force` ends it without
+   * asking; the data says whether it's still `open`); `sleep` now, quitting `quit` (pids) first;
+   * `sleepWhenDone` (`on`): sleep once the queue is done, quitting `quit` first.
+   */
+  withId({
+    type: z.literal('mac'),
+    action: z.enum(['status', 'quit', 'sleep', 'sleepWhenDone']),
+    pid: z.number().int().optional(),
+    force: z.boolean().optional(),
+    on: z.boolean().optional(),
+    quit: z.array(z.number().int()).max(20).optional(),
+  }),
   /**
    * A task's folder (`job`) or another folder (`folder`): `path` lists a folder or, with `read`,
    * reads a file; `query` searches file names.
@@ -632,6 +650,32 @@ export const FileContent = z.object({
   truncated: z.boolean(),
 })
 export type FileContent = z.infer<typeof FileContent>
+
+/** An app open on the Mac: a regular one, or one in the menu bar; `keepsAwake`: it holds the Mac awake. */
+export const MacAppInfo = z.object({
+  pid: z.number().int(),
+  name: z.string(),
+  bundleId: z.string().nullable(),
+  kind: z.enum(['app', 'menu']),
+  keepsAwake: z.boolean(),
+})
+export type MacAppInfo = z.infer<typeof MacAppInfo>
+
+/** The answer to a `mac` status request. */
+export const MacInfo = z.object({
+  apps: z.array(MacAppInfo),
+  /** Sleep is turned off (pmset disablesleep), which keep-awake apps do: it won't sleep until they quit. */
+  sleepDisabled: z.boolean(),
+  /** What sleeping quits first, by default (pids). */
+  quitFirst: z.array(z.number().int()),
+  /** Sleep once the queue is done: the apps it quits first, and what it still waits for. */
+  sleepWhenDone: z.object({ on: z.boolean(), quit: z.array(z.string()), waiting: z.string().nullable() }),
+  /** Seconds since someone last used the keyboard or trackpad. */
+  idleSeconds: z.number().nullable(),
+  /** The task that pauses while the Mac sleeps. */
+  running: z.number().int().nullable(),
+})
+export type MacInfo = z.infer<typeof MacInfo>
 
 /** The answer to a `health` request. */
 export const HealthInfo = z.object({

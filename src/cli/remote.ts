@@ -298,6 +298,7 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
       }
       console.log(`Apps may run tasks in: ${r.allowedRoots.length ? r.allowedRoots.join(', ') : 'your home folder'}`)
       console.log(`Skip-permission tasks from apps: ${r.allowBypass ? 'allowed' : 'not allowed'} · screens: ${r.allowScreens ? 'shown' : 'hidden'} · typing: ${r.allowTyping ? 'allowed' : 'not allowed'}`)
+      console.log(`Quitting apps and sleeping this Mac from owners' apps: ${r.allowMac ? 'allowed' : 'not allowed'}`)
       return true
     }
     case 'on':
@@ -345,7 +346,8 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
     }
     case 'bypass':
     case 'screens':
-    case 'typing': {
+    case 'typing':
+    case 'mac': {
       const value = onOff(rest[0])
       if (value === null) {
         console.error(`Usage: cq remote ${sub} on|off`)
@@ -354,11 +356,12 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
       if (sub === 'bypass') r.allowBypass = value
       if (sub === 'screens') r.allowScreens = value
       if (sub === 'typing') r.allowTyping = value
-      const what = { bypass: 'Tasks that skip permission prompts', screens: 'Seeing the running terminal', typing: 'Typing into running tasks' }[sub]
+      if (sub === 'mac') r.allowMac = value
+      const what = { bypass: 'Tasks that skip permission prompts', screens: 'Seeing the running terminal', typing: 'Typing into running tasks', mac: "Quitting this Mac's apps and putting it to sleep" }[sub]
       return save(`${what}: ${value ? 'allowed' : 'not allowed'} from apps.`)
     }
     default:
-      console.error('Usage: cq remote [status|on|off|relay <url>|name <name>|allow <folder>|disallow <folder>|bypass on|off|screens on|off|typing on|off]')
+      console.error('Usage: cq remote [status|on|off|relay <url>|name <name>|allow <folder>|disallow <folder>|bypass on|off|screens on|off|typing on|off|mac on|off]')
       return false
   }
 }
