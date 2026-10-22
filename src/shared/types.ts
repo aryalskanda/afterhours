@@ -85,6 +85,11 @@ export interface Job {
   group: string | null
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: boolean
+  /**
+   * Plan with one model, work with another: `model` plans, and once the plan is approved this
+   * model carries it out (the same conversation, resumed). Null: `model` does both.
+   */
+  workModel: string | null
 }
 
 export interface Usage {
@@ -115,6 +120,8 @@ export interface JobSpec {
   maxMinutes?: number | null
   attachments?: string[] | null
   group?: string | null
+  /** The model that carries out the approved plan, when it isn't `model`. */
+  workModel?: string | null
 }
 
 export type ApprovalKind = 'permission' | 'question' | 'review' | 'trust'

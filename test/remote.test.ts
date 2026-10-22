@@ -282,6 +282,21 @@ describe('remote access', () => {
     expect(conn.lastSeq).toBe(3)
   })
 
+  test('plan with one model, work with another, from an app; changed while queued', async () => {
+    const m = machine()
+    const { conn, snapshots } = await pairedApp(m)
+    expect(snapshots[0]!.features).toContain('models.split')
+    const r = await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { plan: true, model: 'opus', workModel: 'sonnet' } })
+    const id = (r.data as { job: { id: number; workModel: string | null } }).job.id
+    expect((r.data as { job: { workModel: string | null } }).job.workModel).toBe('sonnet')
+    expect(m.store.getJob(id)).toMatchObject({ model: 'opus', workModel: 'sonnet' })
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { workModel: 'haiku' } })
+    expect(m.store.getJob(id)!.workModel).toBe('haiku')
+    // The same as the planner: one model does it all.
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { workModel: 'opus' } })
+    expect(m.store.getJob(id)!.workModel).toBeNull()
+  })
+
   test('the queue from an app: move, hold and release, remove and put back, clear', async () => {
     const m = machine()
     const { conn } = await pairedApp(m)

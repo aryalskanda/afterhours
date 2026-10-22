@@ -464,6 +464,7 @@ export class TelegramBridge {
       review: last.review ?? d.review,
       execMode: last.execMode ?? d.execMode,
       model: last.model ?? d.model,
+      workModel: last.workModel !== undefined ? last.workModel : (d.workModel ?? null),
       effort: last.effort ?? d.effort,
       isolate: last.isolate ?? this.o.config().isolate,
     }
@@ -755,6 +756,7 @@ export class TelegramBridge {
         review: o.review ?? (o.plan === false ? false : choices.review),
         execMode: o.execMode ?? choices.execMode,
         model: o.model ?? choices.model,
+        workModel: o.model !== undefined ? (o.workModel ?? null) : choices.workModel,
         effort: o.effort ?? choices.effort,
         isolate: o.isolate ?? choices.isolate,
       }
@@ -956,9 +958,16 @@ export class TelegramBridge {
       }
       case 'm': {
         if (!a) return void (await show(ui.modelView(d, ctx)))
-        d = this.state.updateDraft(d.id, { model: a })
+        // Picking the planning model again leaves the work model as it was, unless it's now the same.
+        d = this.state.updateDraft(d.id, { model: a, ...(d.workModel === a ? { workModel: null } : {}) })
         await show(ui.draftCard(d, ctx))
-        return `Model: ${a}`
+        return d.plan && d.workModel ? `Plans with ${a}` : `Model: ${a}`
+      }
+      case 'w': {
+        if (!a) return
+        d = this.state.updateDraft(d.id, { workModel: a === 'same' || a === d.model ? null : a })
+        await show(ui.draftCard(d, ctx))
+        return d.workModel ? `Works with ${d.workModel}` : `${d.model} does both`
       }
       case 'e': {
         if (!a) return void (await show(ui.effortView(d)))
@@ -1024,6 +1033,7 @@ export class TelegramBridge {
       review: d.review,
       execMode: d.execMode,
       model: d.model,
+      workModel: d.plan ? d.workModel : null,
       effort: d.effort,
       sessionPolicy: d.sessionId ? 'session' : d.newChat ? 'new' : 'continue',
       sessionId: d.sessionId ?? undefined,
@@ -1040,6 +1050,7 @@ export class TelegramBridge {
       review: d.review,
       execMode: d.execMode,
       model: d.model,
+      workModel: d.workModel,
       effort: d.effort,
       isolate: d.isolate,
     }

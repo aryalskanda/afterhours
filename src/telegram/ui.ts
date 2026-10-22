@@ -223,7 +223,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
   const change = l && d.folder && d.prompt && !d.sessionId ? openBtn(l, appPath.newTask(l, { folder: d.folder, prompt: d.prompt }), 'Change ↗') : null
   if (change?.web_app && change.web_app.url.length <= MAX_LINK) {
     return {
-      html: [quote(d.prompt, 600), `📁 <b>${esc(ctx.label(d.folder!))}</b> · ${esc(modeLabel(d))} · ${esc(d.model)}/${d.effort}`].join('\n'),
+      html: [quote(d.prompt, 600), `📁 <b>${esc(ctx.label(d.folder!))}</b> · ${esc(modeLabel(d))} · ${esc(d.model)}${d.plan && d.workModel ? `→${esc(d.workModel)}` : ''}/${d.effort}`].join('\n'),
       keyboard: [[btn('▶️ Queue', `d:${id}:q`), change], [btn('✖️ Discard', `d:${id}:x`)]],
     }
   }
@@ -232,7 +232,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
   const html = [
     d.prompt ? quote(d.prompt, 1500) : '📝 <i>Now send the prompt as your next message.</i>',
     folder,
-    `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)} · ⚡ ${d.effort}`,
+    `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)}${d.plan && d.workModel ? ` → ${esc(d.workModel)}` : ''} · ⚡ ${d.effort}`,
     chatLabel(d, ctx, chat),
   ].join('\n')
   const chatButton = btn('💬 Chat…', `d:${id}:t`)
@@ -448,11 +448,23 @@ export function modeView(d: Draft): View {
   }
 }
 
+/** 🧠 Model; with a plan, the model that plans and the one that carries the plan out. */
 export function modelView(d: Draft, ctx: UiContext): View {
-  const models = ctx.models.includes(d.model) ? ctx.models : [...ctx.models, d.model]
-  const rows = layout(models.map(m => btn(`${m === d.model ? '✓ ' : ''}${m}`, `d:${d.id}:m:${m}`)))
-  rows.push([btn('↩️ Back', `d:${d.id}:k`)])
-  return { html: '🧠 <b>Model</b>', keyboard: rows }
+  const models = [...new Set([...ctx.models, d.model, ...(d.workModel ? [d.workModel] : [])])]
+  const plan = layout(models.map(m => btn(`${m === d.model ? '✓ ' : ''}${m}`, `d:${d.id}:m:${m}`)))
+  if (!d.plan) return { html: '🧠 <b>Model</b>', keyboard: [...plan, [btn('↩️ Back', `d:${d.id}:k`)]] }
+  const work = layout([
+    btn(`${d.workModel ? '' : '✓ '}same`, `d:${d.id}:w:same`),
+    ...models.filter(m => m !== d.model).map(m => btn(`${m === d.workModel ? '✓ ' : ''}${m}`, `d:${d.id}:w:${m}`)),
+  ])
+  return {
+    html:
+      '🧠 <b>Model</b>\n' +
+      `<b>Plan with</b> (first row): ${esc(d.model)}\n` +
+      `<b>Work with</b> (second row): ${esc(d.workModel ?? 'the same')}\n` +
+      '<i>One model writes the plan; once it’s approved, the other carries it out, in the same conversation.</i>',
+    keyboard: [...plan, ...work, [btn('↩️ Back', `d:${d.id}:k`)]],
+  }
 }
 
 export function effortView(d: Draft): View {
@@ -473,7 +485,7 @@ export function queuedView(job: Job, when: string, ctx: UiContext): View {
 }
 
 function jobHeader(job: Job, ctx: UiContext): string {
-  return `${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}/${job.effort}`
+  return `${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}${job.workModel ? `→${esc(job.workModel)}` : ''}/${job.effort}`
 }
 
 /** Characters per message part: Telegram allows 4,096, and headers need room. */

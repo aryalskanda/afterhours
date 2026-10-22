@@ -130,6 +130,9 @@ const NUDGE =
   "You're running unattended from a prompt queue and the user can't reply right now. " +
   'Make reasonable assumptions, finish your plan, and call ExitPlanMode to present it.'
 
+/** What the work model is told when it takes over an approved plan (plan with one model, work with another). */
+const HANDOFF_PROMPT = 'Your plan is approved. Carry it out now, step by step, and finish the task.'
+
 /** What an ask task tells Claude when it presents a plan anyway. */
 const ASK_FEEDBACK = "This task is a question: answer it directly in your reply. Don't present a plan or change anything."
 
@@ -289,6 +292,7 @@ export class Runner {
       notBefore: next.getTime(),
       repeatDaily: job.repeatDaily,
       maxMinutes: job.maxMinutes,
+      workModel: job.workModel,
     })
     this.d.log(`#${job.id} repeats daily: #${again.id} is queued for ${next.toISOString()}`)
   }
@@ -400,7 +404,9 @@ export class Runner {
 
     const settingsPath = join(this.d.jobsDir, `${job.id}.settings.json`)
     this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts), null, 2))
-    const argv = claudeArgv(job, {
+    // Plan with one model, work with another: after the plan, every run is the work model's.
+    const model = job.planApproved && job.workModel ? job.workModel : job.model
+    const argv = claudeArgv({ ...job, model }, {
       claudePath: this.d.claudePath,
       settingsPath,
       sessionArgs,
@@ -681,12 +687,27 @@ export class Runner {
     if (p.attempts >= 3) return this.hold(job, "couldn't approve the plan dialog", tail(screen, 20))
     const choice = choosePlanOption(dialog.options, job.execMode)
     if (!choice) return this.hold(job, "didn't recognize the plan dialog's options", tail(screen, 20))
+    if (job.workModel && job.workModel !== job.model) return this.handOver(job, rt, choice.option.label)
     await this.d.tmux.sendKeys(rt.window, String(choice.option.n))
     p.sentAt = now
     p.attempts++
     p.choice = choice.option.label
     p.switchAfter = choice.switchAfter
     this.d.log(`#${job.id}: answered plan dialog with "${choice.option.label}"`)
+  }
+
+  /**
+   * Plan with one model, work with another: the plan is approved, so rather than answering the
+   * dialog, the planner's window closes and the same conversation resumes on the work model, in
+   * the task's own mode, told to carry the plan out.
+   */
+  private async handOver(job: Job, rt: Runtime, choice: string): Promise<void> {
+    job = this.d.store.updateJob(job.id, { planApproved: true, phase: 'working', nudges: 0 })
+    rt.plan = undefined
+    this.d.log(`#${job.id}: plan approved; ${job.workModel} carries it out`)
+    await this.relaunch(job, HANDOFF_PROMPT)
+    if (this.ended(job.id)) return
+    this.d.notify({ type: 'plan_approved', job: this.d.store.getJob(job.id)!, choice: `${choice.replace(/\.$/, '')}; ${job.workModel} carries it out` })
   }
 
   private markPlanApproved(job: Job, rt: Runtime): Job {

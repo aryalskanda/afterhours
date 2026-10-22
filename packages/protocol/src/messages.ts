@@ -119,6 +119,8 @@ export const JobInfo = z.object({
   group: z.string().nullable().optional(),
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: z.boolean().optional(),
+  /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
+  workModel: z.string().nullable().optional(),
 })
 export type JobInfo = z.infer<typeof JobInfo>
 
@@ -260,6 +262,8 @@ export const QueueOptions = z.object({
   review: z.boolean().optional(),
   mode: ExecMode.optional(),
   model: z.string().max(40).optional(),
+  /** With a plan: the model that carries it out once it's approved (`model` writes it). */
+  workModel: z.string().max(40).optional(),
   effort: Effort.optional(),
   /** `continue` the folder's last conversation, start a `new` one, or continue `session`. */
   policy: z.enum(['continue', 'new', 'session']).optional(),
@@ -475,6 +479,8 @@ export const Defaults = z.object({
   review: z.boolean(),
   mode: ExecMode,
   model: z.string(),
+  /** With a plan, the model that carries it out (when it isn't `model`). */
+  workModel: z.string().nullable().optional(),
   effort: Effort,
   /** New conversations on their own git branch. */
   isolate: z.boolean(),

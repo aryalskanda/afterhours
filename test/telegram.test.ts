@@ -886,6 +886,28 @@ describe('reading and answering on a phone', () => {
   })
 })
 
+describe('two models from Telegram', () => {
+  test('🧠 Model with a plan: plan with one, work with another; the card says so and the task gets both', async () => {
+    const h = await paired()
+    await h.say('Do the thing')
+    const card = h.api.last().id
+    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
+    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    // New tasks plan first by default: the model has two parts.
+    await h.tap(button(h.api.view(card).keyboard, '🧠 Model'), card)
+    expect(h.api.view(card).html).toContain('Plan with')
+    await h.tap(button(h.api.view(card).keyboard, /^opus$/), card)
+    await h.tap(button(h.api.view(card).keyboard, '🧠 Model'), card)
+    // The second row of choices is the work model's.
+    const work = h.api.view(card).keyboard.flat().find(b => b.callback_data?.endsWith(':w:haiku'))!
+    await h.tap(work.callback_data!, card)
+    expect(h.api.view(card).html).toContain('🧠 opus → haiku')
+    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    expect(h.store.queued().at(-1)).toMatchObject({ model: 'opus', workModel: 'haiku', plan: true })
+  })
+})
+
 describe('the queue from Telegram', () => {
   test('⬆️ ⬇️ move a task, ⏸ holds it in its place, ▶️ lets it go, 🧹 Clear (twice) empties it', async () => {
     const h = await paired()

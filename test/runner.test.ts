@@ -688,6 +688,40 @@ describe('problems', () => {
   })
 })
 
+describe('plan with one model, work with another', () => {
+  test("once the plan is approved, the same conversation resumes on the work model, in the task's mode", async () => {
+    const h = setup()
+    const j = await startJob(h, { model: 'opus', workModel: 'sonnet' })
+    expect(h.store.getJob(j.id)!.workModel).toBe('sonnet')
+    let argv = h.runner.launchSpec(j.id)!.argv
+    expect([argv[argv.indexOf('--model') + 1], argv[argv.indexOf('--permission-mode') + 1]]).toEqual(['opus', 'plan'])
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'Create hello.txt with hi' } })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    // The dialog isn't answered: the planner's window closes and the work model takes over.
+    expect(j.window.input).toEqual([])
+    expect(h.store.getJob(j.id)).toMatchObject({ planApproved: true, status: 'running', launches: 2, planText: 'Create hello.txt with hi' })
+    argv = h.runner.launchSpec(j.id)!.argv
+    expect(argv.slice(1, 3)).toEqual(['--resume', j.sid])
+    expect([argv[argv.indexOf('--model') + 1], argv[argv.indexOf('--permission-mode') + 1]]).toEqual(['sonnet', 'auto'])
+    expect(argv.at(-1)).toBe('Your plan is approved. Carry it out now, step by step, and finish the task.')
+    expect(lastNotice(h, 'plan_approved').choice).toBe('Yes, and use auto mode; sonnet carries it out')
+
+    // Started again later (its window gone), it's still the work model's.
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid, transcript_path: '/tmp/t.jsonl' })
+    h.tmux.windows.delete(windowName(j.id))
+    await h.runner.tick()
+    argv = h.runner.launchSpec(j.id)!.argv
+    expect(argv[argv.indexOf('--model') + 1]).toBe('sonnet')
+  })
+
+  test('the same model, or no plan to hand over: one model does it all', () => {
+    const h = setup()
+    expect(h.runner.enqueue(h.spec({ model: 'opus', workModel: 'opus' })).workModel).toBeNull()
+    expect(h.runner.enqueue(h.spec({ plan: false, model: 'opus', workModel: 'sonnet' })).workModel).toBeNull()
+  })
+})
+
 describe('the queue: hold, put back, clear', () => {
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()

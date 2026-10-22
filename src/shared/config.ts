@@ -42,6 +42,8 @@ export interface Defaults {
   review: boolean
   execMode: ExecMode
   model: string
+  /** With a plan: the model that carries it out, when it isn't `model` (plan with one, work with another). */
+  workModel?: string | null
   effort: Effort
 }
 

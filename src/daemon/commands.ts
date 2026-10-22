@@ -50,6 +50,8 @@ export interface QueueOptions {
   review?: boolean
   execMode?: ExecMode
   model?: string
+  /** `opus>sonnet`: plan with opus, work with sonnet. */
+  workModel?: string
   effort?: Effort
   policy?: SessionPolicy
   sessionId?: string
@@ -78,8 +80,17 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
     out.effort = EFFORTS[t]
     return true
   }
-  if (MODELS.has(t) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(t)) {
+  const isModel = (m: string) => MODELS.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m)
+  if (isModel(t)) {
     out.model = t
+    return true
+  }
+  // Plan with one model, work with another: opus>sonnet.
+  const pair = /^([^>]+)>([^>]+)$/.exec(t)
+  if (pair && isModel(pair[1]!) && isModel(pair[2]!)) {
+    out.model = pair[1]
+    out.workModel = pair[2]
+    if (out.plan === undefined) out.plan = true
     return true
   }
   const [first, second] = t.split('+')
@@ -177,6 +188,7 @@ export function buildSpec(text: string, ctx: CommandContext): JobSpec | string {
     review: options.review ?? (plan ? d.review : false),
     execMode: options.execMode ?? d.execMode,
     model: options.model ?? d.model,
+    workModel: options.workModel ?? (options.model === undefined ? d.workModel : undefined) ?? null,
     effort: options.effort ?? d.effort,
     sessionPolicy: options.policy ?? 'continue',
     sessionId,
@@ -191,7 +203,7 @@ export const HELP = `${BRAND.name}: queue Claude Code prompts.
 q <prompt> · queue with your defaults
 q myapp plan opus max: <prompt> · options before the colon
   modes: plan review auto edits yolo plan+edits plan+yolo · ask = answer only, read-only
-  models: opus sonnet haiku fable · effort: low med high xhigh max
+  models: opus sonnet haiku fable · opus>sonnet = plan with opus, work with sonnet · effort: low med high xhigh max
   new = fresh conversation · now = run next · @<id> = that conversation
   take = close that conversation where it's open (VS Code, a terminal) and continue it here
   branch = on its own git branch · here = in your checkout
@@ -441,13 +453,15 @@ function defaults(rest: string, ctx: CommandContext): string {
     if (options.review !== undefined) d.review = options.review
     if (options.execMode) d.execMode = options.execMode
     if (options.model) d.model = options.model
+    // A model on its own does both; opus>sonnet sets both.
+    if (options.model) d.workModel = options.workModel ?? null
     if (options.effort) d.effort = options.effort
     ctx.saveConfig(config)
   }
   const d = config.defaults
   const project = d.project ? projectLabel(d.project, config.aliases) : '(last used)'
   const mode = d.review ? 'review' : d.plan ? 'plan' : 'no plan'
-  return `Defaults: ${project} · ${mode} then ${d.execMode} · ${d.model}/${d.effort}`
+  return `Defaults: ${project} · ${mode} then ${d.execMode} · ${d.model}${d.workModel ? `>${d.workModel}` : ''}/${d.effort}`
 }
 
 function notifyLevel(rest: string, ctx: CommandContext): string {

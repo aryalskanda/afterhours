@@ -73,6 +73,7 @@ export const FEATURES = [
   'kill',
   'queue.hold',
   'queue.restore',
+  'models.split',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -314,6 +315,7 @@ export class Router {
         review: config.defaults.review,
         mode: config.defaults.execMode,
         model: config.defaults.model,
+        workModel: config.defaults.workModel ?? null,
         effort: config.defaults.effort,
         isolate: config.isolate,
       },
@@ -629,6 +631,10 @@ export class Router {
     if (o.review !== undefined) patch.review = o.review
     if (o.mode !== undefined) patch.execMode = o.mode
     if (o.model !== undefined) patch.model = o.model
+    if (o.workModel !== undefined) {
+      const model = o.model ?? job.model
+      patch.workModel = o.workModel && o.workModel !== model ? o.workModel : null
+    }
     if (o.effort !== undefined) patch.effort = o.effort
     if (o.isolate !== undefined && !job.sessionId) patch.isolate = o.isolate
     const when = o.notBefore !== undefined || o.atReset !== undefined || o.afterJob !== undefined || o.repeatDaily !== undefined || o.maxMinutes !== undefined
@@ -807,6 +813,7 @@ export class Router {
       review: o.review ?? (plan ? d.review : false),
       execMode: o.mode ?? d.execMode,
       model: o.model ?? d.model,
+      workModel: o.workModel ?? (o.model === undefined ? d.workModel : undefined) ?? null,
       effort: o.effort ?? d.effort,
       sessionPolicy: o.policy ?? (sessionId ? 'session' : 'continue'),
       sessionId,

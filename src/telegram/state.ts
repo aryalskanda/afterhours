@@ -41,6 +41,8 @@ export interface Choices {
   review: boolean
   execMode: ExecMode
   model: string
+  /** With a plan: the model that carries it out (null: `model` does both). */
+  workModel: string | null
   effort: Effort
   /** Run a new conversation on its own git branch. */
   isolate: boolean
@@ -76,6 +78,7 @@ const COLUMNS: Record<keyof Draft, string> = {
   review: 'review',
   execMode: 'exec_mode',
   model: 'model',
+  workModel: 'work_model',
   effort: 'effort',
   isolate: 'isolate',
   newChat: 'new_chat',
@@ -113,6 +116,7 @@ export class TelegramState {
     for (const column of ['isolate', 'takeover']) {
       if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
     }
+    if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')
   }
 
   addDraft(
@@ -121,8 +125,8 @@ export class TelegramState {
   ): Draft {
     const row = this.db
       .query<Row, SqlValue[]>(
-        `INSERT INTO tg_drafts (prompt, folder, plan, review, exec_mode, model, effort, isolate, new_chat, session_id, takeover, follow_job, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO tg_drafts (prompt, folder, plan, review, exec_mode, model, work_model, effort, isolate, new_chat, session_id, takeover, follow_job, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
       .get(
         fields.prompt,
@@ -131,6 +135,7 @@ export class TelegramState {
         fields.review ? 1 : 0,
         fields.execMode,
         fields.model,
+        fields.workModel ?? null,
         fields.effort,
         fields.isolate ? 1 : 0,
         fields.newChat ? 1 : 0,

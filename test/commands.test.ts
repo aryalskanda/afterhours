@@ -60,6 +60,12 @@ describe('applyOption', () => {
     expect(apply('plan+nope').ok).toBe(false)
   })
 
+  test('plan with one model, work with another: opus>sonnet', () => {
+    expect(apply('opus>sonnet').o).toEqual({ model: 'opus', workModel: 'sonnet', plan: true })
+    expect(apply('claude-opus-5-5>haiku').o).toMatchObject({ model: 'claude-opus-5-5', workModel: 'haiku' })
+    expect(apply('opus>nonsense').ok).toBe(false)
+  })
+
   test('full model ids and aliases are case-insensitive', () => {
     expect(apply('claude-opus-5-5').o.model).toBe('claude-opus-5-5')
     expect(apply('NACHO').o.project).toBe(project)
