@@ -168,6 +168,8 @@ describe('remote access', () => {
     const snap = app.snapshots[0]!
     expect(snap.machine.name).toBe('build-box')
     expect(snap.role).toBe('owner')
+    // The address apps should use from now on.
+    expect(snap.relay).toBe(relay.url)
     expect(snap.policy.allowBypass).toBe(false)
     expect(snap.policy.allowedRoots[0]).toEndWith('projects')
     expect(m.remote.devices().map(d => d.name)).toEqual(['Test phone'])

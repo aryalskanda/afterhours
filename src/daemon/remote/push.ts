@@ -20,6 +20,7 @@ export function pushGroup(type: Notice['type']): PushGroup | null {
     case 'trust':
       return 'requests'
     case 'done':
+    case 'link':
       return 'done'
     case 'failed':
     case 'held':
@@ -73,7 +74,7 @@ function generic(notice: Notice): string {
     case 'requests':
       return `${task} needs you.`
     case 'done':
-      return `${task} finished.`
+      return notice.type === 'link' ? `A live link for ${task} is ready.` : `${task} finished.`
     case 'failed':
       return notice.type === 'setup_warning' ? 'The machine needs a look.' : `${task} stopped and needs a look.`
     case 'limits':

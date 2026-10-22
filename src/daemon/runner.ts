@@ -127,6 +127,8 @@ interface Runtime {
   countedAt?: number
   /** Asked for a live link at the end: when, and Claude's answer before that (the task's answer). */
   linkAsked?: { at: number; answer: string | null }
+  /** The live link was looked for (once, as the task ends). */
+  linksRead?: boolean
 }
 
 const NUDGE =
@@ -576,8 +578,17 @@ export class Runner {
     if ((job.plan && !job.planApproved) || rt.plan) await this.handlePlan(job, rt)
 
     if (rt.background?.bounded && now - rt.background.since > config.timeouts.backgroundSec * 1000) {
-      this.d.log(`#${job.id}: background commands still running after ${duration(now - rt.background.since)}; calling the job done`)
+      const since = rt.background.since
       rt.background = undefined
+      // The work is done but wants a live link it hasn't been asked for: ask now, as a message.
+      if (job.wantLink && !rt.linkAsked) {
+        this.d.log(`#${job.id}: background commands still running after the work; asking Claude for a live link`)
+        rt.linkAsked = { at: now, answer: job.lastMessage }
+        rt.lastActivity = now
+        await this.typeLine(rt.window, LINK_REQUEST)
+        return
+      }
+      this.d.log(`#${job.id}: background commands still running after ${duration(now - since)}; calling the job done`)
       this.beginFinish(job, rt)
       return
     }
@@ -785,6 +796,12 @@ export class Runner {
   }
 
   private beginFinish(job: Job, rt: Runtime): void {
+    // A live link is read whichever way the task gets here (a Stop, or background work timing out).
+    const now = this.d.store.getJob(job.id) ?? job
+    if ((now.wantLink || now.linkFor !== null) && !rt.linksRead) {
+      rt.linksRead = true
+      this.collectLinks(now, rt, now.lastMessage ?? '')
+    }
     rt.finishing = { since: this.d.now() }
     this.d.store.updateJob(job.id, { phase: 'finishing' })
   }
@@ -1001,14 +1018,12 @@ export class Runner {
       this.d.log(`#${job.id}: asking Claude for a live link`)
       return { decision: 'block', reason: LINK_REQUEST }
     }
-    if (job.wantLink || job.linkFor !== null) this.collectLinks(job, rt, payload)
     this.beginFinish(job, rt)
     return {}
   }
 
   /** The live link Claude made: kept on the task (and on the one it was for), and said. */
-  private collectLinks(job: Job, rt: Runtime, payload: HookPayload): void {
-    const said = payload.last_assistant_message ?? ''
+  private collectLinks(job: Job, rt: Runtime, said: string): void {
     let links = artifactLinks(said)
     if (links.length === 0 && job.transcriptPath) links = linksInTranscript(job.transcriptPath, rt.linkAsked?.at ?? taskStart(job))
     const note = links.length > 0 ? null : excerpt(said || 'Claude didn’t say why.', 300)

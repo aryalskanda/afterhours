@@ -739,6 +739,29 @@ describe('live links', () => {
     expect(lastNotice(h, 'link')).toMatchObject({ url: LINK, title: 'Dark mode, before and after' })
   })
 
+  test('Claude left a server running for its screenshots: the link is still read when the wait for it ends', async () => {
+    const h = setup({ backgroundSec: 60 })
+    const j = await startJob(h, { plan: false, wantLink: true })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'Added the toggle.' })
+    const second = await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', stop_hook_active: true, last_assistant_message: `Here it is.\n${LINK}`, background_tasks: [{ type: 'shell', status: 'running' }] })
+    expect(second).toEqual({})
+    h.advance(61_000)
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)).toMatchObject({ links: [{ url: LINK, title: null }], lastMessage: 'Added the toggle.', phase: 'finishing' })
+  })
+
+  test('the work ended with background commands still running: the link is asked for as a message', async () => {
+    const h = setup({ backgroundSec: 60 })
+    const j = await startJob(h, { plan: false, wantLink: true })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'Started the dev server and added the toggle.', background_tasks: [{ type: 'shell', status: 'running' }] })
+    h.advance(61_000)
+    await h.runner.tick()
+    expect(j.window.input.some(x => x.startsWith('text:Before you finish: publish a Claude artifact'))).toBe(true)
+    expect(h.store.getJob(j.id)!.phase).not.toBe('finishing')
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: LINK })
+    expect(h.store.getJob(j.id)).toMatchObject({ links: [{ url: LINK, title: null }], lastMessage: 'Started the dev server and added the toggle.', phase: 'finishing' })
+  })
+
   test("no link: the task still ends, and says why", async () => {
     const h = setup()
     const j = await startJob(h, { plan: false, wantLink: true })

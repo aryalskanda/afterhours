@@ -13,14 +13,16 @@ export const LINK_REQUEST =
   'Before you finish: publish a Claude artifact (with your Artifact tool) that shows the result of this task, ' +
   'so it can be seen from a phone. If you changed something visual, show it as it looks: screenshots of it running ' +
   "if you can take them, else a faithful HTML preview, and say how to try it. Otherwise, a short visual summary of what changed. " +
-  'Keep it private and leave out secrets. End your reply with the artifact’s link on its own line.'
+  'Keep it private and leave out secrets. Stop anything you started to take the screenshots (a server, a browser) before you finish. ' +
+  'End your reply with the artifact’s link on its own line.'
 
 /** A task of its own, for a task that already ended (Get a live link): the same, about what was done. */
 export const LINK_TASK =
   'Publish a Claude artifact (with your Artifact tool) that shows the result of what you just did, so it can be seen ' +
   'from a phone. If it changed something visual, show it as it looks: screenshots of it running if you can take them, ' +
   'else a faithful HTML preview, and say how to try it. Otherwise, a short visual summary of what changed. ' +
-  'Keep it private and leave out secrets. Change nothing else. End your reply with the artifact’s link on its own line.'
+  'Keep it private and leave out secrets. Change nothing else, and stop anything you started to take the screenshots ' +
+  '(a server, a browser) before you finish. End your reply with the artifact’s link on its own line.'
 
 const LINK = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/g
 

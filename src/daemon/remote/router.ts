@@ -323,6 +323,7 @@ export class Router {
       },
       models: [...new Set([...config.models, config.defaults.model])],
       features: FEATURES,
+      ...(config.remote.relay ? { relay: config.remote.relay } : {}),
     }
   }
 

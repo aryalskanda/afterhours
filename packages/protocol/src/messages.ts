@@ -531,6 +531,8 @@ export const Snapshot = z.object({
   models: z.array(z.string()).optional(),
   /** What this machine can do beyond the first version: `transcript`, `diff`… Apps hide the rest. */
   features: z.array(z.string()).optional(),
+  /** The relay address this machine gives apps now (wss://…): apps keep it, so a move doesn't need pairing again. */
+  relay: z.string().max(300).optional(),
 })
 export type Snapshot = z.infer<typeof Snapshot>
 
