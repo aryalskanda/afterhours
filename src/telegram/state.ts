@@ -61,6 +61,10 @@ export interface Draft extends Choices {
   followJob: number | null
   /** End with a live link (a claude.ai artifact). */
   wantLink: boolean
+  /** ⏰ Later: not before this time (ms). */
+  notBefore: number | null
+  /** ✏️ Change: the card edits this queued task instead of queueing a new one. */
+  editJob: number | null
   /** Folder the browser is showing. */
   browse: string | null
   messageId: number | null
@@ -88,6 +92,8 @@ const COLUMNS: Record<keyof Draft, string> = {
   takeover: 'takeover',
   followJob: 'follow_job',
   wantLink: 'want_link',
+  notBefore: 'not_before',
+  editJob: 'edit_job',
   browse: 'browse',
   messageId: 'message_id',
   status: 'status',
@@ -120,6 +126,7 @@ export class TelegramState {
       if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
     }
     if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')
+    for (const column of ['not_before', 'edit_job']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER`)
   }
 
   addDraft(

@@ -36,6 +36,7 @@ import { slashCommands } from '../slash'
 import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
 import type { FolderMap } from '../folders'
+import { settleBranch } from '../branches'
 import type { MacControl } from '../mac'
 import { taskStart, type Runner } from '../runner'
 import { findSessions } from '../sessions'
@@ -701,19 +702,11 @@ export class Router {
     if (job.status === 'queued' || job.status === 'running' || job.status === 'held') return { ok: false, code: 'gone', error: `#${job.id} hasn't finished.` }
     if (!isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
     if (r.action === 'pr' && role !== 'owner') return { ok: false, code: 'forbidden', error: 'A pull request pushes the code out of this machine: that needs an owner.' }
+    if (r.action !== 'pr') {
+      const done = await settleBranch(this.d.store, this.d.git, job.id, r.action)
+      return done.ok ? { ok: true, text: done.text } : { ok: false, code: done.code, error: done.text }
+    }
     const title = oneLine(job.prompt, 72)
-    if (r.action === 'merge') {
-      const done = await this.d.git.mergeBranch(job.projectDir, job.branch, job.workDir, `Merge Afterhours #${job.id}: ${title}`)
-      if (!done.ok) return { ok: false, code: 'failed', error: done.text }
-      this.d.store.updateJob(job.id, { branchNote: done.text })
-      return { ok: true, text: done.text }
-    }
-    if (r.action === 'discard') {
-      const done = await this.d.git.discardBranch(job.projectDir, job.branch, job.workDir)
-      if (!done.ok) return { ok: false, code: 'failed', error: done.text }
-      this.d.store.updateJob(job.id, { branchNote: 'Discarded' })
-      return { ok: true, text: `Threw away ${job.branch}.` }
-    }
     const body = `${job.prompt}\n\n${job.summary ? `${job.summary}\n\n` : ''}From Afterhours task #${job.id}.`
     const done = await this.d.git.pullRequest(job.workDir ?? job.projectDir, job.branch, title, body)
     if (!done.ok) return { ok: false, code: 'failed', error: done.text }

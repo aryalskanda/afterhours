@@ -8,12 +8,14 @@ import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { formatClock } from '../daemon/limits'
+import { settleBranch, type BranchGit } from '../daemon/branches'
 import type { MacControl } from '../daemon/mac'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
 import type { Store } from '../daemon/store'
 import { refusedButtons, refusedFormatting, type BotApi, type InlineKeyboard, type Markup, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
 import { htmlToText, telegramHtmlProblem } from './markdown'
+import { LATER, parseWhen } from './when'
 import { TelegramState, type Choices, type Draft } from './state'
 import * as ui from './ui'
 import { checkInitData } from './webapp'
@@ -45,6 +47,8 @@ export interface TelegramOptions {
   app?: TelegramAppLink
   /** Quitting apps and sleeping the Mac; null or missing on other systems. */
   mac?: MacControl | null
+  /** For 🌿 Merge and 🗑 Discard on a task that ran on its own branch. */
+  git?: BranchGit
   now: () => number
   log: (line: string) => void
 }
@@ -52,6 +56,8 @@ export interface TelegramOptions {
 /** Something the bot asked you to type next. */
 type Pending =
   | { kind: 'prompt'; draftId: number }
+  /** ⏰ Later: a time you type for a card. */
+  | { kind: 'later'; draftId: number }
   | { kind: 'search'; draftId: number }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
@@ -174,6 +180,8 @@ export class TelegramBridge {
   private clearArmed = 0
   /** A Mac button tapped once (quit an app, sleep): the second tap within KILL_CONFIRM_MS does it. */
   private macArmed: { what: string; at: number } | null = null
+  /** Other buttons that take a second tap (🗑 a branch), by what they do. */
+  private armed = new Map<string, number>()
   private username: string | null = null
   /** The menu button last set, and when setting it last failed (tried again after a while). */
   private menuFailedAt = 0
@@ -456,6 +464,7 @@ export class TelegramBridge {
     const roots = this.roots()
     return {
       links: this.links(),
+      now: this.o.now(),
       models: this.o.config().models,
       folderId: path => this.state.folderId(path),
       label: path => relativeToRoots(path, roots),
@@ -498,12 +507,16 @@ export class TelegramBridge {
     return url ? `${url}/${this.username ? `?bot=${encodeURIComponent(this.username)}` : ''}` : null
   }
 
-  /** Short messages with Open ↗: the app is set up, paired from Telegram, and you didn't pick full messages. */
+  /** Whether you turned the app inside Telegram on (/settings): off by default, so the bot does everything itself. */
+  private appOn(): boolean {
+    return this.o.store.kvGet<string>('telegram.messages') === 'short'
+  }
+
+  /** Short messages with Open ↗: the app is set up, paired from Telegram, and you turned it on. */
   private links(): ui.AppLinks | null {
     const base = this.o.app?.url() ?? null
     const machine = this.o.app?.machine() ?? null
-    if (!base || !machine || !this.o.app!.paired()) return null
-    if (this.o.store.kvGet<string>('telegram.messages') === 'full') return null
+    if (!base || !machine || !this.o.app!.paired() || !this.appOn()) return null
     return { base, machine: machine.id }
   }
 
@@ -513,13 +526,14 @@ export class TelegramBridge {
   }
 
   /**
-   * Keeps Telegram in step with the app: the menu button opens it (or shows the commands when it
-   * isn't set up), and the first time messages turn short, the buttons under the text box go.
+   * Keeps Telegram in step with the app inside it. While it's on, the menu button opens it and the
+   * buttons under the text box go; otherwise the menu button shows the commands, and the buttons
+   * come back (said once).
    */
   private async syncApp(): Promise<void> {
     const chat = this.owner
     if (chat === null) return
-    const home = this.appHome()
+    const home = this.links() ? this.appHome() : null
     const set = this.o.store.kvGet<string>('telegram.menu') ?? ''
     if ((home ?? '') !== set && this.o.now() - this.menuFailedAt > 10 * 60_000) {
       try {
@@ -531,12 +545,20 @@ export class TelegramBridge {
         throw new Error(`couldn't set the menu button: ${errorText(err)}`)
       }
     }
-    if (this.links() && !this.o.store.kvGet<boolean>('telegram.appIntro')) {
+    const intro = this.o.store.kvGet<boolean>('telegram.appIntro') ?? false
+    if (this.links() && !intro) {
       this.o.store.kvSet('telegram.appIntro', true)
       await this.send(
         chat,
-        { html: `📱 <b>${ui.esc(BRAND.name)} now opens right here:</b> tap the ${ui.esc(BRAND.name)} button next to the text box.\nMessages from now on are a line or two; Open ↗ shows the rest. /settings has full messages instead.` },
+        { html: `📱 <b>${ui.esc(BRAND.name)} now opens right here:</b> tap the ${ui.esc(BRAND.name)} button next to the text box.\nMessages from now on are a line or two; Open ↗ shows the rest. /settings turns this off.` },
         { remove_keyboard: true },
+      )
+    } else if (!this.links() && intro) {
+      this.o.store.kvSet('telegram.appIntro', false)
+      await this.send(
+        chat,
+        { html: '📋 <b>Messages are in full again</b>, with every button, and the buttons under the text box are back. The app inside Telegram is off; /settings turns it on.' },
+        ui.MAIN_KEYBOARD,
       )
     }
   }
@@ -708,6 +730,18 @@ export class TelegramBridge {
         await this.showDraft(chat, this.state.updateDraft(d.id, { prompt: text }))
         return
       }
+      case 'later': {
+        const d = this.state.getDraft(p.draftId)
+        if (!d || d.status !== 'open') return this.newDraft(chat, text)
+        const at = parseWhen(text, this.o.now())
+        if (at === null) {
+          this.setPending(p)
+          await this.sendText(chat, 'That isn’t a time I can read. Try 23:00, 11pm, in 2h or tomorrow 9am.')
+          return
+        }
+        await this.showDraft(chat, this.state.updateDraft(d.id, { notBefore: at }))
+        return
+      }
       case 'search': {
         const d = this.state.getDraft(p.draftId)
         if (!d || d.status !== 'open') return this.newDraft(chat, text)
@@ -820,6 +854,18 @@ export class TelegramBridge {
   }
 
   /** 📊 Status; `messageId` refreshes one already shown. */
+  /** Whether this is the second tap on `what` within KILL_CONFIRM_MS (the first one only arms it). */
+  private tappedTwice(what: string): boolean {
+    const at = this.armed.get(what)
+    const now = this.o.now()
+    if (at !== undefined && now - at <= KILL_CONFIRM_MS) {
+      this.armed.delete(what)
+      return true
+    }
+    this.armed.set(what, now)
+    return false
+  }
+
   /** 🖥 /mac: what's open and what keeps the Mac awake, with buttons to quit an app or sleep. */
   private async showMac(chat: number, messageId?: number): Promise<void> {
     const mac = this.o.mac
@@ -927,7 +973,7 @@ export class TelegramBridge {
       models: config.models,
       watch: config.watchSessions,
       autoContinue: config.autoContinueChats,
-      messages: this.appHome() && this.o.app?.paired() ? (this.o.store.kvGet<string>('telegram.messages') === 'full' ? 'full' : 'short') : null,
+      messages: this.appHome() && this.o.app?.paired() ? (this.appOn() ? 'short' : 'full') : null,
       now: this.o.now(),
     })
   }
@@ -1102,11 +1148,34 @@ export class TelegramBridge {
         d = this.state.updateDraft(d.id, { isolate: !d.isolate })
         await show(ui.draftCard(d, ctx))
         return d.isolate ? 'Runs on its own git branch.' : 'Runs in your checkout.'
+      case 'p':
+        this.setPending({ kind: 'prompt', draftId: d.id })
+        await this.sendText(chat, `✍️ Send the new prompt${d.editJob ? ` for #${d.editJob}` : ''}.`)
+        return 'Waiting for the prompt.'
+      case 'a': {
+        const now = this.o.now()
+        const pick = { h: LATER.hour, n: LATER.tonight, m: LATER.morning }[a as 'h' | 'n' | 'm']
+        if (pick) d = this.state.updateDraft(d.id, { notBefore: pick(now) })
+        else if (a === 'c') d = this.state.updateDraft(d.id, { notBefore: null })
+        else if (a === 't') {
+          this.setPending({ kind: 'later', draftId: d.id })
+          return 'Send the time, e.g. 23:00 or in 2h.'
+        } else {
+          await show(ui.laterView(d, now))
+          return
+        }
+        await show(ui.draftCard(d, ctx))
+        return d.notBefore ? `Starts at ${formatClock(d.notBefore, now)} at the earliest.` : 'Starts as soon as it can.'
+      }
       case 'q':
-        return this.queueDraft(chat, at, d)
+        return d.editJob ? this.saveEdit(chat, at, d) : this.queueDraft(chat, at, d)
       case 'x':
         this.state.updateDraft(d.id, { status: 'discarded' })
         if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
+        if (d.editJob) {
+          await show({ html: `✏️ <i>#${d.editJob} stays as it was.</i>` })
+          return 'Unchanged.'
+        }
         await show({ html: `✖️ <s>${ui.esc(ui.clip(d.prompt, 200) || 'new task')}</s>` })
         return 'Discarded.'
     }
@@ -1130,6 +1199,7 @@ export class TelegramBridge {
       sessionId: d.sessionId ?? undefined,
       takeover: d.sessionId !== null && d.takeover,
       isolate: d.isolate,
+      notBefore: d.notBefore,
       source: 'telegram',
     }
     const job = this.o.runner.enqueue(spec)
@@ -1149,6 +1219,29 @@ export class TelegramBridge {
     this.o.store.kvSet('lastProject', d.folder)
     await this.edit(chat, messageId, ui.queuedView(job, this.whenText(job), this.uiContext()))
     return `Queued #${job.id}.`
+  }
+
+  /** 💾 Save on a ✏️ Change card: the queued task takes what the card shows. */
+  private async saveEdit(chat: number, messageId: number, d: Draft): Promise<string> {
+    const job = d.editJob !== null ? this.o.store.getJob(d.editJob) : null
+    if (!job || job.status !== 'queued') return `#${d.editJob} isn't waiting in the queue any more.`
+    if (!d.prompt) return 'Send the prompt first.'
+    this.o.store.updateJob(job.id, {
+      prompt: d.prompt,
+      plan: d.plan,
+      review: d.review,
+      execMode: d.execMode,
+      model: d.model,
+      workModel: d.plan && d.workModel && d.workModel !== d.model ? d.workModel : null,
+      effort: d.effort,
+      wantLink: d.wantLink,
+      notBefore: d.notBefore,
+      ...(job.sessionId ? {} : { isolate: d.isolate }),
+    })
+    this.state.updateDraft(d.id, { status: 'queued', jobId: job.id })
+    if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
+    await this.edit(chat, messageId, ui.queuedView(this.o.store.getJob(job.id)!, this.whenText(job), this.uiContext(), { changed: true }))
+    return `Changed #${job.id}.`
   }
 
   private whenText(job: Job): string {
@@ -1357,6 +1450,35 @@ export class TelegramBridge {
         this.setPending({ kind: 'followup', jobId: id })
         await this.sendText(chat, `➕ What should Claude do next in #${id}'s conversation? Send it as your next message.`)
         return 'Waiting for the follow-up.'
+      case 'edit': {
+        // ✏️ Change: a card with the task's choices; 💾 Save puts them on the task.
+        if (job.status !== 'queued') return `#${id} isn't waiting in the queue any more.`
+        const d = this.state.addDraft(
+          {
+            prompt: job.prompt,
+            folder: job.projectDir,
+            plan: job.plan,
+            review: job.review,
+            execMode: job.execMode,
+            model: job.model,
+            workModel: job.workModel,
+            effort: job.effort,
+            isolate: job.isolate,
+          },
+          this.o.now(),
+        )
+        await this.showDraft(chat, this.state.updateDraft(d.id, { editJob: id, wantLink: job.wantLink, notBefore: job.notBefore }))
+        return `Changing #${id}.`
+      }
+      case 'merge':
+      case 'discard': {
+        const git = this.o.git
+        if (!git) return 'Not here: merge it on the Mac.'
+        if (op === 'discard' && !this.tappedTwice(`discard:${id}`)) return `Tap again to throw away #${id}'s branch.`
+        const r = await settleBranch(this.o.store, git, id, op)
+        await this.sendText(chat, `🌿 ${r.text}`)
+        return r.ok ? (op === 'merge' ? 'Merged.' : 'Thrown away.') : "It didn't work."
+      }
       default:
         return
     }
@@ -1527,12 +1649,12 @@ export class TelegramBridge {
         return `Notifications: ${level}`
       }
       case 'msgs': {
-        const full = this.o.store.kvGet<string>('telegram.messages') !== 'full'
-        this.o.store.kvSet('telegram.messages', full ? 'full' : 'short')
+        const on = !this.appOn()
+        this.o.store.kvSet('telegram.messages', on ? 'short' : 'full')
         if (at) await this.edit(chat, at, this.settingsView())
-        if (!full) await this.send(chat, { html: 'Messages are short again; Open ↗ shows the rest.' }, { remove_keyboard: true })
-        else await this.send(chat, { html: 'Messages are in full again.' }, ui.MAIN_KEYBOARD)
-        return full ? 'Full messages.' : 'Short messages.'
+        // The menu button, and a word about the buttons under the text box.
+        await this.syncApp().catch(err => this.o.log(`telegram: ${errorText(err)}`))
+        return on ? 'The app inside Telegram is on.' : 'Full messages, every button here.'
       }
       case 'app':
         await this.showApp(chat, true)

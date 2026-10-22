@@ -11,6 +11,7 @@ import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../d
 import type { InlineButton, InlineKeyboard, ReplyKeyboard } from './api'
 import { htmlToText, inlineMarkdown, markdownParts, markdownToPlain } from './markdown'
 import type { Draft } from './state'
+import { LATER } from './when'
 
 // Everything the bot shows, as pure functions: text in Telegram's HTML subset plus buttons.
 // Button data stays under Telegram's 64-byte limit:
@@ -186,6 +187,8 @@ export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 export interface UiContext {
   /** Set while messages are short, with Open ↗ into the app inside Telegram. */
   links?: AppLinks | null
+  /** For times (⏰ Later); missing in older callers. */
+  now?: number
   models: string[]
   /** Short stable id for a folder (button data). */
   folderId: (path: string) => number
@@ -221,7 +224,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
   const id = d.id
   // Short, when everything's chosen and the app can change it: Queue as it is, or Change ↗ in the app.
   const l = ctx.links
-  const change = l && d.folder && d.prompt && !d.sessionId ? openBtn(l, appPath.newTask(l, { folder: d.folder, prompt: d.prompt }), 'Change ↗') : null
+  const change = l && d.folder && d.prompt && !d.sessionId && !d.editJob ? openBtn(l, appPath.newTask(l, { folder: d.folder, prompt: d.prompt }), 'Change ↗') : null
   if (change?.web_app && change.web_app.url.length <= MAX_LINK) {
     return {
       html: [quote(d.prompt, 600), `📁 <b>${esc(ctx.label(d.folder!))}</b> · ${esc(modeLabel(d))} · ${esc(d.model)}${d.plan && d.workModel ? `→${esc(d.workModel)}` : ''}/${d.effort}`].join('\n'),
@@ -231,15 +234,30 @@ export function draftCard(d: Draft, ctx: UiContext): View {
   const chat = d.sessionId ? ctx.chat(d.sessionId) : null
   const folder = d.folder ? `📁 <b>${esc(ctx.label(d.folder))}</b>` : '📁 <i>no folder yet</i>'
   const html = [
+    ...(d.editJob ? [`✏️ <b>Changing #${d.editJob}</b>`] : []),
     d.prompt ? quote(d.prompt, 1500) : '📝 <i>Now send the prompt as your next message.</i>',
     folder,
     `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)}${d.plan && d.workModel ? ` → ${esc(d.workModel)}` : ''} · ⚡ ${d.effort}`,
-    chatLabel(d, ctx, chat),
+    ...(d.editJob ? [] : [chatLabel(d, ctx, chat)]),
+    ...(d.notBefore ? [`⏰ starts at ${esc(formatClock(d.notBefore, ctx.now ?? Date.now()))}, or later if others are ahead`] : []),
     ...(d.wantLink ? ['🔗 ends with a live link (a claude.ai page you can open on your phone)'] : []),
   ].join('\n')
   const chatButton = btn('💬 Chat…', `d:${id}:t`)
   const branchButton = startsNewChat(d, ctx) ? [btn(d.isolate ? '📂 Work in place' : '🌿 Own branch', `d:${id}:i`)] : []
   const takeButton = chat?.where ? [btn(d.takeover ? '⏳ Wait instead' : '🤝 Take over', `d:${id}:h`)] : []
+  const later = btn(d.notBefore ? '⏰ Later ✓' : '⏰ Later', `d:${id}:a`)
+  const link = btn(d.wantLink ? '🔗 Live link ✓' : '🔗 Live link', `d:${id}:l`)
+  // Changing a queued task: its folder and conversation stay; the rest can change.
+  if (d.editJob) {
+    return {
+      html,
+      keyboard: [
+        [btn('✏️ Prompt', `d:${id}:p`), btn('🗺 Mode', `d:${id}:o`), btn('🧠 Model', `d:${id}:m`)],
+        ...layout([btn('⚡ Effort', `d:${id}:e`), link, later]),
+        [btn('💾 Save', `d:${id}:q`), btn('✖️ Never mind', `d:${id}:x`)],
+      ],
+    }
+  }
   const go = !d.folder
     ? btn('📁 Pick a folder first', `d:${id}:f`)
     : !d.prompt
@@ -249,8 +267,25 @@ export function draftCard(d: Draft, ctx: UiContext): View {
     html,
     keyboard: [
       [btn('📁 Folder', `d:${id}:f`), btn('🗺 Mode', `d:${id}:o`), btn('🧠 Model', `d:${id}:m`)],
-      ...layout([btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton, btn(d.wantLink ? '🔗 Live link ✓' : '🔗 Live link', `d:${id}:l`)]),
+      ...layout([btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton, link, later]),
       [go, btn('✖️ Discard', `d:${id}:x`)],
+    ],
+  }
+}
+
+/** ⏰ Later: when the task may start. */
+export function laterView(d: Draft, now: number): View {
+  const id = d.id
+  const at = (ms: number) => formatClock(ms, now)
+  return {
+    html:
+      `⏰ <b>When may it start?</b>\n` +
+      `${d.notBefore ? `Now: at ${esc(at(d.notBefore))}.` : 'Now: as soon as it’s its turn.'}\n` +
+      '<i>Or type a time: 23:00, 11pm, in 2h, tomorrow 9am.</i>',
+    keyboard: [
+      [btn(`🕐 ${at(LATER.hour(now))}`, `d:${id}:a:h`), btn(`🌙 ${at(LATER.tonight(now))}`, `d:${id}:a:n`)],
+      [btn(`☀️ ${at(LATER.morning(now))}`, `d:${id}:a:m`), btn('✍️ Type a time', `d:${id}:a:t`)],
+      [...(d.notBefore ? [btn('▶️ As soon as it can', `d:${id}:a:c`)] : []), btn('↩️ Back', `d:${id}:k`)],
     ],
   }
 }
@@ -477,11 +512,12 @@ export function effortView(d: Draft): View {
   }
 }
 
-export function queuedView(job: Job, when: string, ctx: UiContext): View {
+export function queuedView(job: Job, when: string, ctx: UiContext, o: { changed?: boolean } = {}): View {
+  const later = job.notBefore && job.notBefore > (ctx.now ?? Date.now()) ? `⏰ Not before ${formatClock(job.notBefore, ctx.now ?? Date.now())}. ` : ''
   return {
     html:
-      `✅ <b>Queued #${job.id}</b> · ${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}/${job.effort}\n` +
-      `${quote(job.prompt, 1500)}\n<i>${esc(when)}</i>`,
+      `${o.changed ? '✏️' : '✅'} <b>${o.changed ? 'Changed' : 'Queued'} #${job.id}</b> · ${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}${job.workModel ? `→${esc(job.workModel)}` : ''}/${job.effort}\n` +
+      `${quote(job.prompt, 1500)}\n<i>${esc(later)}${esc(when)}</i>`,
     keyboard: [[btn('⬆️ Run next', `j:${job.id}:top`), btn('🗑 Remove', `j:${job.id}:rm`)]],
   }
 }
@@ -689,12 +725,13 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       const head = [
         `✅ <b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}`,
         n.diff ? `<i>${esc(n.diff)}</i>` : '',
-        n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code> · merge with <code>git merge ${esc(n.job.branch)}</code>` : '',
+        n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code>` : '',
         `<i>${next}</i>`,
       ]
         .filter(Boolean)
         .join('\n')
-      return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`), linkButton(n.job)]], {
+      const branch = n.job.branch && !n.job.branchNote ? [[btn('🌿 Merge', `j:${n.job.id}:merge`), btn('🗑 Discard branch', `j:${n.job.id}:discard`)]] : []
+      return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`), linkButton(n.job)], ...branch], {
         name: `answer-${n.job.id}.md`,
         caption: `#${n.job.id}: Claude's full answer`,
       })
@@ -908,6 +945,7 @@ export function queueView(active: Job | null, queued: Job[], ctx: UiContext, pau
     ...(i > 0 ? [btn(`⬆️ ${job.id}`, `j:${job.id}:up`)] : []),
     ...(i < queued.length - 1 ? [btn(`⬇️ ${job.id}`, `j:${job.id}:down`)] : []),
     job.onHold ? btn(`▶️ ${job.id}`, `j:${job.id}:rel`) : btn(`⏸ ${job.id}`, `j:${job.id}:hold`),
+    btn(`✏️ ${job.id}`, `j:${job.id}:edit`),
     btn(`🗑 ${job.id}`, `j:${job.id}:rm`),
   ])
   keyboard.push([btn('🔄 Refresh', 'g:q'), paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'), ...(queued.length > 1 ? [btn('🧹 Clear', 'g:clear')] : [])])
@@ -946,13 +984,13 @@ export function settingsView(o: {
       `Folder map: ${o.folders} folders under ${o.roots.map(r => esc(basename(r))).join(', ')} · ${built}\n` +
       `Models: ${esc(o.models.join(', '))} <i>(change in ~/${BRAND.homeDir}/config.json)</i>\n` +
       `Other chats: ${o.watch ? `I tell you when one in VS Code or a terminal hits a usage limit${o.autoContinue ? ', and continue it at the reset' : ''}` : 'not watched'}\n` +
-      (o.messages ? `Messages: ${o.messages === 'short' ? 'a line or two, with Open ↗ into the app' : 'in full'}\n` : '') +
+      (o.messages ? `App inside Telegram: ${o.messages === 'short' ? 'on (messages are a line or two, with Open ↗)' : 'off (full messages, every button here)'}\n` : '') +
       '<i>New tasks start with the choices you used last.</i>',
     keyboard: [
       [n('all', '🔔 All'), n('important', '🔕 Important'), n('off', '🔇 Off')],
       [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')],
       [btn('🔄 Rescan folders', 'g:rescan')],
-      ...(o.messages ? [[btn(o.messages === 'short' ? '📄 Full messages instead' : '📱 Short messages, with Open ↗', 'g:msgs')]] : []),
+      ...(o.messages ? [[btn(o.messages === 'short' ? '📄 Turn the app inside Telegram off' : '📱 Turn the app inside Telegram on', 'g:msgs')]] : []),
     ],
   }
 }
@@ -1008,11 +1046,13 @@ export const HELP_HTML =
   `${KEYS.chats}: any chat from any project, VS Code ones too. Open one and tap ✍️ Write here: everything you type then goes into that chat until you leave.\n` +
   '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +
   '💬 Chat… on a card continues any chat in that folder, including one open in VS Code: 🤝 Take over closes it there and continues it here.\n' +
+  '⏰ Later on a card picks when it may start. In 📋 Queue, ✏️ changes a waiting task (its prompt, mode, model, effort, live link, time).\n' +
+  '🖥 /mac: what is open on the Mac, to quit an app (Vorssaint, say), and 😴 sleep it now or once the queue is done. /sleep goes straight there.\n' +
   `${KEYS.queue} · ${KEYS.status} · ${KEYS.peek}\n\n` +
   "I'll message you when a plan is ready, when Claude needs permission or has a question (one question at a time, every option in full), when a usage limit pauses work, and when a job finishes. " +
   'News that needs nothing from you arrives silently. ' +
   'When a chat in VS Code or a terminal hits a usage limit, I offer to continue it here after the reset.\n\n' +
-  'Commands: /new /queue /status /peek /pause /resume /settings /cancel\n' +
+  'Commands: /new /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel\n' +
   'Typing <code>q myapp plan opus max: …</code> still works too.'
 
 // --- the app inside Telegram ----------------------------------------------------------------

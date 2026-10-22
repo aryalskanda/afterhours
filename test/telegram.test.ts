@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
+import type { BranchGit } from '../src/daemon/branches'
 import { FolderMap } from '../src/daemon/folders'
 import { MacControl } from '../src/daemon/mac'
 import { Runner, windowName } from '../src/daemon/runner'
@@ -48,7 +49,8 @@ class FakeApi implements BotApi {
     const refused = this.refuse(html)
     if (refused) throw new TelegramError('sendMessage', 400, `Bad Request: ${refused}`)
     const id = this.next++
-    this.sent.push({ id, chat, html, markup, silent: o?.silent })
+    // A copy: a matcher in a test must never reach the bot's own constants (the main keyboard).
+    this.sent.push({ id, chat, html, markup: markup ? structuredClone(markup) : undefined, silent: o?.silent })
     return { message_id: id, chat: { id: chat, type: 'private' }, date: 0, text: html }
   }
   async editMessageText(chat: number, id: number, html: string, keyboard?: InlineKeyboard): Promise<void> {
@@ -87,7 +89,7 @@ function button(keyboard: InlineKeyboard, label: string | RegExp): string {
   throw new Error(`no button ${label} in ${JSON.stringify(keyboard.map(r => r.map(b => b.text)))}`)
 }
 
-function setup(o: { app?: TelegramAppLink; mac?: FakeMac } = {}) {
+function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -147,6 +149,7 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac } = {}) {
     folders,
     chats,
     mac,
+    git: o.git,
     config: () => config,
     saveConfig: c => {
       config = c
@@ -187,7 +190,7 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac } = {}) {
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { app?: TelegramAppLink; mac?: FakeMac } = {}): Promise<Harness> {
+async function paired(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -953,8 +956,8 @@ describe('the queue from Telegram', () => {
     const msg = h.api.last().id
     let kb = h.api.view(msg).keyboard
     // The first can't go up, the last can't go down.
-    expect(kb[0]!.map(b => b.text)).toEqual([`⬇️ ${ids[0]}`, `⏸ ${ids[0]}`, `🗑 ${ids[0]}`])
-    expect(kb[2]!.map(b => b.text)).toEqual([`⬆️ ${ids[2]}`, `⏸ ${ids[2]}`, `🗑 ${ids[2]}`])
+    expect(kb[0]!.map(b => b.text)).toEqual([`⬇️ ${ids[0]}`, `⏸ ${ids[0]}`, `✏️ ${ids[0]}`, `🗑 ${ids[0]}`])
+    expect(kb[2]!.map(b => b.text)).toEqual([`⬆️ ${ids[2]}`, `⏸ ${ids[2]}`, `✏️ ${ids[2]}`, `🗑 ${ids[2]}`])
     await h.tap(button(kb, `⬆️ ${ids[2]}`), msg)
     expect(h.store.queued().map(j => j.id)).toEqual([ids[0]!, ids[2]!, ids[1]!])
     kb = h.api.view(msg).keyboard
@@ -1082,16 +1085,47 @@ describe('the app inside Telegram', () => {
     return { link, state }
   }
   const webApps = (keyboard: InlineKeyboard) => keyboard.flat().filter(b => b.web_app).map(b => [b.text, b.web_app!.url])
+  /** Turns the app inside Telegram on, as /settings does. */
+  const turnOn = async (h: Harness) => {
+    h.store.kvSet('telegram.messages', 'short')
+    await h.bridge.tick()
+  }
 
-  test('the menu button opens the app once it is set up; /app pairs this Telegram, checked against who you are', async () => {
+  test('the bot does it all by default: with the app set up and paired, full cards with 🧠 Model, and the commands menu', async () => {
+    const { link, state } = appLink()
+    const h = await paired({ app: link })
+    state.paired = true
+    await h.bridge.tick()
+    expect(h.api.menus).toEqual([])
+    await h.say('Do the thing')
+    const card = h.api.view(h.api.last().id)
+    expect(card.keyboard.flat().map(b => b.text)).toContain('🧠 Model')
+    expect(webApps(card.keyboard)).toEqual([])
+  })
+
+  test('after short messages in an earlier version: the menu shows the commands again, and the buttons come back once', async () => {
+    const { link, state } = appLink()
+    const h = await paired({ app: link })
+    state.paired = true
+    h.store.kvSet('telegram.appIntro', true)
+    h.store.kvSet('telegram.menu', 'https://mac.example.ts.net/?bot=cq_test_bot')
+    await h.bridge.tick()
+    expect(h.api.menus.at(-1)).toEqual({ chat: OWNER, button: { type: 'commands' } })
+    const note = h.api.last()
+    expect(note.html).toContain('Messages are in full again')
+    expect(note.markup).toMatchObject({ keyboard: expect.any(Array) })
+    await h.bridge.tick()
+    expect(h.api.sent.filter(m => m.html.includes('Messages are in full again'))).toHaveLength(1)
+  })
+
+  test('/app pairs this Telegram, checked against who you are; once it is on, the menu button opens the app', async () => {
     const { link, state } = appLink({ url: null })
     const h = await paired({ app: link })
     expect(h.api.menus).toEqual([])
     state.url = 'https://mac.example.ts.net'
     await h.bridge.tick()
-    expect(h.api.menus.at(-1)).toEqual({ chat: OWNER, button: { type: 'web_app', text: 'Afterhours', web_app: { url: 'https://mac.example.ts.net/?bot=cq_test_bot' } } })
-    await h.bridge.tick()
-    expect(h.api.menus).toHaveLength(1)
+    // Set up isn't on: the menu keeps showing the commands.
+    expect(h.api.menus).toEqual([])
 
     await h.say('/app')
     const setup = h.api.last()
@@ -1110,6 +1144,13 @@ describe('the app inside Telegram', () => {
     expect(h.api.sent.length).toBe(before)
     await h.say('/start app')
     expect(h.api.last().html).toContain('Finish setup')
+
+    // Paired, and turned on: the menu button opens it.
+    state.paired = true
+    await turnOn(h)
+    expect(h.api.menus.at(-1)).toEqual({ chat: OWNER, button: { type: 'web_app', text: 'Afterhours', web_app: { url: 'https://mac.example.ts.net/?bot=cq_test_bot' } } })
+    await h.bridge.tick()
+    expect(h.api.menus).toHaveLength(1)
   })
 
   test('without the app set up, /app says how, and messages stay as they are', async () => {
@@ -1122,13 +1163,15 @@ describe('the app inside Telegram', () => {
     expect(h.api.last().html).toContain('<pre>npm test</pre>')
   })
 
-  test('once paired from Telegram: the keyboard goes once, and notices are a line or two with Open ↗', async () => {
+  test('turned on: the keyboard goes once, and notices are a line or two with Open ↗', async () => {
     const { link, state } = appLink()
     const h = await paired({ app: link })
     const job = await running(h)
     state.paired = true
     await h.bridge.devicePaired({ name: 'Telegram on iPhone', platform: 'telegram-ios' }, 'owner')
     expect(h.api.sent.some(m => m.html.includes('Telegram on iPhone</b> paired with this machine from Telegram'))).toBe(true)
+    expect(h.api.sent.some(m => m.html.includes('now opens right here'))).toBe(false)
+    await turnOn(h)
     const intro = h.api.last()
     expect(intro.html).toContain('now opens right here')
     expect(intro.markup).toEqual({ remove_keyboard: true })
@@ -1161,6 +1204,7 @@ describe('the app inside Telegram', () => {
     const { link, state } = appLink()
     const h = await paired({ app: link })
     state.paired = true
+    await turnOn(h)
     await h.say('Do the thing')
     const first = h.api.last().id
     await h.tap(button(h.api.view(first).keyboard, '📁 Folder'), first)
@@ -1183,6 +1227,7 @@ describe('the app inside Telegram', () => {
     const h = await paired({ app: link })
     const job = await running(h)
     state.paired = true
+    await turnOn(h)
     // Telegram refuses the first try (with its app button), and takes the second.
     let refused = false
     h.api.refuse = html => (html.includes('wants to run a command') && !refused ? ((refused = true), 'BUTTON_TYPE_INVALID') : null)
@@ -1194,14 +1239,17 @@ describe('the app inside Telegram', () => {
     expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['✅ Allow', '❌ Deny'])
   })
 
-  test('/settings switches back to full messages, and to short ones again', async () => {
+  test('/settings turns the app inside Telegram on and off again', async () => {
     const { link, state } = appLink()
     const h = await paired({ app: link })
     state.paired = true
     await h.say('/settings')
     const settings = h.api.last().id
+    expect(h.api.view(settings).html).toContain('App inside Telegram: off')
+    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram on'), settings)
+    expect(h.api.last().markup).toEqual({ remove_keyboard: true })
     expect(h.api.view(settings).html).toContain('a line or two')
-    await h.tap(button(h.api.view(settings).keyboard, 'Full messages'), settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram off'), settings)
     expect(h.api.last().markup).toMatchObject({ keyboard: expect.any(Array) })
     const job = await running(h)
     await Bun.sleep(0)
@@ -1209,7 +1257,85 @@ describe('the app inside Telegram', () => {
     void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
     await Bun.sleep(0)
     expect(h.api.last().html).toContain('wants to use Bash')
-    await h.tap(button(h.api.view(settings).keyboard, 'Short messages'), settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram on'), settings)
     expect(h.api.last().markup).toEqual({ remove_keyboard: true })
+  })
+})
+
+describe('what the bot does without the app', () => {
+  test('✏️ Change on a queued task: its choices on a card; 💾 Save puts them on the task', async () => {
+    const h = await paired()
+    await running(h)
+    await h.say('Write the docs')
+    const card = h.api.last().id
+    // The card starts in the folder used last (beta), so it can be queued as it is.
+    expect(h.api.view(card).html).toContain('beta')
+    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    const queued = h.store.queued()[0]!
+    await h.say('/queue')
+    const list = h.api.last().id
+    await h.tap(button(h.api.view(list).keyboard, `✏️ ${queued.id}`), list)
+    const edit = h.api.last().id
+    expect(h.api.view(edit).html).toContain(`Changing #${queued.id}`)
+    const labels = h.api.view(edit).keyboard.flat().map(b => b.text)
+    expect(labels).toContain('💾 Save')
+    expect(labels).not.toContain('📁 Folder')
+    // A new prompt, another model, and a live link.
+    await h.tap(button(h.api.view(edit).keyboard, '✏️ Prompt'), edit)
+    await h.say('Write the docs, with examples')
+    const shown = h.api.last().id
+    await h.tap(button(h.api.view(shown).keyboard, '🧠 Model'), shown)
+    await h.tap(button(h.api.view(shown).keyboard, /^haiku$/), shown)
+    await h.tap(button(h.api.view(shown).keyboard, '🔗 Live link'), shown)
+    await h.tap(button(h.api.view(shown).keyboard, '💾 Save'), shown)
+    expect(h.store.getJob(queued.id)).toMatchObject({ status: 'queued', prompt: 'Write the docs, with examples', model: 'haiku', wantLink: true })
+    expect(h.api.view(shown).html).toContain(`Changed #${queued.id}`)
+    expect(h.store.queued()).toHaveLength(1)
+  })
+
+  test('⏰ Later: a preset or a typed time, shown on the card and kept on the task', async () => {
+    const h = await paired()
+    await h.say('Run the nightly report')
+    const card = h.api.last().id
+    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
+    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '⏰ Later'), card)
+    expect(h.api.view(card).html).toContain('When may it start?')
+    await h.tap(button(h.api.view(card).keyboard, '✍️ Type a time'), card)
+    await h.say('soonish')
+    expect(h.api.last().html).toContain('isn’t a time I can read')
+    await h.say('in 2h')
+    const shown = h.api.last().id
+    expect(h.api.view(shown).html).toContain('⏰ starts at')
+    await h.tap(button(h.api.view(shown).keyboard, '▶️ Queue'), shown)
+    const job = h.store.queued()[0]!
+    expect(job.notBefore).toBe(h.now() + 2 * 3600_000)
+    expect(h.api.view(shown).html).toContain('Not before')
+    // It waits for its time.
+    await h.runner.tick()
+    expect(h.store.active()).toBeNull()
+  })
+
+  test('🌿 Merge, and 🗑 Discard on the second tap, for a task that ran on its own branch', async () => {
+    const merged: string[] = []
+    const h = await paired({
+      git: {
+        mergeBranch: async (_dir, branch) => (merged.push(branch), { ok: true, text: `Merged ${branch} into main.` }),
+        discardBranch: async (_dir, branch) => (merged.push(`-${branch}`), { ok: true, text: '' }),
+      },
+    })
+    const job = await running(h)
+    h.store.updateJob(job.id, { status: 'done', branch: 'afterhours/1-do-the-thing', finishedAt: h.now() })
+    await h.bridge.notify({ type: 'done', job: h.store.getJob(job.id)!, diff: null, next: null })
+    const done = h.api.sent.findLast(m => m.html.includes(`#${job.id} done`))!
+    const discard = button(h.api.view(done.id).keyboard, '🗑 Discard branch')
+    await h.tap(discard, done.id)
+    expect(h.api.answers.at(-1)!.text).toContain('Tap again')
+    expect(merged).toEqual([])
+    await h.tap(button(h.api.view(done.id).keyboard, '🌿 Merge'), done.id)
+    expect(merged).toEqual(['afterhours/1-do-the-thing'])
+    expect(h.api.last().html).toContain('Merged afterhours/1-do-the-thing into main.')
+    expect(h.store.getJob(job.id)!.branchNote).toBe('Merged afterhours/1-do-the-thing into main.')
   })
 })

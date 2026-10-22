@@ -235,6 +235,7 @@ export async function runDaemon(): Promise<void> {
       saveConfig: putConfig,
       commandContext: () => commandContext('cli'),
       mac,
+      git,
       app: {
         url: () => remote.appUrl(),
         machine: () => {
