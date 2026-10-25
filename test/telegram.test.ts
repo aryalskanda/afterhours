@@ -607,6 +607,25 @@ describe('your other chats (VS Code, a terminal)', () => {
     expect(h.config().watchSessions).toBe(false)
     expect(h.api.view(msg).html).toContain('Other chats: not watched')
   })
+
+  test('automatic continue follows from watching: not offered without it, and turned off with it', async () => {
+    const h = await paired()
+    await h.say('/settings')
+    const msg = h.api.last().id
+    expect(h.api.view(msg).keyboard.flat().map(b => b.text)).toContain('▶️ Auto-continue ✓')
+    await h.tap(button(h.api.view(msg).keyboard, '👀 Watching other chats ✓'), msg)
+    // Nothing is watched, so there is nothing to continue: the button is gone and the setting with it.
+    expect(h.api.view(msg).keyboard.flat().map(b => b.text).some(t => t.includes('Auto-continue'))).toBe(false)
+    expect(h.config().autoContinueChats).toBe(false)
+    // Watching again doesn't turn it back on by itself.
+    await h.tap(button(h.api.view(msg).keyboard, '👀 Watch other chats'), msg)
+    expect(h.config().watchSessions).toBe(true)
+    expect(h.config().autoContinueChats).toBe(false)
+    expect(h.api.view(msg).keyboard.flat().map(b => b.text)).toContain('▶️ Auto-continue')
+    // Turning it on watches (as before).
+    await h.tap(button(h.api.view(msg).keyboard, '▶️ Auto-continue'), msg)
+    expect(h.config()).toMatchObject({ watchSessions: true, autoContinueChats: true })
+  })
 })
 
 describe('every session from your phone', () => {

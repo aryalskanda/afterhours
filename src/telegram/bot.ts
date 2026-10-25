@@ -1691,6 +1691,8 @@ export class TelegramBridge {
       case 'watch': {
         const config = this.o.config()
         config.watchSessions = !config.watchSessions
+        // Without watching there is nothing to continue: it goes with it.
+        if (!config.watchSessions) config.autoContinueChats = false
         this.o.saveConfig(config)
         if (at) await this.edit(chat, at, this.settingsView())
         return config.watchSessions ? 'Watching your other chats.' : 'Not watching your other chats.'

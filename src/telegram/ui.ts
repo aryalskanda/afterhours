@@ -992,7 +992,8 @@ export function settingsView(o: {
       '<i>New tasks start with the choices you used last.</i>',
     keyboard: [
       [n('all', '🔔 All'), n('important', '🔕 Important'), n('off', '🔇 Off')],
-      [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')],
+      // Continuing a chat by itself follows from watching them: it's offered only while they're watched.
+      [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), ...(o.watch ? [btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')] : [])],
       [btn('🔄 Rescan folders', 'g:rescan')],
       ...(o.messages ? [[btn(o.messages === 'short' ? '📄 Turn the app inside Telegram off' : '📱 Turn the app inside Telegram on', 'g:msgs')]] : []),
     ],
