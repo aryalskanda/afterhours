@@ -26,6 +26,16 @@ function toWindow(raw: unknown): LimitWindow | undefined {
   }
 }
 
+/**
+ * The limits as they stand now. A reading only comes while a task runs (from Claude Code's status
+ * line), so a window whose reset has passed since then has started over, at a usage nobody has
+ * read yet: it shows as unknown rather than at its old percentage.
+ */
+export function currentLimits(l: LimitState, now: number): LimitState {
+  const fresh = (w: LimitWindow | undefined): LimitWindow | undefined => (w && w.resetsAt !== null && w.resetsAt <= now ? { usedPct: null, resetsAt: null } : w)
+  return { ...l, fiveHour: fresh(l.fiveHour), sevenDay: fresh(l.sevenDay) }
+}
+
 /** Reads the `rate_limits` block Claude Code passes to the status line command. */
 export function windowsFromStatusline(rateLimits: unknown): Pick<LimitState, 'fiveHour' | 'sevenDay'> {
   const rl = (rateLimits ?? {}) as { five_hour?: unknown; seven_day?: unknown }

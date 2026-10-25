@@ -7,7 +7,7 @@ import type { ExecMode, Job, JobSpec, LaunchSpec, LimitState } from '../shared/t
 import { duration, excerpt, modeLabel, oneLine } from './format'
 import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
-import { pickResetTime, windowsFromStatusline } from './limits'
+import { currentLimits, pickResetTime, windowsFromStatusline } from './limits'
 import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
 import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
@@ -210,8 +210,9 @@ export class Runner {
     return this.d.store.active() !== null || (!this.paused && this.d.store.queued().length > 0)
   }
 
+  /** The usage limits as they stand now: a window that has reset since the last reading is unknown. */
   limits(): LimitState {
-    return this.d.store.kvGet<LimitState>('limits') ?? {}
+    return currentLimits(this.d.store.kvGet<LimitState>('limits') ?? {}, this.d.now())
   }
 
   private saveLimits(state: LimitState): void {

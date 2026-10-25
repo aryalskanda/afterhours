@@ -909,7 +909,11 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   }
   const blocked = s.limits.blockedUntil && s.limits.blockedUntil > ctx.now ? `⏸ New tasks wait for the limit reset at ${esc(formatClock(s.limits.blockedUntil, ctx.now))}` : ''
   const limits = [limitLine('5-hour', s.limits.fiveHour, ctx.now), limitLine('Weekly', s.limits.sevenDay, ctx.now), blocked].filter(Boolean)
-  if (limits.length > 0) lines.push('', ...limits)
+  // Readings only come while a task runs: an old one says when it's from.
+  const read = s.limits.updatedAt
+  const stale = read && ctx.now - read > 30 * 60_000 ? `<i>Usage as of ${esc(formatClock(read, ctx.now))}; it updates while a task runs.</i>` : ''
+  if (limits.length > 0) lines.push('', ...limits, ...(stale ? [stale] : []))
+  else if (read) lines.push('', `<i>No usage reading since the last reset; it updates while a task runs.</i>`)
   if (s.paused && a) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
 
   const keyboard: InlineKeyboard = []

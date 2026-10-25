@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { formatClock, parseResetText, pickResetTime, toMs, wallToUtc, windowsFromStatusline } from '../src/daemon/limits'
+import { currentLimits, formatClock, parseResetText, pickResetTime, toMs, wallToUtc, windowsFromStatusline } from '../src/daemon/limits'
 
 const NY = 'America/New_York'
 // 2026-10-14 10:00 in New York (EDT, UTC-4)
@@ -92,4 +92,13 @@ test('formatClock', () => {
   expect(formatClock(Date.UTC(2026, 9, 14, 19, 30), now, NY)).toBe('3:30 PM')
   expect(formatClock(Date.UTC(2026, 9, 16, 13, 0), now, NY)).toBe('Fri 9:00 AM')
   expect(formatClock(Date.UTC(2026, 9, 30, 13, 0), now, NY)).toBe('Oct 30, 9:00 AM')
+})
+
+test('a window whose reset has passed since the last reading is unknown, not its old percentage', () => {
+  const now = Date.UTC(2026, 9, 25, 15, 0)
+  const read = { fiveHour: { usedPct: 17, resetsAt: now - 3 * 86_400_000 }, sevenDay: { usedPct: 87, resetsAt: now + 3600_000 }, updatedAt: now - 3 * 86_400_000 }
+  const l = currentLimits(read, now)
+  expect(l.fiveHour).toEqual({ usedPct: null, resetsAt: null })
+  expect(l.sevenDay).toEqual({ usedPct: 87, resetsAt: now + 3600_000 })
+  expect(l.updatedAt).toBe(read.updatedAt)
 })
