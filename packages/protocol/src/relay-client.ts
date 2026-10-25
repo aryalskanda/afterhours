@@ -184,8 +184,16 @@ export class RelayClient {
     this.ws = ws
     ws.binaryType = 'arraybuffer'
     this.authTimer = setTimeout(() => {
+      this.authTimer = null
+      if (this.ws !== ws) return
       this.log('relay: sign-in timed out')
-      ws.close()
+      // A socket that never opened may never say it closed: try again without waiting for it.
+      try {
+        ws.close()
+      } catch {
+        // Already gone.
+      }
+      this.onClosed()
     }, this.timing.authTimeoutMs)
     ws.onmessage = ev => {
       if (this.ws !== ws) return

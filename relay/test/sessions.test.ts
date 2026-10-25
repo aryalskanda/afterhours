@@ -343,6 +343,20 @@ describe('sessions', () => {
     expect(sockets.length).toBe(2)
   })
 
+  test('a sign-in that never comes is tried again, even when the socket never says it closed', async () => {
+    const made: SocketLike[] = []
+    const socket: SocketFactory = () => {
+      // Never opens, never answers, never reports closing (a connection stuck in a proxy).
+      const s: SocketLike = { binaryType: '', readyState: 0, onopen: null, onmessage: null, onclose: null, onerror: null, send: () => {}, close: () => {} }
+      made.push(s)
+      return s
+    }
+    const client = new RelayClient({ url: 'ws://127.0.0.1:9/v1', identity: newIdentity(), kind: 'agent', onFrame: () => {}, socket, timing: { authTimeoutMs: 50, minBackoffMs: 10, maxBackoffMs: 20 } })
+    stoppers.push(() => client.stop())
+    client.start()
+    await until(() => made.length >= 3)
+  })
+
   test('a machine restart is survived', async () => {
     const { m, a, result } = await paired()
     const conn = a.client.connect({ id: result.machine.id, name: result.machine.name, relay: result.machine.relay })
