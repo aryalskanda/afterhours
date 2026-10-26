@@ -34,6 +34,8 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
   const activity: ToolActivity[] = []
   /** Windows that ignore being asked to close. */
   let stubborn = false
+  /** The folders apps may use, besides the task's own. */
+  const allowed: string[] = []
   const runner = new Runner({
     store,
     tmux,
@@ -43,6 +45,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
       config = c
     },
     now: () => now,
+    allowedDir: dir => allowed.some(a => dir === a || dir.startsWith(`${a}/`)),
     claudePath: '/bin/claude',
     selfCommand: ['/bin/cq'],
     port: 7787,
@@ -115,6 +118,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     killed,
     reopened,
     activity,
+    allowed,
     setStubborn: (v: boolean) => {
       stubborn = v
     },
@@ -600,26 +604,67 @@ describe('asking you', () => {
     expect(r.hookSpecificOutput.decision.message).toContain('The user reviews it')
   })
 
-  test('while planning, reading is allowed in a mode that wouldn’t ask; commands still ask', async () => {
+  const allowedAnswer = { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } }
+
+  test('a task in auto mode reads files in the folders apps may use without asking, planning or working', async () => {
+    const h = setup()
+    h.allowed.push('/other/app')
+    const j = await startJob(h)
+    const before = h.notices.length
+    // Planning, a file in the task's own folder, then one in another allowed folder.
+    expect(await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: join(h.project, 'src', 'a.ts') } })).toEqual(allowedAnswer)
+    expect(await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Read', permission_mode: 'auto', tool_input: { file_path: '/other/app/e2e/out/shot.png' } })).toEqual(allowedAnswer)
+    // Glob and Grep with no path search the task's own folder; with one, that folder.
+    for (const tool of ['Glob', 'Grep']) {
+      expect(await h.runner.onHook('PermissionRequest', j.id, { tool_name: tool, permission_mode: 'auto', tool_input: { pattern: 'x' } })).toEqual(allowedAnswer)
+      expect(await h.runner.onHook('PermissionRequest', j.id, { tool_name: tool, permission_mode: 'auto', tool_input: { pattern: 'x', path: '/other/app/src' } })).toEqual(allowedAnswer)
+    }
+    // Nothing went to the phone, and each is in the log.
+    expect(h.notices.length).toBe(before)
+    expect(h.store.pendingApprovals(j.id)).toEqual([])
+    expect(h.logs.some(l => l.includes('allowed Read of /other/app/e2e/out/shot.png'))).toBe(true)
+  })
+
+  test('the web is read without asking in a mode that doesn’t ask', async () => {
     const h = setup()
     const j = await startJob(h)
-    const read = await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: '/x' } })
-    expect(read).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
-    expect(h.store.pendingApprovals(j.id)).toEqual([])
+    for (const tool of ['WebFetch', 'WebSearch']) {
+      expect(await h.runner.onHook('PermissionRequest', j.id, { tool_name: tool, permission_mode: 'auto', tool_input: { url: 'https://example.com' } })).toEqual(allowedAnswer)
+    }
+  })
 
-    // A command goes the usual way: asked.
+  test('a file outside the folders apps may use, a relative path out of the folder, and other tools still ask', async () => {
+    const h = setup()
+    const j = await startJob(h)
+    for (const input of [{ file_path: '/Users/me/.ssh/id_ed25519' }, { file_path: '../../etc/passwd' }]) {
+      const asked = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Read', permission_mode: 'auto', tool_input: input })
+      await Bun.sleep(0)
+      expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Read' })
+      h.runner.answer(lastNotice(h, 'permission').code, 'deny', null)
+      await asked
+    }
+    const bash = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', permission_mode: 'auto', tool_input: { command: 'rm -rf build' } })
+    await Bun.sleep(0)
+    expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Bash' })
+    h.runner.answer(lastNotice(h, 'permission').code, 'deny', null)
+    await bash
+  })
+
+  test('commands while planning still ask', async () => {
+    const h = setup()
+    const j = await startJob(h)
     const bash = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', permission_mode: 'plan', tool_input: { command: 'ls' } })
     await Bun.sleep(0)
     expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Bash' })
     h.runner.answer(lastNotice(h, 'permission').code, 'allow', null)
     await bash
-
   })
 
   test('while planning, a mode that asks for edits asks for reads too, as before', async () => {
     const h = setup()
+    h.allowed.push('/x')
     const careful = await startJob(h, { execMode: 'acceptEdits' })
-    const asked = h.runner.onHook('PermissionRequest', careful.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: '/x' } })
+    const asked = h.runner.onHook('PermissionRequest', careful.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: '/x/y' } })
     await Bun.sleep(0)
     expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Read' })
     h.runner.answer(lastNotice(h, 'permission').code, 'allow', null)

@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, realpathSync } from 'node:fs'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { BRAND } from '../shared/brand'
 import type { Config } from '../shared/config'
 import type { ExecMode, Job, JobSpec, LaunchSpec, LimitState } from '../shared/types'
@@ -153,8 +153,34 @@ function workLabel(job: Pick<Job, 'model' | 'workModel' | 'effort' | 'workEffort
   return model && effort ? `${model} at ${effort}` : (model ?? `${job.model} at ${effort}`)
 }
 
-/** Tools that only read: while a task is still planning, a mode that doesn't ask allows them at once. */
-const READ_ONLY = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
+/** Tools that only read your files: a mode that doesn't ask allows them at once, inside the folders apps may use. */
+const READ_FILES = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'])
+/** And the web: nothing on your disk. */
+const READ_WEB = new Set(['WebFetch', 'WebSearch'])
+
+/** Where a read tool is pointed: its file or folder, or null when it has none (Glob and Grep search the task's own folder). */
+function readPath(input: Record<string, unknown> | undefined): string | null {
+  for (const key of ['file_path', 'notebook_path', 'path']) {
+    const v = input?.[key]
+    if (typeof v === 'string' && v) return v
+  }
+  return null
+}
+
+/** The path with its symlinks followed, as far as it exists (a file Claude is about to read may not). */
+function realOf(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    const parent = dirname(path)
+    return parent === path ? path : join(realOf(parent), basename(path))
+  }
+}
+
+function inside(path: string, dir: string): boolean {
+  const d = realOf(dir)
+  return path === d || path.startsWith(d.endsWith(sep) ? d : d + sep)
+}
 
 /** Whether a tool changes something: the edit tools, and anything from an MCP server. */
 function isChange(tool: string): boolean {
@@ -975,7 +1001,24 @@ export class Runner {
         this.d.log(`#${job.id}: ${tool} while planning; told Claude to present the plan`)
         return permissionDecision({ behavior: 'deny', message: planFirstReason(job.review) })
       }
-      if (READ_ONLY.has(tool) && (job.execMode === 'auto' || job.execMode === 'bypassPermissions')) return permissionDecision({ behavior: 'allow' })
+    }
+    // A task in a mode that doesn't ask doesn't ask about reading: Claude Code still does for a file
+    // outside the folder it runs in, and each ask went to the phone. Reading changes nothing, so a
+    // file in the folders apps may use, its own folder or its attachments is allowed here, and logged.
+    if (job.execMode === 'auto' || job.execMode === 'bypassPermissions') {
+      if (READ_WEB.has(tool)) {
+        this.d.log(`#${job.id}: allowed ${tool} (a read of the web, in ${job.execMode} mode)`)
+        return permissionDecision({ behavior: 'allow' })
+      }
+      if (READ_FILES.has(tool)) {
+        const cwd = job.launchSpec?.cwd ?? job.workDir ?? job.projectDir
+        const path = realOf(resolve(cwd, readPath(payload.tool_input) ?? '.'))
+        const fine = inside(path, cwd) || Boolean(this.d.uploadsDir && inside(path, this.d.uploadsDir)) || (this.d.allowedDir?.(path) ?? false)
+        if (fine) {
+          this.d.log(`#${job.id}: allowed ${tool} of ${path} (a read, in ${job.execMode} mode, inside your folders)`)
+          return permissionDecision({ behavior: 'allow' })
+        }
+      }
     }
     if (rt.switchAfter) {
       const mode = rt.switchAfter
