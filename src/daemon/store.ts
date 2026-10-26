@@ -159,6 +159,7 @@ const COLUMNS = {
   group: 'job_group',
   onHold: 'on_hold',
   workModel: 'work_model',
+  workEffort: 'work_effort',
   wantLink: 'want_link',
   links: 'links',
   linkNote: 'link_note',
@@ -191,6 +192,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'job_group', 'TEXT'],
   ['jobs', 'on_hold', 'INTEGER NOT NULL DEFAULT 0'],
   ['jobs', 'work_model', 'TEXT'],
+  ['jobs', 'work_effort', 'TEXT'],
   ['jobs', 'want_link', 'INTEGER NOT NULL DEFAULT 0'],
   ['jobs', 'links', 'TEXT'],
   ['jobs', 'link_note', 'TEXT'],
@@ -263,8 +265,8 @@ export class Store {
         `INSERT INTO jobs (position, status, project_dir, prompt, plan, review, exec_mode, model, effort,
                            session_policy, session_id, takeover_at, isolate, source, created_at,
                            not_before, after_job, repeat_daily, max_minutes, attachments, job_group, work_model,
-                           want_link, link_for)
-         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+                           work_effort, want_link, link_for)
+         VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
       .get(
         position,
@@ -289,6 +291,8 @@ export class Store {
         spec.group ?? null,
         // Only with a plan, and only when it's another model.
         spec.plan && spec.workModel && spec.workModel !== spec.model ? spec.workModel : null,
+        // Only with a plan, and only when it's another effort.
+        spec.plan && spec.workEffort && spec.workEffort !== spec.effort ? spec.workEffort : null,
         spec.wantLink ? 1 : 0,
         spec.linkFor ?? null,
       )

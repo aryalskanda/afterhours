@@ -141,6 +141,18 @@ const HANDOFF_PROMPT = 'Your plan is approved. Carry it out now, step by step, a
 /** What an ask task tells Claude when it presents a plan anyway. */
 const ASK_FEEDBACK = "This task is a question: answer it directly in your reply. Don't present a plan or change anything."
 
+/** Whether the work runs on another model or effort than the plan. */
+export function differentWork(job: Pick<Job, 'model' | 'workModel' | 'effort' | 'workEffort'>): boolean {
+  return Boolean((job.workModel && job.workModel !== job.model) || (job.workEffort && job.workEffort !== job.effort))
+}
+
+/** "sonnet at medium", "sonnet", or "medium effort": what carries a plan out. */
+function workLabel(job: Pick<Job, 'model' | 'workModel' | 'effort' | 'workEffort'>): string {
+  const model = job.workModel && job.workModel !== job.model ? job.workModel : null
+  const effort = job.workEffort && job.workEffort !== job.effort ? job.workEffort : null
+  return model && effort ? `${model} at ${effort}` : (model ?? `${job.model} at ${effort}`)
+}
+
 /** Tools that only read: while a task is still planning, a mode that doesn't ask allows them at once. */
 const READ_ONLY = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
 
@@ -319,6 +331,7 @@ export class Runner {
       repeatDaily: job.repeatDaily,
       maxMinutes: job.maxMinutes,
       workModel: job.workModel,
+      workEffort: job.workEffort,
     })
     this.d.log(`#${job.id} repeats daily: #${again.id} is queued for ${next.toISOString()}`)
   }
@@ -430,9 +443,11 @@ export class Runner {
 
     const settingsPath = join(this.d.jobsDir, `${job.id}.settings.json`)
     this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts), null, 2))
-    // Plan with one model, work with another: after the plan, every run is the work model's.
-    const model = job.planApproved && job.workModel ? job.workModel : job.model
-    const argv = claudeArgv({ ...job, model }, {
+    // Plan with one model (and effort), work with another: after the plan, every run is the work's.
+    const working = job.planApproved
+    const model = working && job.workModel ? job.workModel : job.model
+    const effort = working && job.workEffort ? job.workEffort : job.effort
+    const argv = claudeArgv({ ...job, model, effort }, {
       claudePath: this.d.claudePath,
       settingsPath,
       sessionArgs,
@@ -722,7 +737,7 @@ export class Runner {
     if (p.attempts >= 3) return this.hold(job, "couldn't approve the plan dialog", tail(screen, 20))
     const choice = choosePlanOption(dialog.options, job.execMode)
     if (!choice) return this.hold(job, "didn't recognize the plan dialog's options", tail(screen, 20))
-    if (job.workModel && job.workModel !== job.model) return this.handOver(job, rt, choice.option.label)
+    if (differentWork(job)) return this.handOver(job, rt, choice.option.label)
     await this.d.tmux.sendKeys(rt.window, String(choice.option.n))
     p.sentAt = now
     p.attempts++
@@ -732,17 +747,18 @@ export class Runner {
   }
 
   /**
-   * Plan with one model, work with another: the plan is approved, so rather than answering the
-   * dialog, the planner's window closes and the same conversation resumes on the work model, in
-   * the task's own mode, told to carry the plan out.
+   * Plan with one model or effort, work with another: the plan is approved, so rather than
+   * answering the dialog, the planner's window closes and the same conversation resumes on the work
+   * model and effort, in the task's own mode, told to carry the plan out.
    */
   private async handOver(job: Job, rt: Runtime, choice: string): Promise<void> {
     job = this.d.store.updateJob(job.id, { planApproved: true, phase: 'working', nudges: 0 })
     rt.plan = undefined
-    this.d.log(`#${job.id}: plan approved; ${job.workModel} carries it out`)
+    const carrier = workLabel(job)
+    this.d.log(`#${job.id}: plan approved; ${carrier} carries it out`)
     await this.relaunch(job, HANDOFF_PROMPT)
     if (this.ended(job.id)) return
-    this.d.notify({ type: 'plan_approved', job: this.d.store.getJob(job.id)!, choice: `${choice.replace(/\.$/, '')}; ${job.workModel} carries it out` })
+    this.d.notify({ type: 'plan_approved', job: this.d.store.getJob(job.id)!, choice: `${choice.replace(/\.$/, '')}; ${carrier} carries it out` })
   }
 
   private markPlanApproved(job: Job, rt: Runtime): Job {
@@ -1106,7 +1122,7 @@ export class Runner {
       review: false,
       execMode: job.execMode === 'plan' ? 'auto' : job.execMode,
       model: job.workModel ?? job.model,
-      effort: job.effort,
+      effort: job.workEffort ?? job.effort,
       sessionPolicy: 'session',
       sessionId: job.sessionId,
       takeover: true,

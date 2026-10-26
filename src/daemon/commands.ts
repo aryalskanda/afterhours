@@ -199,6 +199,7 @@ export function buildSpec(text: string, ctx: CommandContext): JobSpec | string {
     execMode: options.execMode ?? d.execMode,
     model: options.model ?? d.model,
     workModel: options.workModel ?? (options.model === undefined ? d.workModel : undefined) ?? null,
+    workEffort: options.effort === undefined ? (d.workEffort ?? null) : null,
     wantLink: options.wantLink,
     effort: options.effort ?? d.effort,
     sessionPolicy: options.policy ?? 'continue',

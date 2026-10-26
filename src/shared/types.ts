@@ -90,6 +90,11 @@ export interface Job {
    * model carries it out (the same conversation, resumed). Null: `model` does both.
    */
   workModel: string | null
+  /**
+   * With a plan: the effort the work runs at, when it isn't `effort` (plan as Opus max, work as
+   * Sonnet medium). Null: `effort` for both.
+   */
+  workEffort: Effort | null
   /** End with a live link: Claude publishes a claude.ai artifact showing the result. */
   wantLink: boolean
   /** The live links it got (claude.ai artifacts), and why there's none when that failed. */
@@ -129,6 +134,8 @@ export interface JobSpec {
   group?: string | null
   /** The model that carries out the approved plan, when it isn't `model`. */
   workModel?: string | null
+  /** The effort that carries out the approved plan, when it isn't `effort`. */
+  workEffort?: Effort | null
   wantLink?: boolean
   linkFor?: number | null
 }

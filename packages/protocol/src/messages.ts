@@ -121,6 +121,8 @@ export const JobInfo = z.object({
   onHold: z.boolean().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
+  /** Plan with `effort`, work with this one: it carries out the approved plan. Null: `effort` for both. */
+  workEffort: Effort.nullable().optional(),
   /** It ends with a live link: Claude publishes a claude.ai artifact showing the result. */
   wantLink: z.boolean().optional(),
   /** The live links it got (claude.ai artifacts, opened signed in), and why there's none when it failed. */
@@ -294,6 +296,8 @@ export const QueueOptions = z.object({
   model: z.string().max(40).optional(),
   /** With a plan: the model that carries it out once it's approved (`model` writes it). */
   workModel: z.string().max(40).optional(),
+  /** With a plan: the effort that carries it out (`effort` writes the plan). */
+  workEffort: Effort.optional(),
   /** End with a live link: Claude publishes a claude.ai artifact showing the result. */
   link: z.boolean().optional(),
   effort: Effort.optional(),
@@ -540,6 +544,8 @@ export const Defaults = z.object({
   /** With a plan, the model that carries it out (when it isn't `model`). */
   workModel: z.string().nullable().optional(),
   effort: Effort,
+  /** With a plan, the effort that carries it out (when it isn't `effort`). */
+  workEffort: Effort.nullable().optional(),
   /** New conversations on their own git branch. */
   isolate: z.boolean(),
 })

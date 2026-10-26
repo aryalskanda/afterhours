@@ -385,6 +385,24 @@ describe('remote access', () => {
     expect(m.store.getJob(id)!.workModel).toBeNull()
   })
 
+  test('plan at one effort, work at another, from an app; changed while queued', async () => {
+    const m = machine()
+    const { conn, snapshots } = await pairedApp(m)
+    expect(snapshots[0]!.features).toContain('effort.split')
+    const r = await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { plan: true, model: 'opus', effort: 'max', workModel: 'sonnet', workEffort: 'medium' } })
+    const id = (r.data as { job: { id: number; workEffort: string | null } }).job.id
+    expect((r.data as { job: { workEffort: string | null } }).job.workEffort).toBe('medium')
+    expect(m.store.getJob(id)).toMatchObject({ effort: 'max', workEffort: 'medium' })
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { workEffort: 'low' } })
+    expect(m.store.getJob(id)!.workEffort).toBe('low')
+    // The same as the plan's, or the plan's changed to match: one effort does it all.
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { effort: 'low' } })
+    expect(m.store.getJob(id)!.workEffort).toBeNull()
+    // Without a plan there's nothing to hand over.
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { plan: false, workEffort: 'high' } })
+    expect(m.store.getJob(id)!.workEffort).toBeNull()
+  })
+
   test('a live link from an app: queued with one, or asked for later; the link reaches the app', async () => {
     const m = machine()
     const app = await pairedApp(m)

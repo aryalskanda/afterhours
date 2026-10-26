@@ -812,6 +812,45 @@ describe('plan with one model, work with another', () => {
     expect(argv[argv.indexOf('--model') + 1]).toBe('sonnet')
   })
 
+  test('plan as opus at max, work as sonnet at medium: both change at the hand-over, and stay', async () => {
+    const h = setup()
+    const j = await startJob(h, { model: 'opus', effort: 'max', workModel: 'sonnet', workEffort: 'medium' })
+    const flag = (name: string) => {
+      const argv = h.runner.launchSpec(j.id)!.argv
+      return argv[argv.indexOf(name) + 1]
+    }
+    expect([flag('--model'), flag('--effort')]).toEqual(['opus', 'max'])
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'p' } })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    expect([flag('--model'), flag('--effort')]).toEqual(['sonnet', 'medium'])
+    expect(lastNotice(h, 'plan_approved').choice).toBe('Yes, and use auto mode; sonnet at medium carries it out')
+    // Started again later, it's still the work's.
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid, transcript_path: '/tmp/t.jsonl' })
+    h.tmux.windows.delete(windowName(j.id))
+    await h.runner.tick()
+    expect([flag('--model'), flag('--effort')]).toEqual(['sonnet', 'medium'])
+  })
+
+  test('only the effort differs: the same model resumes at the work effort', async () => {
+    const h = setup()
+    const j = await startJob(h, { model: 'opus', effort: 'max', workEffort: 'medium' })
+    expect(h.store.getJob(j.id)).toMatchObject({ workModel: null, workEffort: 'medium' })
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'p' } })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    expect(j.window.input).toEqual([]) // handed over, not answered
+    const argv = h.runner.launchSpec(j.id)!.argv
+    expect([argv[argv.indexOf('--model') + 1], argv[argv.indexOf('--effort') + 1]]).toEqual(['opus', 'medium'])
+    expect(lastNotice(h, 'plan_approved').choice).toBe('Yes, and use auto mode; opus at medium carries it out')
+  })
+
+  test('the same effort, or no plan: nothing is kept', () => {
+    const h = setup()
+    expect(h.runner.enqueue(h.spec({ effort: 'high', workEffort: 'high' })).workEffort).toBeNull()
+    expect(h.runner.enqueue(h.spec({ plan: false, effort: 'high', workEffort: 'low' })).workEffort).toBeNull()
+  })
+
   test('the same model, or no plan to hand over: one model does it all', () => {
     const h = setup()
     expect(h.runner.enqueue(h.spec({ model: 'opus', workModel: 'opus' })).workModel).toBeNull()

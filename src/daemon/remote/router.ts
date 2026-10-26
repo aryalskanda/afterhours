@@ -82,6 +82,7 @@ export const FEATURES = [
   'link',
   'projects',
   'chat.rename',
+  'effort.split',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -343,6 +344,7 @@ export class Router {
         model: config.defaults.model,
         workModel: config.defaults.workModel ?? null,
         effort: config.defaults.effort,
+        workEffort: config.defaults.workEffort ?? null,
         isolate: config.isolate,
       },
       models: [...new Set([...config.models, config.defaults.model])],
@@ -709,6 +711,11 @@ export class Router {
       patch.workModel = o.workModel && o.workModel !== model ? o.workModel : null
     }
     if (o.effort !== undefined) patch.effort = o.effort
+    if (o.workEffort !== undefined || o.effort !== undefined || o.plan !== undefined) {
+      const effort = o.effort ?? job.effort
+      const work = o.workEffort !== undefined ? o.workEffort : job.workEffort
+      patch.workEffort = (o.plan ?? job.plan) && work && work !== effort ? work : null
+    }
     if (o.isolate !== undefined && !job.sessionId) patch.isolate = o.isolate
     const when = o.notBefore !== undefined || o.atReset !== undefined || o.afterJob !== undefined || o.repeatDaily !== undefined || o.maxMinutes !== undefined
     if (when) {
@@ -913,6 +920,7 @@ export class Router {
       execMode: o.mode ?? d.execMode,
       model: o.model ?? d.model,
       workModel: o.workModel ?? (o.model === undefined ? d.workModel : undefined) ?? null,
+      workEffort: o.workEffort ?? (o.effort === undefined ? d.workEffort : undefined) ?? null,
       wantLink: o.link === true,
       effort: o.effort ?? d.effort,
       sessionPolicy: o.policy ?? (sessionId ? 'session' : 'continue'),

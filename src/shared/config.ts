@@ -45,6 +45,8 @@ export interface Defaults {
   /** With a plan: the model that carries it out, when it isn't `model` (plan with one, work with another). */
   workModel?: string | null
   effort: Effort
+  /** With a plan: the effort that carries it out, when it isn't `effort`. */
+  workEffort?: Effort | null
 }
 
 export interface Config {
