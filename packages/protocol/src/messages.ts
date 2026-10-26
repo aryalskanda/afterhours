@@ -447,11 +447,12 @@ export const Request = z.discriminatedUnion('type', [
    * Owners, on a Mac that lets them (policy.allowMac): `status` lists the open apps and what keeps
    * the Mac awake (the result's data: MacInfo); `quit` an app by `pid` (`force` ends it without
    * asking; the data says whether it's still `open`); `sleep` now, quitting `quit` (pids) first;
-   * `sleepWhenDone` (`on`): sleep once the queue is done, quitting `quit` first.
+   * `sleepWhenDone` (`on`): sleep once the queue is done, quitting `quit` first; `lidClosed` (`on`):
+   * while tasks run, stay awake with the lid closed too.
    */
   withId({
     type: z.literal('mac'),
-    action: z.enum(['status', 'quit', 'sleep', 'sleepWhenDone']),
+    action: z.enum(['status', 'quit', 'sleep', 'sleepWhenDone', 'lidClosed']),
     pid: z.number().int().optional(),
     force: z.boolean().optional(),
     on: z.boolean().optional(),
@@ -674,6 +675,11 @@ export const MacInfo = z.object({
   idleSeconds: z.number().nullable(),
   /** The task that pauses while the Mac sleeps. */
   running: z.number().int().nullable(),
+  /**
+   * Awake with the lid closed while tasks run: the setting, whether it's set up (it takes the Mac's
+   * password once, at the Mac), and whether sleep is off for tasks now. Missing from older machines.
+   */
+  lidClosed: z.object({ on: z.boolean(), ready: z.boolean(), holding: z.boolean() }).optional(),
 })
 export type MacInfo = z.infer<typeof MacInfo>
 

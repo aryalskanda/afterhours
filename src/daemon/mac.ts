@@ -2,7 +2,9 @@
 // keeps the Mac awake, quitting an app (or force quitting one that won't), sleeping now, and
 // sleeping once the queue is done. The system calls are in platform/mac.ts.
 
-import { listApps, parseAssertions, quitBeforeSleep, sleepDisabled, type MacApp, type MacSystem } from '../platform/mac'
+import { listApps, parseAssertions, quitBeforeSleep, sleepDisabled, type MacApp, type MacSystem, type SleepSwitch } from '../platform/mac'
+import type { Config } from '../shared/config'
+import type { LidAwake } from './awake'
 import type { Notice } from './notify'
 import type { Runner } from './runner'
 import type { Store } from './store'
@@ -19,6 +21,11 @@ export interface MacStatus {
   idleSeconds: number | null
   /** The task that pauses while the Mac sleeps. */
   running: number | null
+  /**
+   * Awake with the lid closed while tasks run: `on` (the setting), `ready` (the sudo rule that lets
+   * it turn sleep off is in place), `holding` (sleep is off for tasks right now).
+   */
+  lidClosed: { on: boolean; ready: boolean; holding: boolean }
 }
 
 export interface QuitResult {
@@ -58,6 +65,8 @@ export interface MacDeps {
   log: (line: string) => void
   sleep?: (ms: number) => Promise<void>
   later?: (run: () => void, ms: number) => void
+  /** Awake with the lid closed; missing where it can't be done. */
+  lid?: { awake: LidAwake; sleep: SleepSwitch; config: () => Config; saveConfig: (c: Config) => void }
 }
 
 export class MacControl {
@@ -87,8 +96,9 @@ export class MacControl {
   }
 
   async status(): Promise<MacStatus> {
-    const [apps, disabled, idle] = await Promise.all([this.apps(), this.disabled(), this.d.system.idleSeconds()])
+    const [apps, disabled, idle, ready] = await Promise.all([this.apps(), this.disabled(), this.d.system.idleSeconds(), this.d.lid?.sleep.allowed() ?? false])
     const plan = this.plan()
+    const lid = this.d.lid
     return {
       apps,
       sleepDisabled: disabled,
@@ -96,6 +106,22 @@ export class MacControl {
       sleepWhenDone: plan ? { on: true, quit: plan.names, waiting: this.waitingFor() } : { on: false, quit: [], waiting: null },
       idleSeconds: idle,
       running: this.d.store.active()?.id ?? null,
+      lidClosed: { on: lid?.config().keepAwakeLidClosed ?? false, ready, holding: lid?.awake.holds ?? false },
+    }
+  }
+
+  /** Awake with the lid closed while tasks run, or not. */
+  async lidClosed(on: boolean): Promise<{ ok: boolean; text: string }> {
+    const lid = this.d.lid
+    if (!lid) return { ok: false, text: "This Mac can't do that." }
+    if (on && !(await lid.sleep.allowed())) {
+      return { ok: false, text: 'It needs your password once, at the Mac. In Terminal: cq awake lid on' }
+    }
+    lid.saveConfig({ ...lid.config(), keepAwakeLidClosed: on })
+    if (!on) await lid.awake.release('turned off')
+    return {
+      ok: true,
+      text: on ? 'While tasks run, the Mac stays awake with its lid closed too. Below 20% battery it may sleep.' : 'Closing the lid sleeps the Mac again, tasks or not.',
     }
   }
 
@@ -136,6 +162,8 @@ export class MacControl {
       if (!r.ok) return { ok: false, text: `${app.name} wouldn't quit, so the Mac didn't sleep.` }
       quitted.push(app.name)
     }
+    // Sleep turned off for tasks: on again, and left on while the Mac sleeps.
+    await this.d.lid?.awake.release('sleeping now', 10 * 60_000)
     // A keep-awake app turns sleep back on as it goes.
     let disabled = await this.disabled()
     for (let waited = 0; disabled && quitted.length > 0 && waited < SLEEP_ALLOWED_WAIT_MS; waited += 500) {

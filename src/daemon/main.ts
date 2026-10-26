@@ -25,6 +25,7 @@ import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
+import { LidAwake } from './awake'
 import { MacControl } from './mac'
 import { Notifier } from './notify'
 import { Remote, type RemoteStatus } from './remote'
@@ -36,7 +37,7 @@ import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
-import { macSystem } from '../platform/mac'
+import { macSystem, systemSleepSwitch } from '../platform/mac'
 import { isMac, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF } from './tmux'
@@ -160,7 +161,18 @@ export async function runDaemon(): Promise<void> {
 
   // Quitting apps and sleeping the Mac, from the apps, the bot and text commands (macOS only).
   const macSys = macSystem()
-  const mac = macSys ? new MacControl({ system: macSys, store, runner, notify: notice => notifier.send(notice), now: Date.now, log }) : null
+  const lidAwake = macSys ? new LidAwake({ system: macSys, sleep: systemSleepSwitch, store, now: Date.now, log }) : null
+  const mac = macSys
+    ? new MacControl({
+        system: macSys,
+        store,
+        runner,
+        notify: notice => notifier.send(notice),
+        now: Date.now,
+        log,
+        lid: lidAwake ? { awake: lidAwake, sleep: systemSleepSwitch, config: getConfig, saveConfig: putConfig } : undefined,
+      })
+    : null
 
   const commandContext = (source: 'cli' | 'imessage' | 'remote', cwd?: string) => ({
     runner,
@@ -424,12 +436,15 @@ export async function runDaemon(): Promise<void> {
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
     keepAwake.set(config.keepAwake && runner.hasWork())
+    void lidAwake?.tick(config.keepAwake && config.keepAwakeLidClosed && runner.hasWork())
   }, 2000)
 
   function shutdown(code = 0): void {
     log('stopping (Claude sessions in tmux keep running and are picked up on the next start)')
     clearInterval(timer)
     keepAwake.set(false)
+    // Sleep turned off for tasks goes back on; started again with work, it goes off again.
+    lidAwake?.releaseNow()
     bridge?.stop()
     telegram?.stop()
     remote.stop()

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PaneInfo, TmuxDriver } from '../src/daemon/tmux'
-import { parseApps, type MacSystem, type RunningApp } from '../src/platform/mac'
+import { parseApps, type MacSystem, type RunningApp, type SleepSwitch } from '../src/platform/mac'
 
 /** root/{alpha(repo)/src/components, alpha/node_modules/x, beta/docs, beta/build/out, gamma-web/web/app, .hidden/x} */
 export function makeTree(): string {
@@ -96,12 +96,15 @@ export class FakeMac implements MacSystem {
   slept = 0
   /** Something other than an app turned sleep off. */
   stuckOff = false
+  /** `pmset -g batt`, as a laptop prints it. */
+  battery = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged; 0:00 remaining present: true\n"
 
   async runningApps() {
     return this.apps
   }
   async pmset(args: string[]) {
     const vorssaint = this.alive(83628)
+    if (args.includes('batt')) return this.battery
     return args.includes('assertions') ? MAC_ASSERTIONS({ vorssaint }) : MAC_PMSET(vorssaint || this.stuckOff)
   }
   async terminate(pid: number, force: boolean) {
@@ -118,5 +121,24 @@ export class FakeMac implements MacSystem {
   }
   async sleepNow() {
     this.slept++
+  }
+}
+
+/** Turning sleep off and on, on a FakeMac: with the sudo rule in place (`allowed`) or not. */
+export class FakeSleepSwitch implements SleepSwitch {
+  allowedNow = true
+  calls: boolean[] = []
+  constructor(private readonly mac: FakeMac) {}
+  async allowed() {
+    return this.allowedNow
+  }
+  async set(off: boolean) {
+    return this.setNow(off)
+  }
+  setNow(off: boolean) {
+    if (!this.allowedNow) return false
+    this.calls.push(off)
+    this.mac.stuckOff = off
+    return true
   }
 }

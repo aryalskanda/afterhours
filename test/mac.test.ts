@@ -2,12 +2,14 @@
 // real one), and what quitting and sleeping do. No real app is quit and nothing sleeps.
 
 import { describe, expect, test } from 'bun:test'
+import { LidAwake } from '../src/daemon/awake'
 import { MacControl } from '../src/daemon/mac'
 import type { Notice } from '../src/daemon/notify'
 import type { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { listApps, parseApps, parseAssertions, parseIdle, quitBeforeSleep, sleepDisabled } from '../src/platform/mac'
-import { FakeMac, MAC_APPS_JXA as JXA, MAC_ASSERTIONS as ASSERTIONS, MAC_HOME as HOME, MAC_PMSET as PMSET } from './fakes'
+import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
+import { FakeMac, FakeSleepSwitch, MAC_APPS_JXA as JXA, MAC_ASSERTIONS as ASSERTIONS, MAC_HOME as HOME, MAC_PMSET as PMSET } from './fakes'
 
 function control(o: { paused?: boolean } = {}) {
   const sys = new FakeMac()
@@ -158,5 +160,101 @@ describe('quitting and sleeping', () => {
     expect((await again.status()).sleepWhenDone.on).toBe(true)
     expect((await again.sleepWhenDone({ on: false, by: 'iPhone' })).text).toBe('The Mac stays awake after the queue is done.')
     expect((await mac.status()).sleepWhenDone.on).toBe(false)
+  })
+})
+
+describe('awake with the lid closed', () => {
+  function lid(o: { allowed?: boolean } = {}) {
+    const sys = new FakeMac()
+    sys.apps = sys.apps.filter(a => a.pid !== 83628) // no Vorssaint: sleep is on
+    const sleep = new FakeSleepSwitch(sys)
+    sleep.allowedNow = o.allowed ?? true
+    const store = new Store(':memory:')
+    const logs: string[] = []
+    let now = 1_000_000
+    const awake = new LidAwake({ system: sys, sleep, store, now: () => now, log: l => logs.push(l) })
+    let config: Config = { ...DEFAULT_CONFIG }
+    const mac = new MacControl({
+      system: sys,
+      store,
+      runner: { paused: false } as Runner,
+      notify: () => {},
+      now: () => now,
+      log: () => {},
+      sleep: async () => {},
+      later: () => {},
+      lid: { awake, sleep, config: () => config, saveConfig: c => (config = c) },
+    })
+    return { sys, sleep, store, awake, mac, logs, config: () => config, advance: (ms: number) => (now += ms) }
+  }
+
+  test('sleep is off while there is work, and on again once it is done', async () => {
+    const t = lid()
+    await t.awake.tick(true)
+    expect(t.sleep.calls).toEqual([true])
+    expect(t.awake.holds).toBe(true)
+    await t.awake.tick(true)
+    expect(t.sleep.calls).toEqual([true]) // once, not every tick
+    await t.awake.tick(false)
+    expect(t.sleep.calls).toEqual([true, false])
+    expect(t.awake.holds).toBe(false)
+  })
+
+  test("sleep someone else turned off (a keep-awake app) is left alone, and never turned on", async () => {
+    const t = lid()
+    t.sys.stuckOff = true
+    await t.awake.tick(true)
+    await t.awake.tick(false)
+    expect(t.sleep.calls).toEqual([])
+  })
+
+  test('a battery running low lets the Mac sleep', async () => {
+    const t = lid()
+    await t.awake.tick(true)
+    t.sys.battery = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t15%; discharging; 0:40 remaining present: true\n"
+    t.advance(61_000)
+    await t.awake.tick(true)
+    expect(t.sleep.calls).toEqual([true, false])
+    expect(t.logs.at(-1)).toContain('battery is below 20%')
+    // Not off again while it's low.
+    t.advance(61_000)
+    await t.awake.tick(true)
+    expect(t.sleep.calls).toEqual([true, false])
+  })
+
+  test('the engine started again after a crash still turns sleep back on', async () => {
+    const t = lid()
+    await t.awake.tick(true)
+    const again = new LidAwake({ system: t.sys, sleep: t.sleep, store: t.store, now: () => 2_000_000, log: () => {} })
+    expect(again.holds).toBe(true)
+    await again.tick(false)
+    expect(t.sleep.calls).toEqual([true, false])
+  })
+
+  test('not set up: it says how, once, and changes nothing', async () => {
+    const t = lid({ allowed: false })
+    await t.awake.tick(true)
+    t.advance(61_000)
+    await t.awake.tick(true)
+    expect(t.logs.filter(l => l.includes('cq awake lid on'))).toHaveLength(1)
+    expect((await t.mac.lidClosed(true)).text).toContain('cq awake lid on')
+    expect(t.config().keepAwakeLidClosed).toBe(false)
+    expect((await t.mac.status()).lidClosed).toEqual({ on: false, ready: false, holding: false })
+  })
+
+  test('turned on and off from an app; sleeping now turns sleep back on first', async () => {
+    const t = lid()
+    expect((await t.mac.lidClosed(true)).ok).toBe(true)
+    expect(t.config().keepAwakeLidClosed).toBe(true)
+    await t.awake.tick(true)
+    expect((await t.mac.status()).lidClosed).toEqual({ on: true, ready: true, holding: true })
+    const r = await t.mac.sleepNow({ quit: [], by: 'iPhone' })
+    expect(r.ok).toBe(true)
+    expect(t.sleep.calls).toEqual([true, false])
+    // Still work to do, but it stays on while the Mac sleeps.
+    await t.awake.tick(true)
+    expect(t.sleep.calls).toEqual([true, false])
+    await t.mac.lidClosed(false)
+    expect(t.config().keepAwakeLidClosed).toBe(false)
   })
 })

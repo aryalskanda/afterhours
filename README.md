@@ -268,6 +268,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq doctor` | Check Claude Code, tmux, the background service, Full Disk Access and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
 | `cq pair` · `cq devices` · `cq remote` · `cq audit` | Pair an Afterhours app · list or remove paired devices · remote access settings · what apps did |
+| `cq awake` · `cq awake lid on` | Whether the Mac stays awake while tasks run · with the lid closed too (no keep-awake app needed) |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq update` | Update (Homebrew installs: `brew upgrade afterhours`) |
 | `cq report` | Write a support file to your Desktop. It holds no prompts, code or tokens; read it before you send it. |
@@ -335,6 +336,7 @@ The words before the first colon count as options only if every one of them is a
 | `timeouts.limitGraceSec` | 180 | Wait after a reset before Afterhours types `continue` itself |
 | `timeouts.backgroundSec` | 600 | How long to wait for background commands after a turn |
 | `keepAwake` | `true` | Keep the Mac from idle-sleeping while tasks are pending (closing the lid still sleeps it) |
+| `keepAwakeLidClosed` | `false` | And with the lid closed: sleep is turned off while tasks are pending, back on when they're done or the battery is below 20%. Set it up with `cq awake lid on` (asks for your password once) |
 | `remoteControl` | `false` | Start sessions with `--remote-control` so they also appear in the Claude app |
 | `watchSessions` | `true` | Message you when one of your other chats (VS Code, a terminal) stops on a usage limit |
 | `autoContinueChats` | `true` | And continue it by itself at the reset: inside the open chat, else through the queue |

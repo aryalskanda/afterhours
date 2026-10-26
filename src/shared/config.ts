@@ -93,6 +93,8 @@ export interface Config {
   reopenInVsCode: boolean
   /** Hold a `caffeinate -i` assertion while jobs are pending. */
   keepAwake: boolean
+  /** And on a Mac, with the lid closed too: sleep turned off while jobs are pending (cq awake lid on). */
+  keepAwakeLidClosed: boolean
   /** Remote access from the Afterhours apps, through a relay. Set up with `cq pair`. */
   remote: RemoteConfig
   claudePath?: string
@@ -162,6 +164,7 @@ export const DEFAULT_CONFIG: Config = {
   autoContinueChats: true,
   reopenInVsCode: true,
   keepAwake: true,
+  keepAwakeLidClosed: false,
   remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
 }
 

@@ -555,6 +555,11 @@ export class Router {
             const s = await mac.sleepWhenDone({ on: r.on ?? true, quit: r.quit, by: name })
             return { ok: true, text: s.text }
           }
+          case 'lidClosed': {
+            const s = await mac.lidClosed(r.on ?? true)
+            if (s.ok) this.d.log(`${name} turned ${r.on ?? true ? 'on' : 'off'} staying awake with the lid closed`)
+            return s.ok ? { ok: true, text: s.text } : { ok: false, code: 'failed', error: s.text }
+          }
         }
         return { ok: false, code: 'invalid', error: 'Unknown action.' }
       }

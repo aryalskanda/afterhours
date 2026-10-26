@@ -173,6 +173,41 @@ export const systemMac: MacSystem = {
   },
 }
 
+/**
+ * Sleep turned off and on (`pmset -a disablesleep`) without a password: what keeps the Mac awake
+ * with its lid closed. It takes root, so `cq awake lid on` puts a rule in /etc/sudoers.d that
+ * allows exactly these two commands, and nothing else.
+ */
+export interface SleepSwitch {
+  /** The rule is in place: it can be done without asking for a password. */
+  allowed(): Promise<boolean>
+  /** Turns sleep off (`true`) or back on; false if it didn't work. */
+  set(off: boolean): Promise<boolean>
+  /** The same, waiting for it (as the engine stops). */
+  setNow(off: boolean): boolean
+}
+
+export const SUDOERS_FILE = '/etc/sudoers.d/afterhours'
+const PMSET = '/usr/bin/pmset'
+
+/** The sudoers rule for `user`: these two commands, without a password. */
+export function sudoersRule(user: string): string {
+  if (!/^[a-z_][a-z0-9_.-]*$/i.test(user)) throw new Error(`not a user name: ${user}`)
+  return `# Afterhours: keeps the Mac awake with its lid closed while tasks run (cq awake lid on).\n${user} ALL=(root) NOPASSWD: ${PMSET} -a disablesleep 1, ${PMSET} -a disablesleep 0\n`
+}
+
+export const systemSleepSwitch: SleepSwitch = {
+  async allowed() {
+    return (await output(['sudo', '-n', '-l', PMSET, '-a', 'disablesleep', '1'])).code === 0
+  },
+  async set(off) {
+    return (await output(['sudo', '-n', PMSET, '-a', 'disablesleep', off ? '1' : '0'])).code === 0
+  },
+  setNow(off) {
+    return Bun.spawnSync(['sudo', '-n', PMSET, '-a', 'disablesleep', off ? '1' : '0'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' }).exitCode === 0
+  },
+}
+
 /** This Mac's controls, or null on other systems. */
 export function macSystem(): MacSystem | null {
   return isMac ? systemMac : null
