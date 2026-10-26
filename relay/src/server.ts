@@ -119,12 +119,16 @@ export const APP_CSP = [
   "form-action 'none'",
 ].join('; ')
 
+/** Search engines are told to skip everything this serves, while the app is in development. */
+const NO_INDEX = 'noindex, nofollow, noarchive'
+
 /**
  * A file from the app's build, or the app itself for any address that isn't a file (one page app).
  * Pairing links arrive in the query string: it is never logged, and no referrer carries it on.
  */
 export function appResponse(dir: string, req: Request): Response {
   const headers: Record<string, string> = {
+    'x-robots-tag': NO_INDEX,
     'content-security-policy': APP_CSP,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
@@ -398,6 +402,8 @@ export function startRelay(o: RelayOptions = {}): Relay {
     hostname: o.hostname ?? '0.0.0.0',
     fetch(req, srv) {
       const url = new URL(req.url)
+      // Not for search engines yet: neither the pages nor anything else this serves.
+      if (url.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n', { headers: { 'content-type': 'text/plain', 'x-robots-tag': NO_INDEX } })
       if (url.pathname === '/health') {
         return Response.json({ ok: true, protocol: RELAY_PROTOCOL_VERSION, ...stats() })
       }
@@ -409,7 +415,7 @@ export function startRelay(o: RelayOptions = {}): Relay {
         return new Response('upgrade failed', { status: 400 })
       }
       if (o.appDir) return appResponse(o.appDir, req)
-      return new Response('Afterhours relay. Apps and machines connect to /v1.\n', { headers: { 'content-type': 'text/plain' } })
+      return new Response('Afterhours relay. Apps and machines connect to /v1.\n', { headers: { 'content-type': 'text/plain', 'x-robots-tag': NO_INDEX } })
     },
     websocket: {
       maxPayloadLength: MAX_FRAME_BYTES + 1024,

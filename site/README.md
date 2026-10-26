@@ -11,6 +11,8 @@ A static page: `index.html`, `styles.css`, `main.js`, `config.js`, `favicon.svg`
 
 ## Deploy
 
+The page and `robots.txt` ask search engines to skip the site while the app is in development. When you launch, delete `robots.txt` and the `robots` meta tag in `index.html`.
+
 - **Cloudflare Pages:** `npx wrangler pages deploy site --project-name afterhours`. Then add your domain under the project's Custom domains.
 - **Vercel:** `npx vercel site --prod`.
 
