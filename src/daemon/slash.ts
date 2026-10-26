@@ -29,7 +29,8 @@ function commandsIn(dir: string, scope: SlashCommand['scope']): SlashCommand[] {
     if (depth > 3) return
     let names: string[]
     try {
-      names = readdirSync(at)
+      // Sorted: a directory's own order differs between systems (macOS's is alphabetical, Linux's isn't).
+      names = readdirSync(at).sort()
     } catch {
       return
     }
@@ -49,7 +50,7 @@ function commandsIn(dir: string, scope: SlashCommand['scope']): SlashCommand[] {
 function skillsIn(dir: string, scope: SlashCommand['scope']): SlashCommand[] {
   let names: string[]
   try {
-    names = readdirSync(dir)
+    names = readdirSync(dir).sort()
   } catch {
     return []
   }
