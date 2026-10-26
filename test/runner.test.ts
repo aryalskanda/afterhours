@@ -577,6 +577,65 @@ describe('asking you', () => {
     expect(h.runner.answer(notice.code, 'allow', null)).toBe(`${notice.code} was already allowed.`)
   })
 
+  test('while a plan task is still planning, a change is answered at once: present the plan', async () => {
+    const h = setup()
+    const j = await startJob(h) // plan first, review off, still in plan mode
+    const before = h.notices.length
+    for (const tool of ['Edit', 'Write', 'mcp__notion__update-page']) {
+      const r = (await h.runner.onHook('PermissionRequest', j.id, { tool_name: tool, permission_mode: 'plan', tool_input: { file_path: '/x' } })) as { hookSpecificOutput: { decision: { behavior: string; message: string } } }
+      expect(r.hookSpecificOutput.decision.behavior).toBe('deny')
+      expect(r.hookSpecificOutput.decision.message).toContain('ExitPlanMode')
+      expect(r.hookSpecificOutput.decision.message).toContain('approved automatically')
+    }
+    // Nothing went to your phone.
+    expect(h.notices.length).toBe(before)
+    expect(h.store.pendingApprovals(j.id)).toEqual([])
+    expect(h.logs.some(l => l.includes('Edit while planning'))).toBe(true)
+  })
+
+  test('the same, saying you review the plan when you asked to', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true })
+    const r = (await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Edit', permission_mode: 'plan', tool_input: { file_path: '/x' } })) as { hookSpecificOutput: { decision: { message: string } } }
+    expect(r.hookSpecificOutput.decision.message).toContain('The user reviews it')
+  })
+
+  test('while planning, reading is allowed in a mode that wouldn’t ask; commands still ask', async () => {
+    const h = setup()
+    const j = await startJob(h)
+    const read = await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: '/x' } })
+    expect(read).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
+    expect(h.store.pendingApprovals(j.id)).toEqual([])
+
+    // A command goes the usual way: asked.
+    const bash = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', permission_mode: 'plan', tool_input: { command: 'ls' } })
+    await Bun.sleep(0)
+    expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Bash' })
+    h.runner.answer(lastNotice(h, 'permission').code, 'allow', null)
+    await bash
+
+  })
+
+  test('while planning, a mode that asks for edits asks for reads too, as before', async () => {
+    const h = setup()
+    const careful = await startJob(h, { execMode: 'acceptEdits' })
+    const asked = h.runner.onHook('PermissionRequest', careful.id, { tool_name: 'Read', permission_mode: 'plan', tool_input: { file_path: '/x' } })
+    await Bun.sleep(0)
+    expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Read' })
+    h.runner.answer(lastNotice(h, 'permission').code, 'allow', null)
+    await asked
+  })
+
+  test('once the plan is approved, a change that asks is forwarded as before', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, execMode: 'acceptEdits' })
+    const pending = h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Edit', permission_mode: 'acceptEdits', tool_input: { file_path: '/x' } })
+    await Bun.sleep(0)
+    expect(lastNotice(h, 'permission')).toMatchObject({ tool: 'Edit' })
+    h.runner.answer(lastNotice(h, 'permission').code, 'allow', null)
+    expect(await pending).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
+  })
+
   test('a declined request carries your note', async () => {
     const h = setup()
     const j = await startJob(h, { plan: false, execMode: 'acceptEdits' })

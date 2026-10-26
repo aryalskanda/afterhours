@@ -141,6 +141,26 @@ const HANDOFF_PROMPT = 'Your plan is approved. Carry it out now, step by step, a
 /** What an ask task tells Claude when it presents a plan anyway. */
 const ASK_FEEDBACK = "This task is a question: answer it directly in your reply. Don't present a plan or change anything."
 
+/** Tools that only read: while a task is still planning, a mode that doesn't ask allows them at once. */
+const READ_ONLY = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch'])
+
+/** Whether a tool changes something: the edit tools, and anything from an MCP server. */
+function isChange(tool: string): boolean {
+  return ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(tool) || tool.startsWith('mcp__')
+}
+
+/**
+ * What a task that plans first is told when it asks to change something while still in plan mode:
+ * nothing can change yet, so the ask never goes to the phone; presenting the plan is the way on.
+ */
+function planFirstReason(review: boolean): string {
+  return (
+    "This task plans first and you're still in plan mode, so nothing can change yet. " +
+    `Present your plan now with ExitPlanMode. ${review ? 'The user reviews it' : "It's approved automatically"}, ` +
+    'and then you can make this change.'
+  )
+}
+
 const CODE_LETTERS = 'abcdefghijkmnopqrstuvwxyz' // no "l": it reads like 1 and I on a phone
 
 /** A key typed right after Esc arrives as one Alt+key sequence; wait this long in between. */
@@ -930,6 +950,16 @@ export class Runner {
       }
       rt.plan ??= { since: this.d.now(), attempts: 0 }
       return {}
+    }
+    // Still planning: a change can't happen yet, and asking about each one (over a bad connection,
+    // from a phone) only delays the plan. Claude is told to present it; reading is fine in a mode
+    // that wouldn't have asked.
+    if (job.plan && !job.planApproved && payload.permission_mode === 'plan') {
+      if (isChange(tool)) {
+        this.d.log(`#${job.id}: ${tool} while planning; told Claude to present the plan`)
+        return permissionDecision({ behavior: 'deny', message: planFirstReason(job.review) })
+      }
+      if (READ_ONLY.has(tool) && (job.execMode === 'auto' || job.execMode === 'bypassPermissions')) return permissionDecision({ behavior: 'allow' })
     }
     if (rt.switchAfter) {
       const mode = rt.switchAfter
