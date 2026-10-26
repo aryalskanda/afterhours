@@ -7,7 +7,6 @@ import { CQ_HOME, findExecutable, loadConfig, paths, readToken, TMUX_SESSION, TM
 import type { LaunchSpec } from '../shared/types'
 import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
-import { appCommand } from './app'
 import { awakeCommand } from './awake'
 import { foldersCommand } from './folders'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
@@ -25,8 +24,6 @@ Setup and service:
   cq telegram <token>  connect your Telegram bot (from @BotFather) and pair your account
   cq telegram off      stop using Telegram
   cq pair              pair the ${BRAND.name} app with this machine (shows a QR code; --relay wss://… the first time)
-  cq app setup         open the ${BRAND.name} app inside Telegram (this machine serves it through Tailscale Funnel)
-  cq app status|off    whether it's reachable; stop serving it
   cq devices           the devices paired with this machine; cq devices remove <name> cuts one off
   cq remote            remote access settings: relay, name, allowed folders, what apps may do
   cq audit             what apps did on this machine
@@ -140,9 +137,6 @@ async function main(): Promise<void> {
       return
     case 'pair':
       if (!(await pairCommand(rest))) process.exitCode = 1
-      return
-    case 'app':
-      if (!(await appCommand(rest))) process.exitCode = 1
       return
     case 'devices':
       if (!(await devicesCommand(rest))) process.exitCode = 1

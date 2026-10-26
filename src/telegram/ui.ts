@@ -19,8 +19,6 @@ import { LATER } from './when'
 //   o:<code>:<step>.<opt>|d|t|b  a question (pick, done, type, back)   j:<job>:<op>  a job   g:<op>  global
 //   w:<session>:c|f|x        one of your other chats (it hit a usage limit)
 //   c:l:<page> · c:o|w|r:<session> · c:x   your chats: a page, open one, write in it, its full reply, leave it
-// With the app inside Telegram (cq app setup), messages are short and Open ↗ buttons (web_app) show
-// the rest in the app: see "the app inside Telegram" below.
 
 export interface View {
   html: string
@@ -50,32 +48,6 @@ export function btn(text: string, data: string): InlineButton {
   if (Buffer.byteLength(data) > 64) throw new Error(`button data too long: ${data}`)
   return { text, callback_data: data }
 }
-
-/** Where Open ↗ buttons lead: the app this machine serves (its public address), and this machine's id there. */
-export interface AppLinks {
-  base: string
-  machine: string
-}
-
-/** A button that opens a screen of the app inside Telegram. */
-export function openBtn(links: AppLinks, path: string, text = 'Open ↗'): InlineButton {
-  return { text, web_app: { url: `${links.base}${path}` } }
-}
-
-/** The app's screens, as addresses. */
-export const appPath = {
-  machine: (l: AppLinks) => `/machine/${l.machine}`,
-  task: (l: AppLinks, job: number, view?: 'answer' | 'activity' | 'plan') => `/machine/${l.machine}/task/${job}${view ? `?view=${view}` : ''}`,
-  screen: (l: AppLinks) => `/machine/${l.machine}/screen`,
-  inbox: () => '/inbox',
-  newTask: (l: AppLinks, o: { folder?: string | null; prompt?: string }) => {
-    const q = new URLSearchParams({ machine: l.machine, ...(o.folder ? { folder: o.folder } : {}), ...(o.prompt ? { prompt: o.prompt } : {}) })
-    return `/new?${q.toString()}`
-  },
-}
-
-/** Addresses longer than this don't go on a button: a long prompt keeps the usual card. */
-export const MAX_LINK = 1024
 
 /** About how many characters fit across a phone in one row of buttons. */
 export const ROW_COLUMNS = 34
@@ -185,8 +157,6 @@ export function modeOf(d: { plan: boolean; review: boolean; execMode: ExecMode }
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 export interface UiContext {
-  /** Set while messages are short, with Open ↗ into the app inside Telegram. */
-  links?: AppLinks | null
   /** For times (⏰ Later); missing in older callers. */
   now?: number
   models: string[]
@@ -222,15 +192,6 @@ function chatLabel(d: Draft, ctx: UiContext, chat: Chat | null): string {
 
 export function draftCard(d: Draft, ctx: UiContext): View {
   const id = d.id
-  // Short, when everything's chosen and the app can change it: Queue as it is, or Change ↗ in the app.
-  const l = ctx.links
-  const change = l && d.folder && d.prompt && !d.sessionId && !d.editJob ? openBtn(l, appPath.newTask(l, { folder: d.folder, prompt: d.prompt }), 'Change ↗') : null
-  if (change?.web_app && change.web_app.url.length <= MAX_LINK) {
-    return {
-      html: [quote(d.prompt, 600), `📁 <b>${esc(ctx.label(d.folder!))}</b> · ${esc(modeLabel(d))} · ${esc(d.model)}${d.plan && d.workModel ? `→${esc(d.workModel)}` : ''}/${d.effort}`].join('\n'),
-      keyboard: [[btn('▶️ Queue', `d:${id}:q`), change], [btn('✖️ Discard', `d:${id}:x`)]],
-    }
-  }
   const chat = d.sessionId ? ctx.chat(d.sessionId) : null
   const folder = d.folder ? `📁 <b>${esc(ctx.label(d.folder))}</b>` : '📁 <i>no folder yet</i>'
   const html = [
@@ -579,18 +540,6 @@ export interface Card {
 /** A task's card: sent when it starts, then edited as its plan is approved and when it ends. */
 export function taskCard(job: Job, card: Card, ctx: UiContext): View {
   const ended = job.status === 'done' || job.status === 'failed' || job.status === 'cancelled'
-  if (ctx.links) {
-    const l = ctx.links
-    const took = job.startedAt && job.finishedAt ? ` in ${duration(job.finishedAt - job.startedAt)}` : ''
-    const end = !ended ? '' : job.status === 'done' ? ` · ✅ done${took}` : job.status === 'failed' ? ` · ❌ failed${took}` : ' · ✖️ cancelled'
-    const lines = [
-      `▶️ <b>#${job.id}</b> · ${esc(ctx.label(job.projectDir))}${end}`,
-      `<i>${esc(oneLine(job.prompt, 140))}</i>`,
-      card.plan !== undefined ? `📝 Plan approved (${esc(card.plan)})` : '',
-    ]
-    const open = openBtn(l, appPath.task(l, job.id))
-    return { html: lines.filter(Boolean).join('\n'), keyboard: ended ? [[open]] : [[open, btn('⏹ Stop', `j:${job.id}:stop`), btn('🛑 Kill', `j:${job.id}:kill`)]], silent: true }
-  }
   const lines = [`▶️ <b>#${job.id} started</b> · ${jobHeader(job, ctx)}`, quote(job.prompt, 600)]
   if (card.plan !== undefined) lines.push(`📝 Plan approved (${esc(card.plan)})${job.planText ? `\n${quote(markdownToPlain(job.planText), 500)}` : ''}`)
   if (ended) {
@@ -677,8 +626,6 @@ export interface NoticeContext extends UiContext {
 }
 
 export function noticeView(n: Notice, ctx: NoticeContext): View {
-  const short = ctx.links ? shortNoticeView(n, ctx, ctx.links) : null
-  if (short) return short
   switch (n.type) {
     case 'started':
       return taskCard(n.job, {}, ctx)
@@ -975,8 +922,6 @@ export function settingsView(o: {
   models: string[]
   watch: boolean
   autoContinue: boolean
-  /** With the app inside Telegram: short messages with Open ↗, or full ones; null when it isn't set up. */
-  messages?: 'short' | 'full' | null
   now: number
 }): View {
   const built = o.builtAt ? `rebuilt ${duration(o.now - o.builtAt)} ago` : 'not built yet'
@@ -988,14 +933,12 @@ export function settingsView(o: {
       `Folder map: ${o.folders} folders under ${o.roots.map(r => esc(basename(r))).join(', ')} · ${built}\n` +
       `Models: ${esc(o.models.join(', '))} <i>(change in ~/${BRAND.homeDir}/config.json)</i>\n` +
       `Other chats: ${o.watch ? `I tell you when one in VS Code or a terminal hits a usage limit${o.autoContinue ? ', and continue it at the reset' : ''}` : 'not watched'}\n` +
-      (o.messages ? `App inside Telegram: ${o.messages === 'short' ? 'on (messages are a line or two, with Open ↗)' : 'off (full messages, every button here)'}\n` : '') +
       '<i>New tasks start with the choices you used last.</i>',
     keyboard: [
       [n('all', '🔔 All'), n('important', '🔕 Important'), n('off', '🔇 Off')],
       // Continuing a chat by itself follows from watching them: it's offered only while they're watched.
       [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), ...(o.watch ? [btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')] : [])],
       [btn('🔄 Rescan folders', 'g:rescan')],
-      ...(o.messages ? [[btn(o.messages === 'short' ? '📄 Turn the app inside Telegram off' : '📱 Turn the app inside Telegram on', 'g:msgs')]] : []),
     ],
   }
 }
@@ -1060,8 +1003,6 @@ export const HELP_HTML =
   'Commands: /new /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel\n' +
   'Typing <code>q myapp plan opus max: …</code> still works too.'
 
-// --- the app inside Telegram ----------------------------------------------------------------
-
 /** What a tool asks to do, in words. */
 function toolAction(tool: string): string {
   switch (tool) {
@@ -1083,114 +1024,3 @@ function toolAction(tool: string): string {
       return `use ${tool.startsWith('mcp__') ? (tool.split('__').pop() ?? tool) : tool}`
   }
 }
-
-/**
- * A notice in a line or two, with Open ↗ for the rest in the app; null for the ones that are
- * already short (they keep their usual message).
- */
-export function shortNoticeView(n: Notice, ctx: NoticeContext, l: AppLinks): View | null {
-  switch (n.type) {
-    case 'started':
-      return taskCard(n.job, {}, ctx)
-    case 'plan_approved':
-      return { html: `📝 <b>#${n.job.id} plan approved</b> (${esc(n.choice)})`, keyboard: [[openBtn(l, appPath.task(l, n.job.id, 'plan'), 'Plan ↗')]], silent: true }
-    case 'plan_review': {
-      const first = n.job.planText ? oneLine(markdownToPlain(n.job.planText), 200) : ''
-      return {
-        html: `📝 <b>#${n.job.id}'s plan is ready</b> · ${esc(ctx.label(n.job.projectDir))}${first ? `\n<i>${esc(first)}</i>` : ''}`,
-        keyboard: [[btn('✅ Approve', `a:${n.code}:y`), openBtn(l, appPath.inbox(), 'Review ↗')]],
-      }
-    }
-    case 'permission': {
-      const risk = permissionRisk(n.tool, n.detail, n.job.projectDir)
-      const what = risk.summary ?? oneLine(n.detail, 120)
-      const lines = [
-        `🔐 <b>#${n.job.id} wants to ${esc(toolAction(n.tool))}</b> · ${esc(ctx.label(n.job.projectDir))}`,
-        risk.summary ? esc(what) : `<code>${esc(what)}</code>`,
-        risk.level === 'high' && risk.reasons[0] ? `⚠️ ${esc(risk.reasons[0])}` : '',
-        `<i>Denied by itself in ${n.minutes}m.</i>`,
-      ]
-      return {
-        html: lines.filter(Boolean).join('\n'),
-        keyboard: [[btn('✅ Allow', `a:${n.code}:y`), btn('❌ Deny', `a:${n.code}:n`), openBtn(l, appPath.inbox())]],
-      }
-    }
-    case 'question': {
-      const q = n.questions[0]
-      const more = n.questions.length > 1 ? ` <i>(and ${n.questions.length - 1} more)</i>` : ''
-      return {
-        html: `❓ <b>#${n.job.id} asks</b>${q ? `: ${esc(clip(q.question.replace(/\s+/g, ' '), 300))}` : ''}${more}\n<i>Claude decides itself in ${n.minutes}m.</i>`,
-        keyboard: [[openBtn(l, appPath.inbox(), 'Answer ↗')]],
-      }
-    }
-    case 'done': {
-      const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? ctx.now) - n.job.startedAt)}` : ''
-      const answer = n.job.lastMessage ? oneLine(markdownToPlain(n.job.lastMessage), 220) : ''
-      const lines = [
-        `✅ <b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}${n.diff ? ` · ${esc(n.diff)}` : ''}`,
-        answer ? `<i>${esc(answer)}</i>` : '',
-        n.job.branch ? `🌿 On branch <code>${esc(n.job.branch)}</code>` : '',
-      ]
-      return {
-        html: lines.filter(Boolean).join('\n'),
-        keyboard: [[openBtn(l, appPath.task(l, n.job.id, 'answer')), btn('➕ Follow up', `j:${n.job.id}:fu`)], [linkButton(n.job)]],
-      }
-    }
-    case 'held':
-      return {
-        html: `⚠️ <b>#${n.job.id} paused</b>: ${esc(clip(n.reason, 300))}`,
-        keyboard: [[btn('▶️ Go', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`), openBtn(l, appPath.screen(l))]],
-      }
-    case 'failed':
-      return {
-        html: `❌ <b>#${n.job.id} failed</b>: ${esc(clip(n.reason, 300))}`,
-        keyboard: [[btn('▶️ Retry', `j:${n.job.id}:go`), btn('🛑 Kill', `j:${n.job.id}:kill`), openBtn(l, appPath.task(l, n.job.id))]],
-      }
-    case 'limit': {
-      const when = n.at ? `resets ${formatClock(n.at, ctx.now)}` : 'reset time unknown'
-      return {
-        html: `⏸ <b>#${n.job.id} hit the ${windowLabel(n.window)}</b> · ${esc(when)} · it continues on its own`,
-        keyboard: [[btn('▶️ Continue now', `j:${n.job.id}:now`), openBtn(l, appPath.task(l, n.job.id)), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
-      }
-    }
-    case 'recovered':
-      return {
-        html: `🔁 <b>#${n.job.id}'s window was gone</b>, so it continues where it left off.`,
-        keyboard: [[openBtn(l, appPath.task(l, n.job.id)), btn('⏹ Stop', `j:${n.job.id}:stop`), btn('🛑 Kill', `j:${n.job.id}:kill`)]],
-        silent: true,
-      }
-    default:
-      return null
-  }
-}
-
-/** 👀 Peek, short: the screen's last lines (they fit a phone), and the whole screen in the app. */
-export function shortPeekView(jobId: number | null, screen: string, l: AppLinks): View {
-  if (jobId === null) return { html: '👀 Nothing is running.', keyboard: [[btn('🔄 Refresh', 'g:peek')]] }
-  const lines = screen.split('\n').map(x => x.trimEnd())
-  while (lines.length > 0 && !lines.at(-1)) lines.pop()
-  const tail = lines.slice(-12).map(x => clip(x, 60)).join('\n')
-  return {
-    html: `👀 <b>#${jobId}</b>\n<pre>${esc(tail) || '(blank screen)'}</pre>`,
-    keyboard: [
-      [openBtn(l, appPath.screen(l), 'Screen ↗'), btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)],
-      [btn('🛑 Kill', `j:${jobId}:kill`)],
-    ],
-  }
-}
-
-/** /app: pairs this Telegram with the machine (a one-time link, checked against who you are in Telegram). */
-export function appSetupView(o: { url: string; machineName: string; minutes: number }): View {
-  return {
-    html:
-      `📱 <b>Open ${BRAND.name} right here</b>\n` +
-      `Tap Finish setup to pair this Telegram with ${esc(o.machineName)}. It works once, for ${o.minutes} minutes, and only for you.`,
-    keyboard: [[{ text: 'Finish setup', web_app: { url: o.url } }]],
-  }
-}
-
-export const HELP_SHORT_HTML =
-  `<b>${BRAND.name} opens right here:</b> tap the ${BRAND.name} button next to the text box.\n\n` +
-  'Or send me what Claude should do: I reply with a card to queue it as it is, or change it in the app.\n' +
-  "I message you when something needs you or finishes, in a line or two. Open ↗ shows the rest.\n\n" +
-  'Commands: /app /new /queue /status /peek /pause /resume /settings'

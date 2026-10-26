@@ -80,9 +80,6 @@ interface Offer {
   id: Uint8Array
   secret: Uint8Array
   autoApprove: boolean
-  /** A check of the app's Hello before an automatic yes: failing it is a no, with `refusal` as the reason. */
-  verify: ((hello: Hello) => boolean) | null
-  refusal: string
   pending: Map<string, { session: Session; device: DeviceHello; hello: Hello; startedAt: number }>
   winner: { session: Session; device: DeviceHello; hello: Hello } | null
 }
@@ -177,10 +174,8 @@ export class Host {
 
   /**
    * A pairing offer: show its link as a QR code. Valid for `ttlMs` (10 minutes by default).
-   * `verify`: approve by itself only an app whose Hello passes it; refuse every other one, telling
-   * it `refusal` (a short code the app explains).
    */
-  openOffer(o: { role: Role; autoApprove?: boolean; ttlMs?: number; verify?: (hello: Hello) => boolean; refusal?: string }): OfferView {
+  openOffer(o: { role: Role; autoApprove?: boolean; ttlMs?: number }): OfferView {
     const secret = randomBytes(PAIRING_SECRET_BYTES)
     const id = offerId(secret)
     const expires = this.now() + Math.min(o.ttlMs ?? PAIRING_TTL_MS, PAIRING_TTL_MS)
@@ -193,7 +188,7 @@ export class Host {
       status: 'waiting',
       device: null,
     }
-    this.offers.set(view.offer, { view, id, secret, autoApprove: o.autoApprove ?? false, verify: o.verify ?? null, refusal: o.refusal ?? 'denied', pending: new Map(), winner: null })
+    this.offers.set(view.offer, { view, id, secret, autoApprove: o.autoApprove ?? false, pending: new Map(), winner: null })
     this.relay.control({ t: 'offer', offer: view.offer, expires })
     return { ...view }
   }
@@ -385,15 +380,7 @@ export class Host {
     o.view.status = 'confirm'
     o.view.device = pending.device
     this.o.onPairingRequest?.(this.offer(o.view.offer)!)
-    if (o.verify) {
-      let passed = false
-      try {
-        passed = o.verify(pending.hello)
-      } catch (err) {
-        this.log(`pairing ${pending.device.name}: the check failed: ${err instanceof Error ? err.message : err}`)
-      }
-      this.decide(o.view.offer, passed, o.refusal)
-    } else if (o.autoApprove) this.decide(o.view.offer, true)
+    if (o.autoApprove) this.decide(o.view.offer, true)
   }
 
   private closeOffer(o: Offer): void {

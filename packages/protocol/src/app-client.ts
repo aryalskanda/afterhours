@@ -29,8 +29,6 @@ export interface DeviceProfile {
   platform: string
   /** The app and its version, e.g. "afterhours-app/0.1.0". */
   app: string
-  /** Inside Telegram: its signed launch data, sent only while pairing (see Hello). */
-  telegram?: () => string | undefined
 }
 
 export interface MachineRecord {
@@ -142,7 +140,6 @@ export class AppClient {
             const why: Record<string, string> = {
               denied: 'The machine said no.',
               expired: 'Nobody confirmed on the machine in time.',
-              telegram: 'This link only works for the bot’s owner, opened from the bot within a few minutes. Ask the bot for a new one with /app.',
             }
             finish(new Error(why[result.error ?? ''] ?? 'Pairing failed on the machine.'))
             return
@@ -155,8 +152,7 @@ export class AppClient {
           finish(new Error(`Pairing failed: ${err instanceof Error ? err.message : err}`))
         }
       })
-      const telegram = this.o.device.telegram?.()
-      const hello = { v: PROTOCOL, app: this.o.device.app, name: this.o.device.name, platform: this.o.device.platform, ...(telegram ? { telegram } : {}) }
+      const hello = { v: PROTOCOL, app: this.o.device.app, name: this.o.device.name, platform: this.o.device.platform }
       if (!send(session.writeHandshake(hello))) {
         finish(new Error("Can't reach the relay."))
       }

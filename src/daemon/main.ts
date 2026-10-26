@@ -248,18 +248,6 @@ export async function runDaemon(): Promise<void> {
       commandContext: () => commandContext('cli'),
       mac,
       git,
-      app: {
-        url: () => remote.appUrl(),
-        machine: () => {
-          const s = remote.status().machine
-          return s ? { id: s.id, name: s.name } : null
-        },
-        paired: () => remote.hasTelegramDevice(),
-        offer: verify => {
-          const offer = remote.openTelegramOffer(verify)
-          return typeof offer === 'string' ? offer : { link: offer.link, expires: offer.expires }
-        },
-      },
       now: Date.now,
       log,
     })

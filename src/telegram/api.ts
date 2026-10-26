@@ -33,11 +33,8 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery
 }
 
-/** A button that sends `callback_data` to the bot, opens the app inside Telegram (`web_app`), or opens a link (`url`). */
-export type InlineButton =
-  | { text: string; callback_data: string; web_app?: never; url?: never }
-  | { text: string; web_app: { url: string }; callback_data?: never; url?: never }
-  | { text: string; url: string; callback_data?: never; web_app?: never }
+/** A button that sends `callback_data` to the bot, or opens a link (`url`). */
+export type InlineButton = { text: string; callback_data: string; url?: never } | { text: string; url: string; callback_data?: never }
 
 export type InlineKeyboard = InlineButton[][]
 
@@ -54,8 +51,8 @@ export interface RemoveKeyboard {
 
 export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard | RemoveKeyboard
 
-/** The button beside the text box: the bot's commands, or the app inside Telegram. */
-export type MenuButton = { type: 'commands' } | { type: 'web_app'; text: string; web_app: { url: string } }
+/** The button beside the text box: the bot's commands. */
+export type MenuButton = { type: 'commands' }
 
 /** What the bridge needs from Telegram; tests swap in a fake. */
 export interface BotApi {
@@ -86,11 +83,6 @@ export function refusedFormatting(err: unknown): boolean {
   return /can't parse entities|unsupported start tag|can't find end tag|unclosed|message is too long|text is too long/i.test(
     err instanceof Error ? err.message : String(err),
   )
-}
-
-/** Telegram refused a message's buttons (an app button it won't take): worth sending again without them. */
-export function refusedButtons(err: unknown): boolean {
-  return /BUTTON_|reply markup|web_?app/i.test(err instanceof Error ? err.message : String(err))
 }
 
 interface ApiResponse<T> {

@@ -11,8 +11,7 @@ import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type MenuButton, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
-import { TelegramBridge, type TelegramAppLink } from '../src/telegram/bot'
-import { signInitData } from '../src/telegram/webapp'
+import { TelegramBridge } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
 import { FakeMac, FakeTmux, makeTree } from './fakes'
@@ -89,7 +88,7 @@ function button(keyboard: InlineKeyboard, label: string | RegExp): string {
   throw new Error(`no button ${label} in ${JSON.stringify(keyboard.map(r => r.map(b => b.text)))}`)
 }
 
-function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}) {
+function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -156,7 +155,6 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}
       config = c
     },
     commandContext: () => ({ runner, store, config: () => config, saveConfig: c => (config = c), now: () => now, source: 'cli' }),
-    app: o.app,
     now: () => now,
     log: () => {},
   })
@@ -191,7 +189,7 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakeMac; git?: BranchGit } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1088,197 +1086,23 @@ describe('the Mac, from the bot', () => {
   })
 })
 
-describe('the app inside Telegram', () => {
-  const MACHINE = 'm'.repeat(43)
-  /** The machine's side, as the daemon wires it: the app's address, its Telegram devices, its offers. */
-  function appLink(o: { url?: string | null } = {}) {
-    const state = { url: o.url === undefined ? 'https://mac.example.ts.net' : o.url, paired: false, verify: null as null | ((hello: { telegram?: string; v: 1; app: string; name: string; platform: string }) => boolean) }
-    const link: TelegramAppLink = {
-      url: () => state.url,
-      machine: () => ({ id: MACHINE, name: 'build-box' }),
-      paired: () => state.paired,
-      offer: verify => {
-        state.verify = verify
-        return { link: 'afterhours://pair?r=wss%3A%2F%2Fmac.example.ts.net%2Fv1&m=abc&s=secret&n=build-box&x=99', expires: Date.now() + 10 * 60_000 }
-      },
-    }
-    return { link, state }
-  }
-  const webApps = (keyboard: InlineKeyboard) => keyboard.flat().filter(b => b.web_app).map(b => [b.text, b.web_app!.url])
-  /** Turns the app inside Telegram on, as /settings does. */
-  const turnOn = async (h: Harness) => {
-    h.store.kvSet('telegram.messages', 'short')
-    await h.bridge.tick()
-  }
-
-  test('the bot does it all by default: with the app set up and paired, full cards with 🧠 Model, and the commands menu', async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    state.paired = true
-    await h.bridge.tick()
-    expect(h.api.menus).toEqual([])
-    await h.say('Do the thing')
-    const card = h.api.view(h.api.last().id)
-    expect(card.keyboard.flat().map(b => b.text)).toContain('🧠 Model')
-    expect(webApps(card.keyboard)).toEqual([])
-  })
-
-  test('after short messages in an earlier version: the menu shows the commands again, and the buttons come back once', async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    state.paired = true
-    h.store.kvSet('telegram.appIntro', true)
+describe('the menu button', () => {
+  test('an app button set by an earlier version is put back to the commands, once', async () => {
+    const h = await paired()
     h.store.kvSet('telegram.menu', 'https://mac.example.ts.net/?bot=cq_test_bot')
     await h.bridge.tick()
-    expect(h.api.menus.at(-1)).toEqual({ chat: OWNER, button: { type: 'commands' } })
-    const note = h.api.last()
-    expect(note.html).toContain('Messages are in full again')
-    expect(note.markup).toMatchObject({ keyboard: expect.any(Array) })
-    await h.bridge.tick()
-    expect(h.api.sent.filter(m => m.html.includes('Messages are in full again'))).toHaveLength(1)
-  })
-
-  test('/app pairs this Telegram, checked against who you are; once it is on, the menu button opens the app', async () => {
-    const { link, state } = appLink({ url: null })
-    const h = await paired({ app: link })
-    expect(h.api.menus).toEqual([])
-    state.url = 'https://mac.example.ts.net'
-    await h.bridge.tick()
-    // Set up isn't on: the menu keeps showing the commands.
-    expect(h.api.menus).toEqual([])
-
-    await h.say('/app')
-    const setup = h.api.last()
-    expect(setup.html).toContain('Finish setup')
-    const keyboard = setup.markup && 'inline_keyboard' in setup.markup ? setup.markup.inline_keyboard : []
-    expect(webApps(keyboard)).toEqual([['Finish setup', 'https://mac.example.ts.net/pair?r=wss%3A%2F%2Fmac.example.ts.net%2Fv1&m=abc&s=secret&n=build-box&x=99&bot=cq_test_bot']])
-    // The owner's launch data pairs; another account's doesn't.
-    const hello = (user: number) => ({ v: 1 as const, app: 'a', name: 'Telegram on iPhone', platform: 'telegram-ios', telegram: signInitData({ user: JSON.stringify({ id: user }), auth_date: String(Math.floor(h.now() / 1000)) }, 'x') })
-    expect(state.verify!(hello(OWNER))).toBe(true)
-    expect(state.verify!(hello(STRANGER))).toBe(false)
-    expect(state.verify!({ ...hello(OWNER), telegram: undefined })).toBe(false)
-
-    // /start app (the app's Set up button) does the same; strangers get nothing.
-    const before = h.api.sent.length
-    await h.say('/start app', STRANGER)
-    expect(h.api.sent.length).toBe(before)
-    await h.say('/start app')
-    expect(h.api.last().html).toContain('Finish setup')
-
-    // Paired, and turned on: the menu button opens it.
-    state.paired = true
-    await turnOn(h)
-    expect(h.api.menus.at(-1)).toEqual({ chat: OWNER, button: { type: 'web_app', text: 'Afterhours', web_app: { url: 'https://mac.example.ts.net/?bot=cq_test_bot' } } })
+    expect(h.api.menus).toEqual([{ chat: OWNER, button: { type: 'commands' } }])
     await h.bridge.tick()
     expect(h.api.menus).toHaveLength(1)
+    // And the bot says nothing about an app, anywhere.
+    await h.say('/help')
+    expect(h.api.last().html).not.toMatch(/\/app|Open ↗|inside Telegram/)
   })
 
-  test('without the app set up, /app says how, and messages stay as they are', async () => {
-    const h = await paired({ app: appLink({ url: null }).link })
+  test('/app is not a command any more', async () => {
+    const h = await paired()
     await h.say('/app')
-    expect(h.api.last().html).toContain('cq app setup')
-    const job = await running(h)
-    void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
-    await Bun.sleep(0)
-    expect(h.api.last().html).toContain('<pre>npm test</pre>')
-  })
-
-  test('turned on: the keyboard goes once, and notices are a line or two with Open ↗', async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    const job = await running(h)
-    state.paired = true
-    await h.bridge.devicePaired({ name: 'Telegram on iPhone', platform: 'telegram-ios' }, 'owner')
-    expect(h.api.sent.some(m => m.html.includes('Telegram on iPhone</b> paired with this machine from Telegram'))).toBe(true)
-    expect(h.api.sent.some(m => m.html.includes('now opens right here'))).toBe(false)
-    await turnOn(h)
-    const intro = h.api.last()
-    expect(intro.html).toContain('now opens right here')
-    expect(intro.markup).toEqual({ remove_keyboard: true })
-    await h.bridge.tick()
-    expect(h.api.sent.filter(m => m.html.includes('now opens right here'))).toHaveLength(1)
-
-    await h.bridge.notify({ type: 'started', job })
-    const card = h.api.last()
-    expect(webApps(h.api.view(card.id).keyboard)).toEqual([['Open ↗', `https://mac.example.ts.net/machine/${MACHINE}/task/${job.id}`]])
-
-    const decision = h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
-    await Bun.sleep(0)
-    const msg = h.api.last()
-    expect(msg.html).toContain(`#${job.id} wants to run a command`)
-    expect(msg.html).toContain('Runs the tests')
-    expect(msg.html).not.toContain('<pre>')
-    expect(webApps(h.api.view(msg.id).keyboard)).toEqual([['Open ↗', 'https://mac.example.ts.net/inbox']])
-    await h.tap(button(h.api.view(msg.id).keyboard, '✅ Allow'), msg.id)
-    expect(await decision).toMatchObject({ hookSpecificOutput: { decision: { behavior: 'allow' } } })
-
-    await h.bridge.notify({ type: 'done', job: { ...job, lastMessage: '# Done\n\nAdded the **toggle**.', startedAt: h.now() - 48 * 60_000, finishedAt: h.now(), branch: null } as Job, diff: '6 files changed', next: null })
-    const done = h.api.last()
-    expect(done.html).toContain(`#${job.id} done</b> in 48m`)
-    expect(done.html).toContain('6 files changed')
-    expect(done.html).toContain('Added the toggle')
-    expect(webApps(h.api.view(done.id).keyboard)).toEqual([['Open ↗', `https://mac.example.ts.net/machine/${MACHINE}/task/${job.id}?view=answer`]])
-  })
-
-  test('a typed prompt: Queue it as it is, or Change ↗ in the app; status and queue open the machine', async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    state.paired = true
-    await turnOn(h)
-    await h.say('Do the thing')
-    const first = h.api.last().id
-    await h.tap(button(h.api.view(first).keyboard, '📁 Folder'), first)
-    await h.tap(button(h.api.view(first).keyboard, 'beta ›'), first)
-    await h.tap(button(h.api.view(first).keyboard, '✅ Use beta'), first)
-    const card = h.api.view(first)
-    const [[label, url]] = webApps(card.keyboard) as [[string, string]]
-    expect(label).toBe('Change ↗')
-    const q = new URL(url).searchParams
-    expect([q.get('machine'), q.get('folder'), q.get('prompt')]).toEqual([MACHINE, join(h.root, 'beta'), 'Do the thing'])
-    await h.tap(button(card.keyboard, '▶️ Queue'), first)
-    expect(h.store.queued().map(j => j.prompt)).toEqual(['Do the thing'])
-
-    await h.say('/status')
-    expect(webApps(h.api.view(h.api.last().id).keyboard)[0]).toEqual(['Open Afterhours ↗', `https://mac.example.ts.net/machine/${MACHINE}`])
-  })
-
-  test("app buttons Telegram won't take: the notice still goes, without them", async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    const job = await running(h)
-    state.paired = true
-    await turnOn(h)
-    // Telegram refuses the first try (with its app button), and takes the second.
-    let refused = false
-    h.api.refuse = html => (html.includes('wants to run a command') && !refused ? ((refused = true), 'BUTTON_TYPE_INVALID') : null)
-    void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
-    await Bun.sleep(0)
-    const msg = h.api.last()
-    expect(msg.html).toContain('wants to run a command')
-    expect(webApps(h.api.view(msg.id).keyboard)).toEqual([])
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['✅ Allow', '❌ Deny'])
-  })
-
-  test('/settings turns the app inside Telegram on and off again', async () => {
-    const { link, state } = appLink()
-    const h = await paired({ app: link })
-    state.paired = true
-    await h.say('/settings')
-    const settings = h.api.last().id
-    expect(h.api.view(settings).html).toContain('App inside Telegram: off')
-    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram on'), settings)
-    expect(h.api.last().markup).toEqual({ remove_keyboard: true })
-    expect(h.api.view(settings).html).toContain('a line or two')
-    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram off'), settings)
-    expect(h.api.last().markup).toMatchObject({ keyboard: expect.any(Array) })
-    const job = await running(h)
-    await Bun.sleep(0)
-    expect(h.api.sent.some(m => m.html.includes(`#${job.id} started`))).toBe(true)
-    void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
-    await Bun.sleep(0)
-    expect(h.api.last().html).toContain('wants to use Bash')
-    await h.tap(button(h.api.view(settings).keyboard, 'Turn the app inside Telegram on'), settings)
-    expect(h.api.last().markup).toEqual({ remove_keyboard: true })
+    expect(h.api.last().html).not.toContain('cq app setup')
   })
 })
 

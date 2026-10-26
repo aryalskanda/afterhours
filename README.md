@@ -126,32 +126,7 @@ If Telegram can't be reached, messages wait on the Mac and arrive in order once 
 
 **🖥 /mac** shows what's open on the Mac and what keeps it awake, to quit an app or put the Mac to sleep, now or once the queue is done; **/sleep** goes straight there ([more](#quit-apps-and-sleep-the-mac)).
 
-Commands in the menu: `/app /new /chats /leave /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
-
-### The app inside Telegram
-
-The bot does everything above by itself. As an extra, it can also open the whole Afterhours app inside Telegram, as a Mini App: full screen, light or dark like Telegram, with Telegram's own Back button. It needs no app store and no account anywhere. Your Mac serves the app, and Tailscale Funnel gives it the public https address Telegram requires.
-
-1. Install [Tailscale](https://tailscale.com/download), sign in and connect. Turn on **HTTPS Certificates** once (Tailscale's admin page → DNS).
-2. On the Mac: `cq app setup`. It copies the app's web build (from the apps' repository next to this one, or `--web <its app/dist-web>`), runs the relay inside Afterhours (on `127.0.0.1:7788`), and opens it to the internet with `tailscale funnel`. The first time, Tailscale shows a link to allow Funnel. Open it, then run `cq app setup` again.
-3. In Telegram, send `/app` to your bot and tap **Finish setup**. That pairs this Telegram with your Mac in one tap. The link works once, for 10 minutes, and the Mac also checks Telegram's signed proof that you're the bot's owner.
-
-4. In the bot, `/settings` → **📱 Turn the app inside Telegram on**.
-
-From then on:
-
-- The **Afterhours** button next to the text box opens the app.
-- The bot's messages are a line or two, and **Open ↗** shows the rest in the app:
-  - 🔐 *#14 wants to run a command · Runs the tests*: **✅ Allow** · **❌ Deny** · **Open ↗**
-  - ✅ *#14 done in 48m · 6 files changed*: **Open ↗** · **➕ Follow up**
-  - ❓ questions: **Answer ↗**
-  - 📝 plans: **✅ Approve** · **Review ↗**
-  - ⚠️ / ❌ paused or failed: **▶️ Go** · **⏭ Skip** · **Open ↗**
-- A prompt you type still gets a card: **▶️ Queue** as it is, or **Change ↗** in the app.
-- The buttons under the text box go away, since the app has them all. The typed commands still work.
-- `/settings` → **📄 Turn the app inside Telegram off** brings back the full messages and every button, and the commands menu.
-
-Inside the app, everything goes end to end through the relay, not through Telegram; the bot's short notices still pass through Telegram, as before. The app only opens while the Mac is awake and online, and so does the bot. `cq app status` checks it's reachable; `cq app off` stops serving it. Every newly paired device is announced in your chat.
+Commands in the menu: `/new /chats /leave /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
 
 ## Continue a VS Code chat from your phone
 
@@ -197,7 +172,7 @@ The machine decides what apps may do, and no app can change it:
 
 To move to another relay (a hosted one, say): `cq remote relay wss://relay.example.com/v1`. It checks the relay answers first, waiting up to a minute for a free host to wake. Apps connected at that moment hear the new address and follow by themselves; any other app pairs again. `cq remote status` and `cq doctor` say whether the relay answers, and how fast.
 
-The relay can also run inside Afterhours, serving the app's web build at the same address: that's how [the app inside Telegram](#the-app-inside-telegram) works (`cq app setup`). To serve the app from a relay you run yourself, set `APP_DIR` to the app's web build.
+The relay can also run inside Afterhours (`remote.serve`), for a Mac that is reachable from the internet.
 
 ## Kill a stuck task
 
