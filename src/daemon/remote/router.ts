@@ -123,6 +123,9 @@ const NEEDS: Record<RequestType, Role> = {
   report: 'viewer',
   mac: 'owner',
 }
+/** How long a queued task counts as the one a repeat of its request meant. */
+const TWIN_MS = 10 * 60_000
+
 const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 const MAC_OFF = "This machine doesn't let apps quit its apps or put it to sleep (cq remote mac on)."
 /** Requests that change something: audited, and answered from memory when retried. */
@@ -865,9 +868,20 @@ export class Router {
     }
     const refusal = this.guard(spec)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
+    const twin = spec.group ? null : this.waitingTwin(spec)
+    if (twin) return { ok: true, text: `Already queued as #${twin.id}.`, data: { job: jobInfo(twin) } }
     const job = this.d.runner.enqueue(spec)
     this.d.store.kvSet('lastProject', projectDir)
     return { ok: true, text: `Queued #${job.id}.`, data: { job: jobInfo(job) } }
+  }
+
+  /**
+   * The same prompt for the same folder and conversation, still waiting, sent in the last few
+   * minutes: sending again (an answer that came late, a second tap) gets that one, not a copy.
+   */
+  private waitingTwin(spec: JobSpec): Job | null {
+    const since = this.d.now() - TWIN_MS
+    return this.d.store.queued().find(j => j.createdAt >= since && j.projectDir === spec.projectDir && j.prompt.trim() === spec.prompt.trim() && (j.sessionId ?? null) === (spec.sessionId ?? null)) ?? null
   }
 
   /** Typed into the chat if the queue is running it and it's free, else a task that continues it. */
@@ -891,6 +905,8 @@ export class Router {
     // A chat continues in its own mode, which may be one that skips permission prompts.
     const refusal = this.guard(spec)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
+    const twin = this.waitingTwin(spec)
+    if (twin) return { ok: true, text: `Already sent to ${title} as #${twin.id}.`, data: { job: jobInfo(twin) } }
     const job = this.d.runner.enqueue(spec)
     this.d.log(`${name} sent a message to chat ${chat.sessionId.slice(0, 8)} as #${job.id}`)
     return { ok: true, text: `Sent to ${title} as #${job.id}.`, data: { job: jobInfo(job) } }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Notice } from '../src/daemon/notify'
@@ -309,6 +309,44 @@ describe('plan → execute → next job', () => {
     h.advance(2000)
     await h.runner.tick()
     expect(j.window.input).toEqual(['text:/exit', 'Enter'])
+  })
+
+  test('background commands a continued conversation started before the task don’t hold it open', async () => {
+    const h = setup({ backgroundSec: 600 })
+    const j = await startJob(h, { plan: false })
+    const at = (ms: number) => new Date(h.now() + ms).toISOString()
+    const transcript = join(h.project, 'transcript.jsonl')
+    const lines = [
+      // Before the task: a dev server, still running.
+      { type: 'assistant', timestamp: at(-3_600_000), message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'bun dev' } }] } },
+      { type: 'user', timestamp: at(-3_600_000), message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: bold1' }] } },
+      // The task's own turn, which started nothing.
+      { type: 'assistant', timestamp: at(1000), message: { id: 'm2', content: [{ type: 'text', text: 'Answered.' }] } },
+    ]
+    writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid, transcript_path: transcript })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', background_tasks: [{ id: 'bold1', type: 'shell', status: 'running' }] })
+    h.advance(2000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual(['text:/exit', 'Enter'])
+    expect(h.logs.some(l => l.includes('not waiting on 1 background command started before it'))).toBe(true)
+  })
+
+  test('background commands the task started itself are waited on', async () => {
+    const h = setup({ backgroundSec: 600 })
+    const j = await startJob(h, { plan: false })
+    const transcript = join(h.project, 'transcript.jsonl')
+    const at = new Date(h.now() + 1000).toISOString()
+    const lines = [
+      { type: 'assistant', timestamp: at, message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'bun test' } }] } },
+      { type: 'user', timestamp: at, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: bnew1' }] } },
+    ]
+    writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n') + '\n')
+    await h.runner.onHook('SessionStart', j.id, { session_id: j.sid, transcript_path: transcript })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', background_tasks: [{ id: 'bnew1', type: 'shell', status: 'running' }] })
+    h.advance(2000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual([])
   })
 
   test('a background command that never ends (a dev server) is given up on after the wait', async () => {

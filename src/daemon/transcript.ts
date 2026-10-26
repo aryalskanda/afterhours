@@ -251,6 +251,22 @@ export function readTranscript(path: string): Parsed {
 }
 
 /**
+ * Which of `ids` the conversation mentions since `since`: background work started then (a tool's
+ * result names what it started). Unreadable: all of them, as if each were.
+ */
+export function mentionedSince(path: string, since: number, ids: string[]): Set<string> {
+  try {
+    const text = readTranscript(path)
+      .items.filter(i => (i.at ?? 0) >= since)
+      .map(i => ('result' in i ? `${i.detail}\n${i.result ?? ''}` : i.text))
+      .join('\n')
+    return new Set(ids.filter(id => text.includes(id)))
+  } catch {
+    return new Set(ids)
+  }
+}
+
+/**
  * Claude Code's own totals across its runs of the conversation (only runs from `since` on: a task
  * continuing a conversation counts its own); null if it recorded none.
  */

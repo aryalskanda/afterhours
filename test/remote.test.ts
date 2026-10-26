@@ -258,6 +258,20 @@ describe('remote access', () => {
     expect(m.store.queued()).toHaveLength(1)
   })
 
+  test('the same task sent again while it waits is the one already queued', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const first = await conn.request({ type: 'queue', folder: m.project, prompt: 'How much RAM does it use?' })
+    const again = await conn.request({ type: 'queue', folder: m.project, prompt: 'How much RAM does it use? ' })
+    expect(again.text).toBe(`Already queued as #${(first.data as { job: { id: number } }).job.id}.`)
+    expect(m.store.queued()).toHaveLength(1)
+    // Other words, or trying it three ways, are tasks of their own.
+    await conn.request({ type: 'queue', folder: m.project, prompt: 'How much disk does it use?' })
+    await conn.request({ type: 'queue', folder: m.project, prompt: 'Compare', options: { model: 'opus', group: 'g1' } })
+    await conn.request({ type: 'queue', folder: m.project, prompt: 'Compare', options: { model: 'sonnet', group: 'g1' } })
+    expect(m.store.queued()).toHaveLength(4)
+  })
+
   test("tasks that skip permission prompts need the machine's yes", async () => {
     const m = machine()
     const { conn } = await pairedApp(m)

@@ -18,7 +18,7 @@ import { toolName, toolSummary } from './tools'
 import { withAttachments } from './uploads'
 import { endProcesses, systemProcs, type Procs } from './procs'
 import { artifactLinks, LINK_REQUEST, LINK_TASK, linksInTranscript } from './links'
-import { costOf, readTranscript, usageOf } from './transcript'
+import { costOf, mentionedSince, readTranscript, usageOf } from './transcript'
 
 /** A tool call starting or ending in the running task, for apps watching it live. */
 export interface ToolActivity {
@@ -81,7 +81,7 @@ export interface HookPayload {
   error?: string
   error_details?: string
   last_assistant_message?: string
-  background_tasks?: { type?: string; status?: string; description?: string }[]
+  background_tasks?: { id?: string; type?: string; status?: string; description?: string }[]
   stop_hook_active?: boolean
   [key: string]: unknown
 }
@@ -1003,7 +1003,7 @@ export class Runner {
       this.hold(job, 'Claude stopped in plan mode without presenting a plan')
       return {}
     }
-    const tasks = payload.background_tasks ?? []
+    const tasks = this.ownBackground(job, payload.background_tasks ?? [])
     if (tasks.length > 0) {
       // Claude is told when they finish and takes another turn; the next Stop decides.
       rt.background = {
@@ -1021,6 +1021,21 @@ export class Runner {
     }
     this.beginFinish(job, rt)
     return {}
+  }
+
+  /**
+   * The background work this task is waiting on. A conversation it continues can carry commands and
+   * monitors started before it (a dev server, a watch left running): they'd hold it open until the
+   * background timeout, so only the ones it started count. Subagents and workflows always finish.
+   */
+  private ownBackground(job: Job, tasks: NonNullable<HookPayload['background_tasks']>): NonNullable<HookPayload['background_tasks']> {
+    const unsure = tasks.filter(t => !FINITE_TASKS.has(String(t.type)) && t.id)
+    if (unsure.length === 0 || !job.transcriptPath) return tasks
+    const ours = mentionedSince(job.transcriptPath, taskStart(job), unsure.map(t => t.id!))
+    const older = unsure.filter(t => !ours.has(t.id!))
+    if (older.length === 0) return tasks
+    this.d.log(`#${job.id}: not waiting on ${older.length} background command${older.length === 1 ? '' : 's'} started before it`)
+    return tasks.filter(t => !older.includes(t))
   }
 
   /** The live link Claude made: kept on the task (and on the one it was for), and said. */
