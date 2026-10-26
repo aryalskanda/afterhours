@@ -348,9 +348,13 @@ export class Store {
    * Finished jobs, newest first: before job `before`, with `status`, whose prompt or final answer
    * has every word of `query`. One more than `limit` tells there are more.
    */
-  searchFinished(o: { before?: number; status?: 'done' | 'failed' | 'cancelled'; query?: string; limit: number }): Job[] {
+  searchFinished(o: { before?: number; status?: 'done' | 'failed' | 'cancelled'; query?: string; folder?: string; limit: number }): Job[] {
     const where = [o.status ? 'status = ?' : "status IN ('done', 'failed', 'cancelled')"]
     const args: SqlValue[] = o.status ? [o.status] : []
+    if (o.folder !== undefined) {
+      where.push('project_dir = ?')
+      args.push(o.folder)
+    }
     if (o.before !== undefined) {
       where.push('id < ?')
       args.push(o.before)
@@ -461,6 +465,22 @@ export class Store {
   }
 
   /** Worktrees this folder's jobs ran in: their conversations are kept under the worktree's path. */
+  /** Each folder tasks ran in since `since`: how many, and when one last moved. */
+  folderActivity(since: number): { folder: string; tasks: number; lastAt: number }[] {
+    return this.db
+      .query<{ project_dir: string; n: number; last: number }, [number]>(
+        'SELECT project_dir, COUNT(*) AS n, MAX(COALESCE(finished_at, started_at, created_at)) AS last FROM jobs WHERE created_at >= ? GROUP BY project_dir',
+      )
+      .all(since)
+      .map(r => ({ folder: r.project_dir, tasks: r.n, lastAt: r.last }))
+  }
+
+  /** Every task's own-branch worktree, and the folder it belongs to. */
+  worktrees(): Map<string, string> {
+    const rows = this.db.query<{ work_dir: string; project_dir: string }, []>('SELECT DISTINCT work_dir, project_dir FROM jobs WHERE work_dir IS NOT NULL').all()
+    return new Map(rows.map(r => [r.work_dir, r.project_dir]))
+  }
+
   worktreeDirs(projectDir: string): string[] {
     return this.db
       .query<{ work_dir: string }, [string]>('SELECT DISTINCT work_dir FROM jobs WHERE project_dir = ? AND work_dir IS NOT NULL')

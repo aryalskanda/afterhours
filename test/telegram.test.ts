@@ -111,6 +111,7 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}
     list: folder => chatList.filter(c => c.cwd === folder),
     recent: (page, perPage) => ({ chats: chatList.slice(page * perPage, (page + 1) * perPage), more: chatList.length > (page + 1) * perPage }),
     get: sessionId => chatList.find(c => c.sessionId === sessionId) ?? null,
+    rename: () => false,
   }
   const runner = new Runner({
     store,

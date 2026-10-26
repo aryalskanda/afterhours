@@ -148,6 +148,21 @@ export const ChatInfo = z.object({
 })
 export type ChatInfo = z.infer<typeof ChatInfo>
 
+/** A folder and what happened in it lately: tasks (the last 30 days) and recent conversations. */
+export const ProjectInfo = z.object({
+  path: z.string(),
+  name: z.string(),
+  /** When a task or a conversation there last moved. */
+  lastAt: z.number(),
+  tasks: z.number().int(),
+  chats: z.number().int(),
+})
+export type ProjectInfo = z.infer<typeof ProjectInfo>
+
+/** The answer to a `projects` request. */
+export const ProjectList = z.object({ projects: z.array(ProjectInfo) })
+export type ProjectList = z.infer<typeof ProjectList>
+
 const Question = z.object({
   question: z.string(),
   header: z.string().optional(),
@@ -374,6 +389,8 @@ export const Request = z.discriminatedUnion('type', [
     before: z.number().int().optional(),
     status: z.enum(['done', 'failed', 'cancelled']).optional(),
     query: z.string().max(200).optional(),
+    /** Only the tasks that ran in this folder. */
+    folder: z.string().max(4096).optional(),
   }),
   /** One task in full: its plan and Claude's final answer. */
   withId({ type: z.literal('task'), job: z.number().int() }),
@@ -390,6 +407,10 @@ export const Request = z.discriminatedUnion('type', [
     query: z.string().max(200).optional(),
   }),
   withId({ type: z.literal('chat.write'), session: z.string().min(1).max(64), text: z.string().min(1).max(100_000) }),
+  /** Names a conversation, as Claude Code's /rename does (it shows there too). */
+  withId({ type: z.literal('chat.rename'), session: z.string().min(1).max(64), title: z.string().trim().min(1).max(120) }),
+  /** The folders tasks and chats were in lately, most recent first (ProjectList). */
+  withId({ type: z.literal('projects'), limit: z.number().int().min(1).max(100).optional() }),
   withId({ type: z.literal('folders'), query: z.string().max(200) }),
   withId({ type: z.literal('devices') }),
   withId({ type: z.literal('devices.remove'), device: PeerId }),

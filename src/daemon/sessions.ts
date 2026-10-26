@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 
@@ -356,6 +356,18 @@ export function listRecentConversations(skip: number, limit: number, claudeDir =
 export function findConversation(sessionId: string, claudeDir = CLAUDE_DIR): Conversation | null {
   const hit = findSessions(sessionId, claudeDir).find(s => s.sessionId === sessionId)
   return hit ? readConversation(hit.path) : null
+}
+
+/**
+ * Names a conversation the way Claude Code's /rename does: a custom-title line at the end of its
+ * transcript, so the name shows in Claude Code too (its /resume list, VS Code). False if there's no
+ * such conversation.
+ */
+export function renameConversation(sessionId: string, title: string, claudeDir = CLAUDE_DIR): boolean {
+  const hit = findSessions(sessionId, claudeDir).find(s => s.sessionId === sessionId)
+  if (!hit) return false
+  appendFileSync(hit.path, `${JSON.stringify({ type: 'custom-title', customTitle: title, sessionId })}\n`)
+  return true
 }
 
 /** The conversation a live session is running, read from its transcript. */

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { modeFor, modelAlias } from '../src/daemon/chats'
-import { findConversation, listConversations, projectStoreDir, readConversation } from '../src/daemon/sessions'
+import { findConversation, listConversations, projectStoreDir, readConversation, renameConversation } from '../src/daemon/sessions'
 
 // Transcript lines shaped like the ones Claude Code 2.1.29x writes.
 const T0 = Date.UTC(2026, 9, 14, 9, 0)
@@ -120,6 +120,14 @@ describe('listing conversations', () => {
     write(dir, '/Users/me/app', 'abc-123', [user('/Users/me/app', 'hello', 0)])
     expect(findConversation('abc-123', dir)).toMatchObject({ sessionId: 'abc-123', cwd: '/Users/me/app', title: 'hello' })
     expect(findConversation('abc', dir)).toBeNull()
+  })
+
+  test('renamed as Claude Code’s /rename does: the new title, here and in Claude Code', () => {
+    const dir = claudeDir()
+    write(dir, '/Users/me/app', 'abc-123', [user('/Users/me/app', 'hello', 0)])
+    expect(renameConversation('abc-123', 'Checkout speed', dir)).toBe(true)
+    expect(findConversation('abc-123', dir)?.title).toBe('Checkout speed')
+    expect(renameConversation('nope', 'x', dir)).toBe(false)
   })
 })
 

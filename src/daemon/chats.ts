@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import type { Effort, ExecMode, JobSpec } from '../shared/types'
-import { findConversation, listConversations, listRecentConversations, whereLabel, type Conversation, type LiveSession } from './sessions'
+import { findConversation, listConversations, listRecentConversations, renameConversation, whereLabel, type Conversation, type LiveSession } from './sessions'
 import type { Store } from './store'
 
 /** The prompt a hand-off continues a stopped conversation with (Claude Code's own wording). */
@@ -31,6 +31,8 @@ export interface ChatSource {
   /** Your recent chats across every project, a page at a time. */
   recent(page: number, perPage: number): { chats: Chat[]; more: boolean }
   get(sessionId: string): Chat | null
+  /** Names it (Claude Code's custom title); false if it's gone. */
+  rename(sessionId: string, title: string): boolean
 }
 
 export function chatSource(o: { store: Store; liveSessions: () => LiveSession[]; claudeDir?: string }): ChatSource {
@@ -54,6 +56,9 @@ export function chatSource(o: { store: Store; liveSessions: () => LiveSession[];
     get(sessionId) {
       const c = findConversation(sessionId, o.claudeDir)
       return c ? withState(c, o.liveSessions(), o.store.active()?.sessionId ?? null) : null
+    },
+    rename(sessionId, title) {
+      return renameConversation(sessionId, title, o.claudeDir)
     },
   }
 }

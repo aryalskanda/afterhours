@@ -61,6 +61,11 @@ const chats: ChatSource = {
   list: () => conversations,
   recent: () => ({ chats: conversations, more: false }),
   get: id => conversations.find(c => c.sessionId === id) ?? null,
+  rename: (id, title) => {
+    const c = conversations.find(x => x.sessionId === id)
+    if (c) c.title = title
+    return Boolean(c)
+  },
 }
 const folders = { search: async () => [] } as unknown as FolderMap
 
@@ -840,6 +845,30 @@ describe('machines, money, safety', () => {
     conversations = [chat('a', 'Refactor the checkout', m.project), chat('b', 'Checkout notes', m.outside), chat('c', 'Dark mode', m.project)]
     const r = await conn.request({ type: 'chats', query: 'checkout price' })
     expect((r.data as { chats: { session: string }[] }).chats.map(c => c.session)).toEqual(['a'])
+  })
+
+  test('folders: where tasks and chats were lately, newest first; a folder’s tasks; a chat renamed', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const now = Date.now()
+    const chat = (id: string, title: string, cwd: string, updatedAt: number) => ({ sessionId: id, cwd, title, lastPrompt: null, lastReply: 'Done', updatedAt, model: null, permissionMode: null, limit: null, where: null, busy: false, running: false })
+    const other = join(m.project, '..', 'notes')
+    require('node:fs').mkdirSync(other, { recursive: true })
+    conversations = [chat('a', 'Refactor the checkout', m.project, now - 60_000), chat('b', 'Ideas', other, now - 30_000), chat('c', 'Secrets', m.outside, now)]
+    await conn.request({ type: 'queue', folder: m.project, prompt: 'Add a CSV export' })
+    const list = (await conn.request({ type: 'projects' })).data as { projects: { path: string; name: string; tasks: number; chats: number }[] }
+    // The folder outside the shared ones isn't listed; the one with a task just queued is first.
+    expect(list.projects.map(p => [p.name, p.tasks, p.chats])).toEqual([
+      [require('node:path').basename(m.project), 1, 1],
+      ['notes', 0, 1],
+    ])
+    const r = await conn.request({ type: 'jobs', folder: other })
+    expect((r.data as { recent: unknown[] }).recent).toEqual([])
+    expect(await conn.request({ type: 'jobs', folder: m.outside })).toMatchObject({ ok: false, code: 'policy' })
+
+    expect((await conn.request({ type: 'chat.rename', session: 'a', title: 'Checkout speed' })).text).toBe('Renamed to “Checkout speed”.')
+    expect(conversations[0]!.title).toBe('Checkout speed')
+    expect(await conn.request({ type: 'chat.rename', session: 'c', title: 'Mine' })).toMatchObject({ ok: false, code: 'policy' })
   })
 
   test('health for everyone, the log only for owners; restart and invites for owners', async () => {

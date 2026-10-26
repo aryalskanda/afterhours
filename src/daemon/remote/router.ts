@@ -4,7 +4,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import type {
   AuditEntryInfo,
   ClaudeInfo,
@@ -18,6 +18,8 @@ import type {
   MachineInfo,
   Notice as WireNotice,
   PolicyInfo,
+  ProjectInfo,
+  ProjectList,
   Request,
   RequestType,
   Result,
@@ -78,6 +80,8 @@ export const FEATURES = [
   'queue.restore',
   'models.split',
   'link',
+  'projects',
+  'chat.rename',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -99,6 +103,8 @@ const NEEDS: Record<RequestType, Role> = {
   say: 'operator',
   keys: 'operator',
   'chat.write': 'operator',
+  'chat.rename': 'operator',
+  projects: 'viewer',
   devices: 'owner',
   'devices.remove': 'owner',
   'devices.rename': 'owner',
@@ -137,6 +143,7 @@ const CHANGES = new Set<RequestType>([
   'say',
   'keys',
   'chat.write',
+  'chat.rename',
   'devices.remove',
   'devices.rename',
   'command',
@@ -242,6 +249,8 @@ function auditDetail(r: Request): string | null {
     case 'say':
     case 'chat.write':
       return `${r.text.length} characters`
+    case 'chat.rename':
+      return r.session.slice(0, 8)
     case 'keys':
       return r.keys.join(' ')
     case 'devices.remove':
@@ -372,7 +381,9 @@ export class Router {
         const active = store.active()
         const limit = r.recent ?? 20
         // Newest first by number, so `before` pages back with no gaps.
-        const found = store.searchFinished({ before: r.before, status: r.status, query: r.query, limit: limit + 1 })
+        const folder = r.folder ? resolve(expandHome(r.folder)) : undefined
+        if (folder && !isAllowed(folder, roots)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
+        const found = store.searchFinished({ before: r.before, status: r.status, query: r.query, folder, limit: limit + 1 })
         return {
           ok: true,
           data: {
@@ -495,6 +506,15 @@ export class Router {
       }
       case 'chat.write':
         return this.writeToChat(r.session, r.text, name, config)
+      case 'chat.rename': {
+        const chat = this.d.chats.get(r.session)
+        if (!chat?.cwd) return { ok: false, code: 'not-found', error: 'That conversation is gone.' }
+        if (!isAllowed(chat.cwd, roots)) return { ok: false, code: 'policy', error: 'That conversation is outside the folders this machine shares with apps.' }
+        if (!this.d.chats.rename(chat.sessionId, r.title)) return { ok: false, code: 'not-found', error: 'That conversation is gone.' }
+        return { ok: true, text: `Renamed to “${r.title}”.` }
+      }
+      case 'projects':
+        return { ok: true, data: { projects: this.projects(r.limit ?? 30, roots) } satisfies ProjectList }
       case 'folders': {
         // Nothing typed yet: the folders tasks ran in lately.
         if (!r.query.trim()) {
@@ -831,6 +851,40 @@ export class Router {
     if (!listed || !allowedHere(join(root, listed.path))) return { ok: false, code: 'not-found', error: `No folder ${rel || root}.` }
     const entries = listed.entries.filter(e => allowedHere(join(root, e.path)))
     return { ok: true, data: { root, path: listed.path, entries } satisfies FilesResult }
+  }
+
+  /**
+   * The folders tasks ran in over the last 30 days and your recent conversations were in, most
+   * recent first. A task's own-branch worktree counts as its folder.
+   */
+  private projects(limit: number, roots: string[]): ProjectInfo[] {
+    const since = this.d.now() - 30 * 86_400_000
+    const byPath = new Map<string, ProjectInfo>()
+    const at = (path: string) => {
+      let p = byPath.get(path)
+      if (!p) byPath.set(path, (p = { path, name: basename(path) || path, lastAt: 0, tasks: 0, chats: 0 }))
+      return p
+    }
+    for (const a of this.d.store.folderActivity(since)) {
+      const p = at(a.folder)
+      p.tasks += a.tasks
+      p.lastAt = Math.max(p.lastAt, a.lastAt)
+    }
+    const worktrees = this.d.store.worktrees()
+    for (let page = 0; page < 4; page++) {
+      const batch = this.d.chats.recent(page, 50)
+      for (const c of batch.chats) {
+        if (!c.cwd || c.updatedAt < since) continue
+        const p = at(worktrees.get(c.cwd) ?? c.cwd)
+        p.chats++
+        p.lastAt = Math.max(p.lastAt, c.updatedAt)
+      }
+      if (!batch.more) break
+    }
+    return [...byPath.values()]
+      .filter(p => isAllowed(p.path, roots) && isDir(p.path))
+      .sort((a, b) => b.lastAt - a.lastAt)
+      .slice(0, limit)
   }
 
   private queue(r: Extract<Request, { type: 'queue' }>, config: Config): Outcome {
