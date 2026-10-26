@@ -49,6 +49,26 @@ export function btn(text: string, data: string): InlineButton {
   return { text, callback_data: data }
 }
 
+/** How many number buttons go in a row. */
+export const NUMBERS_PER_ROW = 5
+
+/**
+ * A choice by its number: the message lists every choice in full ("1. …", "2. …"), and the buttons
+ * under it are only the numbers, so nothing is ever cut off to fit a button. `marks` puts ✓ (or ☑) on a
+ * chosen number.
+ */
+export function numberRows(items: { data: string; mark?: string }[], first = 1): InlineButton[][] {
+  const rows: InlineButton[][] = []
+  items.forEach((item, i) => {
+    if (i % NUMBERS_PER_ROW === 0) rows.push([])
+    rows.at(-1)!.push(btn(`${item.mark ?? ''}${first + i}`, item.data))
+  })
+  return rows
+}
+
+/** A choice's line in the message: its number, then its text in full. */
+export const numbered = (n: number, text: string): string => `<b>${n}.</b> ${text}`
+
 /** About how many characters fit across a phone in one row of buttons. */
 export const ROW_COLUMNS = 34
 
@@ -60,29 +80,6 @@ export function labelWidth(text: string): number {
     width += /\p{Extended_Pictographic}|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(ch) ? 2 : 1
   }
   return width
-}
-
-/** Cuts a label to what fits a full-width button (the full text belongs in the message). */
-export function fit(text: string, columns = ROW_COLUMNS - 2): string {
-  if (labelWidth(text) <= columns) return text
-  let out = ''
-  for (const ch of text) {
-    if (labelWidth(`${out}${ch}…`) > columns) break
-    out += ch
-  }
-  return `${out.trimEnd()}…`
-}
-
-/** Like `fit`, but keeps the end: for folder paths, where the last parts say the most. */
-export function fitEnd(text: string, columns = ROW_COLUMNS - 2): string {
-  if (labelWidth(text) <= columns) return text
-  const chars = [...text]
-  let out = ''
-  for (let i = chars.length - 1; i >= 0; i--) {
-    if (labelWidth(`…${chars[i]}${out}`) > columns) break
-    out = chars[i] + out
-  }
-  return `…${out.trimStart()}`
 }
 
 /**
@@ -182,7 +179,7 @@ function chatLabel(d: Draft, ctx: UiContext, chat: Chat | null): string {
   }
   const head = d.followJob
     ? `💬 follows up #${d.followJob}`
-    : `💬 continues ${chat ? `“${esc(clip(chat.title, 60))}”` : `@${d.sessionId.slice(0, 8)}`}`
+    : `💬 continues ${chat ? `“${esc(clip(chat.title, 200))}”` : `@${d.sessionId.slice(0, 8)}`}`
   if (!chat?.where) return head
   return (
     `${head} · 🟢 open in ${esc(chat.where)}${chat.busy ? ', working' : ''}\n` +
@@ -266,24 +263,23 @@ export function folderView(d: Draft, f: FolderPage, ctx: UiContext): View {
   const page = Math.min(Math.max(f.page, 0), pages - 1)
   const shown = f.children.slice(page * PER_PAGE, (page + 1) * PER_PAGE)
   const dirId = ctx.folderId(f.dir)
+  const first = page * PER_PAGE + 1
   const html =
     `📁 <b>${esc(ctx.label(f.dir))}</b>\n` +
-    `<i>${f.children.length === 0 ? 'No subfolders.' : `${f.children.length} folders${pages > 1 ? ` · page ${page + 1} of ${pages}` : ''}. Tap › to open a folder, or one without › to pick it.`}</i>`
+    (f.children.length === 0
+      ? '<i>No subfolders.</i>'
+      : `${shown.map((c, i) => numbered(first + i, `${c.isRepo ? '📦 ' : ''}${esc(c.name)}${c.hasChildren ? ' ›' : ''}`)).join('\n')}\n` +
+        `<i>${f.children.length} folders${pages > 1 ? ` · page ${page + 1} of ${pages}` : ''}. Tap a number: › opens that folder, one without › picks it. Or ✅ Use this folder.</i>`)
   const keyboard: InlineKeyboard = [
-    [btn(fit(`✅ Use ${basename(f.dir)}`), `d:${id}:u:${dirId}`)],
+    [btn('✅ Use this folder', `d:${id}:u:${dirId}`)],
     [
       ...(f.parent ? [btn('⬆️ Up', `d:${id}:b:${ctx.folderId(f.parent)}:0`)] : []),
       btn('⭐ Recent', `d:${id}:r`),
       btn('🔍 Search', `d:${id}:s`),
     ],
-    ...layout(
-      shown.map(c =>
-        btn(
-          `${c.isRepo ? '📦 ' : ''}${fit(c.name, ROW_COLUMNS - 6)}${c.hasChildren ? ' ›' : ''}`,
-          c.hasChildren ? `d:${id}:b:${ctx.folderId(c.path)}:0` : `d:${id}:u:${ctx.folderId(c.path)}`,
-        ),
-      ),
-      2,
+    ...numberRows(
+      shown.map(c => ({ data: c.hasChildren ? `d:${id}:b:${ctx.folderId(c.path)}:0` : `d:${id}:u:${ctx.folderId(c.path)}` })),
+      first,
     ),
   ]
   if (pages > 1) {
@@ -309,19 +305,19 @@ export function chatsView(d: Draft, folder: string, chats: Chat[], hasLast: bool
   const id = d.id
   const lines = chats.map((c, i) => {
     const state = chatState(c)
-    const prompt = c.lastPrompt ? `\n   <i>“${esc(clip(c.lastPrompt, 90))}”</i>` : ''
-    return `${i + 1}. ${chatIcon(c)} <b>${esc(clip(c.title, 70))}</b>${state ? ` · ${esc(state)}` : ''} · ${duration(now - c.updatedAt)} ago${prompt}`
+    const prompt = c.lastPrompt ? `\n   <i>“${esc(clip(c.lastPrompt, 120))}”</i>` : ''
+    return numbered(i + 1, `${chatIcon(c)} <b>${esc(clip(c.title, 200))}</b>${state ? ` · ${esc(state)}` : ''} · ${duration(now - c.updatedAt)} ago${prompt}`)
   })
   const html =
     `💬 <b>Chats in ${esc(folder)}</b>\n` +
-    (chats.length > 0 ? `${lines.join('\n')}\n<i>Tap one to send your prompt into it.</i>` : '<i>No Claude Code chats here yet.</i>')
+    (chats.length > 0 ? `${lines.join('\n')}\n<i>Tap its number to send your prompt into that chat.</i>` : '<i>No Claude Code chats here yet.</i>')
   const top = [btn(`${!d.sessionId && d.newChat ? '✓ ' : ''}🆕 New chat`, `d:${id}:t:new`)]
   if (hasLast) top.push(btn(`${!d.sessionId && !d.newChat ? '✓ ' : ''}🔁 Last ${BRAND.name} chat`, `d:${id}:t:last`))
   return {
     html,
     keyboard: [
       top,
-      ...chats.map((c, i) => [btn(fit(`${d.sessionId === c.sessionId ? '✓ ' : ''}${i + 1}. ${chatIcon(c)} ${c.title}`), `d:${id}:t:${c.sessionId}`)]),
+      ...numberRows(chats.map(c => ({ data: `d:${id}:t:${c.sessionId}`, mark: d.sessionId === c.sessionId ? '✓ ' : '' }))),
       [btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -333,21 +329,21 @@ export const CHATS_PER_PAGE = 8
 export function recentChatsView(chats: Chat[], page: number, more: boolean, ctx: NoticeContext): View {
   const lines = chats.map((c, i) => {
     const state = chatState(c)
-    return (
-      `${page * CHATS_PER_PAGE + i + 1}. ${chatIcon(c)} <b>${esc(clip(c.title, 60))}</b>\n` +
-      `   📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}${state ? ` · ${esc(state)}` : ''} · ${duration(ctx.now - c.updatedAt)} ago`
+    return numbered(
+      page * CHATS_PER_PAGE + i + 1,
+      `${chatIcon(c)} <b>${esc(clip(c.title, 200))}</b>\n` + `   📁 ${esc(c.cwd ? ctx.label(c.cwd) : '?')}${state ? ` · ${esc(state)}` : ''} · ${duration(ctx.now - c.updatedAt)} ago`,
     )
   })
   const html =
     chats.length > 0
-      ? `💬 <b>Your chats</b>, newest first${page > 0 ? ` · page ${page + 1}` : ''}\n${lines.join('\n')}\n<i>Tap one to open it.</i>`
+      ? `💬 <b>Your chats</b>, newest first${page > 0 ? ` · page ${page + 1}` : ''}\n${lines.join('\n')}\n<i>Tap a number to open that chat.</i>`
       : page > 0
         ? '💬 <i>No older chats.</i>'
         : '💬 <i>No Claude Code chats yet.</i>'
   const nav = [...(page > 0 ? [btn('◀️ Newer', `c:l:${page - 1}`)] : []), ...(more ? [btn('Older ▶️', `c:l:${page + 1}`)] : [])]
   return {
     html,
-    keyboard: [...chats.map((c, i) => [btn(fit(`${page * CHATS_PER_PAGE + i + 1}. ${chatIcon(c)} ${c.title}`), `c:o:${c.sessionId}`)]), ...(nav.length > 0 ? [nav] : [])],
+    keyboard: [...numberRows(chats.map(c => ({ data: `c:o:${c.sessionId}` })), page * CHATS_PER_PAGE + 1), ...(nav.length > 0 ? [nav] : [])],
   }
 }
 
@@ -398,11 +394,14 @@ export function keysView(jobId: number): View {
 
 export function recentView(d: Draft, recent: string[], ctx: UiContext): View {
   const id = d.id
-  const html = recent.length > 0 ? '⭐ <b>Recent folders</b>' : '⭐ <i>No recent folders yet. Browse or search instead.</i>'
+  const html =
+    recent.length > 0
+      ? `⭐ <b>Recent folders</b>\n${recent.map((path, i) => numbered(i + 1, `📁 ${esc(ctx.label(path))}`)).join('\n')}\n<i>Tap a number to use that folder.</i>`
+      : '⭐ <i>No recent folders yet. Browse or search instead.</i>'
   return {
     html,
     keyboard: [
-      ...recent.map(path => [btn(`📁 ${fitEnd(ctx.label(path), ROW_COLUMNS - 5)}`, `d:${id}:u:${ctx.folderId(path)}`)]),
+      ...numberRows(recent.map(path => ({ data: `d:${id}:u:${ctx.folderId(path)}` }))),
       [btn('📁 Browse', `d:${id}:f`), btn('🔍 Search', `d:${id}:s`), btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -419,12 +418,12 @@ export function searchView(d: Draft, query: string, hits: SearchHit[], ctx: UiCo
   const id = d.id
   const html =
     hits.length > 0
-      ? `🔍 <b>${esc(query)}</b>: tap a folder to use it.`
+      ? `🔍 <b>${esc(query)}</b>\n${hits.map((h, i) => numbered(i + 1, `${h.isRepo ? '📦' : '📁'} ${esc(ctx.label(h.path))}`)).join('\n')}\n<i>Tap a number to use that folder.</i>`
       : `🔍 No folder matches <b>${esc(query)}</b>. Type another word, or browse.`
   return {
     html,
     keyboard: [
-      ...hits.map(h => [btn(`${h.isRepo ? '📦' : '📁'} ${fitEnd(ctx.label(h.path), ROW_COLUMNS - 5)}`, `d:${id}:u:${ctx.folderId(h.path)}`)]),
+      ...numberRows(hits.map(h => ({ data: `d:${id}:u:${ctx.folderId(h.path)}` }))),
       [btn('🔍 Search again', `d:${id}:s`), btn('📁 Browse', `d:${id}:f`), btn('↩️ Back', `d:${id}:k`)],
     ],
   }
@@ -570,8 +569,6 @@ export interface QuestionState {
 
 export const newQuestionState = (): QuestionState => ({ step: 0, answers: [], ticked: [] })
 
-const letter = (i: number) => String.fromCharCode(65 + i)
-
 /** One question at a time: the question and every option in full, then a full-width button per option. */
 export function questionView(job: Job, code: string, questions: Question[], s: QuestionState, minutes: number): View {
   const q = questions[s.step]!
@@ -585,13 +582,13 @@ export function questionView(job: Job, code: string, questions: Question[], s: Q
   ]
     .filter(Boolean)
     .join(' · ')
-  const hint = multi ? 'Tick every one that applies, then ✅ Done.' : 'Tap one.'
+  const hint = multi ? 'Tap the numbers that apply, then ✅ Done.' : 'Tap a number.'
   const after = `<i>${hint} Or ✍️ type your own answer. If you don't answer within ${minutes}m, Claude decides itself.</i>`
   const render = (descriptionMax: number) =>
     [
       head,
       `<b>${inlineMarkdown(q.question)}</b>`,
-      ...options.map(o => `\n<b>${letter(options.indexOf(o))} · ${esc(o.label)}</b>${o.description ? `\n${inlineMarkdown(clip(o.description, descriptionMax))}` : ''}`),
+      ...options.map((o, i) => `\n${numbered(i + 1, `<b>${esc(o.label)}</b>`)}${o.description ? `\n${inlineMarkdown(clip(o.description, descriptionMax))}` : ''}`),
       '',
       after,
     ].join('\n')
@@ -601,11 +598,12 @@ export function questionView(job: Job, code: string, questions: Question[], s: Q
     const fixed = htmlToText(render(0)).length
     html = render(Math.max(120, Math.floor((PART - fixed) / Math.max(1, options.length))))
   }
-  const keyboard: InlineKeyboard = options.map((o, i) => {
-    const on = multi ? s.ticked.includes(i) : picked !== undefined && 'picks' in picked && picked.picks.includes(i)
-    const mark = multi ? (on ? '☑ ' : '☐ ') : on ? '✓ ' : ''
-    return [btn(fit(`${mark}${letter(i)} · ${o.label}`), `o:${code}:${s.step}.${i}`)]
-  })
+  const keyboard: InlineKeyboard = numberRows(
+    options.map((_, i) => {
+      const on = multi ? s.ticked.includes(i) : picked !== undefined && 'picks' in picked && picked.picks.includes(i)
+      return { data: `o:${code}:${s.step}.${i}`, mark: multi ? (on ? '☑ ' : '☐ ') : on ? '✓ ' : '' }
+    }),
+  )
   if (multi) keyboard.push([btn(s.ticked.length > 0 ? `✅ Done (${s.ticked.length} picked)` : '✅ Done', `o:${code}:${s.step}.d`)])
   keyboard.push([btn('✍️ Type an answer', `o:${code}:${s.step}.t`), ...(s.step > 0 ? [btn('⬅️ Back', `o:${code}:${s.step}.b`)] : [])])
   return { html, keyboard }
@@ -956,17 +954,16 @@ export function macView(s: MacStatus): View {
   }
   if (s.sleepWhenDone.on) lines.push(`🌙 Sleeps once the queue is done${s.sleepWhenDone.waiting ? ` (waiting for ${esc(s.sleepWhenDone.waiting)})` : ''}.`)
   if (s.running !== null) lines.push(`▶️ #${s.running} is running: it pauses while the Mac sleeps.`)
-  lines.push('', '<i>Tap an app to quit it (tap again to confirm).</i>')
   const apps = [...s.apps].sort((a, b) => Number(b.keepsAwake) - Number(a.keepsAwake))
-  const appRows: InlineButton[][] = []
-  for (let i = 0; i < apps.length; i += 2) {
-    appRows.push(apps.slice(i, i + 2).map(a => btn(`✖️ ${clip(a.name, 24)}${a.kind === 'menu' ? ' ☰' : ''}`, `m:q:${a.pid}`)))
+  if (apps.length > 0) {
+    lines.push('', ...apps.map((a, i) => numbered(i + 1, `${esc(a.name)}${a.kind === 'menu' ? ' ☰' : ''}${a.keepsAwake ? ' ☕' : ''}`)))
+    lines.push('', '<i>Tap an app’s number to quit it (tap again to confirm). ☰ lives in the menu bar, ☕ keeps the Mac awake.</i>')
   }
   return {
     html: lines.join('\n'),
     keyboard: [
       [btn('😴 Sleep now', 'm:s'), btn(s.sleepWhenDone.on ? '🌙 Sleep when done ✓' : '🌙 Sleep when done', 'm:d')],
-      ...appRows,
+      ...numberRows(apps.map(a => ({ data: `m:q:${a.pid}` }))),
       [btn('🔄 Refresh', 'm:r')],
     ],
   }
@@ -989,7 +986,8 @@ export function sleepView(s: MacStatus): View {
 
 export const HELP_HTML =
   '<b>Send me what Claude should do.</b> I reply with a card: pick the folder, mode, model and effort with the buttons, then tap ▶️ Queue. ' +
-  'It starts with the choices you used last, so usually you just tap ▶️ Queue.\n\n' +
+  'It starts with the choices you used last, so usually you just tap ▶️ Queue.\n' +
+  'Lists (folders, chats, questions, apps) are numbered: every line is written out in full in the message, and the buttons under it are only the numbers. Tap a number to choose that line.\n\n' +
   `${KEYS.newTask}: pick the folder first, then send the prompt.\n` +
   `${KEYS.chats}: any chat from any project, VS Code ones too. Open one and tap ✍️ Write here: everything you type then goes into that chat until you leave.\n` +
   '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +

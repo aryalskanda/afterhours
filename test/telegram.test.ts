@@ -88,6 +88,20 @@ function button(keyboard: InlineKeyboard, label: string | RegExp): string {
   throw new Error(`no button ${label} in ${JSON.stringify(keyboard.map(r => r.map(b => b.text)))}`)
 }
 
+/**
+ * A numbered choice: the message lists every choice in full ("1. …"), and its button is only the
+ * number. This finds the line with `text` in it and gives that number's button.
+ */
+function choice(view: { html: string; keyboard: InlineKeyboard }, text: string | RegExp): string {
+  const lines = view.html.split('\n')
+  for (const line of lines) {
+    const m = /^<b>(\d+)\.<\/b> (.*)$/.exec(line)
+    if (!m || !(typeof text === 'string' ? m[2]!.includes(text) : text.test(m[2]!))) continue
+    for (const row of view.keyboard) for (const b of row) if (b.callback_data && b.text.replace(/^[✓☑☐] /, '') === m[1]) return b.callback_data
+  }
+  throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
+}
+
 function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
@@ -201,8 +215,8 @@ async function running(h: Harness) {
   await h.say('Do the thing')
   const card = h.api.last().id
   await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-  await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-  await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+  await h.tap(choice(h.api.view(card), 'beta'), card)
+  await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
   await h.tap(button(h.api.view(card).keyboard, '🗺 Mode'), card)
   await h.tap(button(h.api.view(card).keyboard, /^auto$/), card)
   await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
@@ -247,15 +261,16 @@ describe('queueing with buttons', () => {
     await h.tap(button(view.keyboard, '📁 Folder'), card.id)
     view = h.api.view(card.id)
     expect(view.html).toContain('3 folders')
-    expect(view.keyboard.flat().map(b => b.text)).toEqual(
-      expect.arrayContaining(['📦 alpha ›', 'beta ›', 'gamma-web ›']),
-    )
-    await h.tap(button(view.keyboard, 'gamma-web ›'), card.id)
+    // Every folder is named in full in the message; the buttons are only its numbers.
+    expect(view.html).toContain('<b>1.</b> 📦 alpha ›')
+    expect(view.html).toContain('<b>3.</b> gamma-web ›')
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(expect.arrayContaining(['1', '2', '3']))
+    await h.tap(choice(view, 'gamma-web'), card.id)
     view = h.api.view(card.id)
-    await h.tap(button(view.keyboard, 'web ›'), card.id)
+    await h.tap(choice(view, /^web/), card.id)
     view = h.api.view(card.id)
     expect(view.html).toContain('gamma-web/web')
-    await h.tap(button(view.keyboard, '✅ Use web'), card.id)
+    await h.tap(button(view.keyboard, '✅ Use this folder'), card.id)
 
     view = h.api.view(card.id)
     expect(view.html).toContain('gamma-web/web')
@@ -292,8 +307,8 @@ describe('queueing with buttons', () => {
     await h.say('first')
     const first = h.api.last().id
     await h.tap(button(h.api.view(first).keyboard, '📁 Folder'), first)
-    await h.tap(button(h.api.view(first).keyboard, 'beta ›'), first)
-    await h.tap(button(h.api.view(first).keyboard, '✅ Use beta'), first)
+    await h.tap(choice(h.api.view(first), 'beta'), first)
+    await h.tap(button(h.api.view(first).keyboard, '✅ Use this folder'), first)
     await h.tap(button(h.api.view(first).keyboard, '🧠 Model'), first)
     await h.tap(button(h.api.view(first).keyboard, 'haiku'), first)
     await h.tap(button(h.api.view(first).keyboard, '▶️ Queue'), first)
@@ -319,7 +334,7 @@ describe('queueing with buttons', () => {
     const results = h.api.last()
     const view = h.api.view(results.id)
     expect(view.html).toContain('comp')
-    await h.tap(button(view.keyboard, 'alpha/src/components'), results.id)
+    await h.tap(choice(view, 'alpha/src/components'), results.id)
     expect(h.api.view(results.id).html).toContain('alpha/src/components')
     // The search is over: the next message becomes a new prompt, not another search.
     await h.say('another task')
@@ -331,8 +346,8 @@ describe('queueing with buttons', () => {
     await h.say(KEYS.newTask)
     const browser = h.api.last().id
     expect(h.api.view(browser).html).toContain('3 folders')
-    await h.tap(button(h.api.view(browser).keyboard, 'beta ›'), browser)
-    await h.tap(button(h.api.view(browser).keyboard, 'docs'), browser) // no subfolders: picks it
+    await h.tap(choice(h.api.view(browser), 'beta'), browser)
+    await h.tap(choice(h.api.view(browser), 'docs'), browser) // no subfolders: picks it
     expect(h.api.view(browser).html).toContain('Now send the prompt')
     await h.say('Write the docs index')
     const card = h.api.view(h.api.last().id)
@@ -379,7 +394,7 @@ describe('notifications with buttons', () => {
     })
     await Bun.sleep(0)
     const msg = h.api.last()
-    await h.tap(button(h.api.view(msg.id).keyboard, 'B · blue'), msg.id)
+    await h.tap(choice(h.api.view(msg.id), 'blue'), msg.id)
     expect(await reply).toMatchObject({ hookSpecificOutput: { permissionDecisionReason: expect.stringContaining('"Which color?" → blue') } })
     expect(h.api.view(msg.id).html).toContain('<b>Which color?</b>\n→ blue')
     expect(h.api.view(msg.id).keyboard).toEqual([])
@@ -411,8 +426,8 @@ describe('notifications with buttons', () => {
       const id = h.api.last().id
       if (p === 'one') {
         await h.tap(button(h.api.view(id).keyboard, '📁 Folder'), id)
-        await h.tap(button(h.api.view(id).keyboard, 'beta ›'), id)
-        await h.tap(button(h.api.view(id).keyboard, '✅ Use beta'), id)
+        await h.tap(choice(h.api.view(id), 'beta'), id)
+        await h.tap(button(h.api.view(id).keyboard, '✅ Use this folder'), id)
       }
       // Later cards already have beta: your last choices carry over.
       await h.tap(button(h.api.view(id).keyboard, '▶️ Queue'), id)
@@ -452,10 +467,27 @@ describe('your other chats (VS Code, a terminal)', () => {
     await h.say(prompt)
     const card = h.api.last().id
     await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(choice(h.api.view(card), 'beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
     return card
   }
+
+  test('long titles are whole in the message, and the buttons are only numbers: nothing is cut off', async () => {
+    const h = await paired()
+    const title = 'Make the checkout faster by moving the price lookup out of the loop, then cache each customer’s total'
+    h.chatList.push(chat(h, { title }), chat(h, { sessionId: 'bbbbbbbb-1111-2222-3333-444444444444', title: `${title} (second)`, where: null }))
+    const card = await cardInBeta(h, 'Keep going')
+    await h.tap(button(h.api.view(card).keyboard, '💬 Chat…'), card)
+    const view = h.api.view(card)
+    expect(view.html).toContain(title)
+    expect(view.html).toContain(`${title} (second)`)
+    const labels = view.keyboard.flat().map(b => b.text)
+    expect(labels).toEqual(expect.arrayContaining(['1', '2']))
+    expect(labels.some(l => l.includes('…'))).toBe(false)
+    // Number 2 is the second chat.
+    await h.tap(choice(view, '(second)'), card)
+    expect(h.api.view(card).html).toContain('(second)')
+  })
 
   test("💬 Chat… lists the folder's chats; one open in VS Code is taken over", async () => {
     const h = await paired()
@@ -467,8 +499,8 @@ describe('your other chats (VS Code, a terminal)', () => {
     expect(view.html).toContain('Claude Code prompt queue optimizer</b> · open in VS Code · 1h 00m ago')
     expect(view.html).toContain('“Build the queue”')
     expect(view.html).toContain('Older chat')
-    // The button shows the start of the title; the message above has all of it.
-    await h.tap(button(view.keyboard, 'Claude Code prompt queue'), card)
+    // The message has every title in full; the buttons are only numbers.
+    await h.tap(choice(view, 'Claude Code prompt queue'), card)
     view = h.api.view(card)
     expect(view.html).toContain('💬 continues “Claude Code prompt queue optimizer” · 🟢 open in VS Code')
     expect(view.html).toContain('🤝 takes it over when it starts')
@@ -652,7 +684,7 @@ describe('every session from your phone', () => {
     const list = h.api.last().id
     expect(h.api.view(list).html).toContain('Dark mode for settings')
     expect(h.api.view(list).html).toContain('📁 beta')
-    await h.tap(button(h.api.view(list).keyboard, 'Dark mode for settings'), list)
+    await h.tap(choice(h.api.view(list), 'Dark mode for settings'), list)
     expect(h.api.view(list).html).toContain('<b>Claude:</b>')
     expect(h.api.view(list).html).toContain('Added the toggle to the settings page.')
     await h.tap(button(h.api.view(list).keyboard, '✍️ Write here'), list)
@@ -679,7 +711,7 @@ describe('every session from your phone', () => {
     const h = await paired()
     h.chatList.push(chat(h, { where: 'VS Code' }))
     await h.say('/chats')
-    await h.tap(button(h.api.view(h.api.last().id).keyboard, 'Dark mode'), h.api.last().id)
+    await h.tap(choice(h.api.view(h.api.last().id), 'Dark mode'), h.api.last().id)
     await h.tap(button(h.api.view(h.api.last().id).keyboard, '✍️ Write here'), h.api.last().id)
     expect(h.api.last().html).toContain("It's open in VS Code")
     await h.say('Keep going')
@@ -765,28 +797,33 @@ describe('reading and answering on a phone', () => {
     let view = h.api.view(msg.id)
     expect(view.html).toContain('#' + job.id + ' asks</b> · Windows · 1 of 3')
     expect(view.html).toContain(longDescription) // in full, not cut at 120 characters
-    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['A · Native Windows now'], ['B · WSL2 first (Recommended)'], ['✍️ Type an answer']])
+    // The options are numbered in the message, in full; the buttons are only the numbers.
+    expect(view.html).toContain('<b>1.</b> <b>Native Windows now</b>')
+    expect(view.html).toContain('<b>2.</b> <b>WSL2 first (Recommended)</b>')
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['1', '2'], ['✍️ Type an answer']])
 
-    await h.tap(button(view.keyboard, 'B · WSL2'), msg.id)
+    await h.tap(choice(view, 'WSL2'), msg.id)
     view = h.api.view(msg.id)
     expect(view.html).toContain('2 of 3')
-    expect(view.keyboard.map(r => r[0]!.text).slice(0, 4)).toEqual(['☐ A · iPhone', '☐ B · Android', '☐ C · Desktop', '✅ Done'])
+    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['☐ 1', '☐ 2', '☐ 3'])
+    expect(view.keyboard[1]![0]!.text).toBe('✅ Done')
 
     // A tap on the first question's old button changes nothing.
     await h.tap(`o:${h.store.pendingApprovals()[0]!.code}:0.0`, msg.id)
     expect(h.api.answers.at(-1)!.text).toBe('That question has moved on.')
 
-    await h.tap(button(view.keyboard, 'A · iPhone'), msg.id)
-    await h.tap(button(h.api.view(msg.id).keyboard, 'C · Desktop'), msg.id)
+    await h.tap(choice(view, 'iPhone'), msg.id)
+    await h.tap(choice(h.api.view(msg.id), 'Desktop'), msg.id)
     view = h.api.view(msg.id)
-    expect(view.keyboard.map(r => r[0]!.text).slice(0, 4)).toEqual(['☑ A · iPhone', '☐ B · Android', '☑ C · Desktop', '✅ Done (2 picked)'])
+    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['☑ 1', '☐ 2', '☑ 3'])
+    expect(view.keyboard[1]![0]!.text).toBe('✅ Done (2 picked)')
 
     // Back and forward again keeps what was picked.
     await h.tap(button(view.keyboard, '⬅️ Back'), msg.id)
-    expect(h.api.view(msg.id).keyboard[1]![0]!.text).toBe('✓ B · WSL2 first (Recommended)')
-    await h.tap(button(h.api.view(msg.id).keyboard, 'B · WSL2'), msg.id)
-    await h.tap(button(h.api.view(msg.id).keyboard, 'A · iPhone'), msg.id)
-    await h.tap(button(h.api.view(msg.id).keyboard, 'C · Desktop'), msg.id)
+    expect(h.api.view(msg.id).keyboard[0]!.map(b => b.text)).toEqual(['1', '✓ 2'])
+    await h.tap(choice(h.api.view(msg.id), 'WSL2'), msg.id)
+    await h.tap(choice(h.api.view(msg.id), 'iPhone'), msg.id)
+    await h.tap(choice(h.api.view(msg.id), 'Desktop'), msg.id)
     await h.tap(button(h.api.view(msg.id).keyboard, '✅ Done'), msg.id)
     expect(h.api.view(msg.id).html).toContain('3 of 3')
 
@@ -905,13 +942,12 @@ describe('reading and answering on a phone', () => {
   })
 
   test('long folder and chat names get their own rows instead of being cut', async () => {
-    const { layout, labelWidth, ROW_COLUMNS, fit } = await import('../src/telegram/ui')
+    const { layout, labelWidth, ROW_COLUMNS } = await import('../src/telegram/ui')
     const b = (text: string) => ({ text, callback_data: text })
     const rows = layout([b('api'), b('web'), b('docs'), b('a-very-long-folder-name-indeed'), b('x')], 2)
     expect(rows.map(r => r.map(x => x.text))).toEqual([['api', 'web'], ['docs'], ['a-very-long-folder-name-indeed'], ['x']])
     for (const row of rows) expect(Math.max(...row.map(x => labelWidth(x.text) + 2)) * row.length).toBeLessThanOrEqual(ROW_COLUMNS)
     expect(labelWidth('😀a')).toBe(3)
-    expect(labelWidth(fit('x'.repeat(100)))).toBeLessThanOrEqual(ROW_COLUMNS - 2)
   })
 })
 
@@ -921,8 +957,8 @@ describe('two models from Telegram', () => {
     await h.say('Do the thing')
     const card = h.api.last().id
     await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(choice(h.api.view(card), 'beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
     // New tasks plan first by default: the model has two parts.
     await h.tap(button(h.api.view(card).keyboard, '🧠 Model'), card)
     expect(h.api.view(card).html).toContain('Plan with')
@@ -943,8 +979,8 @@ describe('live links from Telegram', () => {
     await h.say('Make the settings page dark')
     const card = h.api.last().id
     await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(choice(h.api.view(card), 'beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
     await h.tap(button(h.api.view(card).keyboard, '🔗 Live link'), card)
     expect(h.api.view(card).html).toContain('ends with a live link')
     await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
@@ -1033,18 +1069,19 @@ describe('the Mac, from the bot', () => {
     await h.say('/mac')
     const msg = h.api.last()
     expect(msg.html).toContain('Sleep is turned off while Vorssaint runs')
-    const labels = h.api.view(msg.id).keyboard.flat().map(b => b.text)
-    expect(labels).toEqual(['😴 Sleep now', '🌙 Sleep when done', '✖️ Vorssaint ☰', '✖️ Code', '✖️ Mail', '✖️ Monosnap ☰', '🔄 Refresh'])
-    const monosnap = button(h.api.view(msg.id).keyboard, 'Monosnap')
+    // The apps are listed in full in the message, and their buttons are only their numbers.
+    expect(msg.html).toContain('<b>1.</b> Vorssaint ☰ ☕')
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '1', '2', '3', '4', '🔄 Refresh'])
+    const monosnap = choice(h.api.view(msg.id), 'Monosnap')
     await h.tap(monosnap, msg.id)
     expect(h.api.answers.at(-1)!.text).toBe('Tap again to quit Monosnap.')
     expect(sys.asked).toEqual([])
     await h.tap(monosnap, msg.id)
     expect(h.api.answers.at(-1)!.text).toBe('Quit Monosnap.')
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).not.toContain('✖️ Monosnap ☰')
+    expect(h.api.view(msg.id).html).not.toContain('Monosnap')
 
     sys.stubborn.add(19268)
-    const mail = button(h.api.view(msg.id).keyboard, 'Mail')
+    const mail = choice(h.api.view(msg.id), 'Mail')
     await h.tap(mail, msg.id)
     await h.tap(mail, msg.id)
     const warning = h.api.last()
@@ -1142,8 +1179,8 @@ describe('what the bot does without the app', () => {
     await h.say('Run the nightly report')
     const card = h.api.last().id
     await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, 'beta ›'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use beta'), card)
+    await h.tap(choice(h.api.view(card), 'beta'), card)
+    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
     await h.tap(button(h.api.view(card).keyboard, '⏰ Later'), card)
     expect(h.api.view(card).html).toContain('When may it start?')
     await h.tap(button(h.api.view(card).keyboard, '✍️ Type a time'), card)

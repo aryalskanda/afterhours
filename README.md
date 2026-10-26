@@ -81,7 +81,7 @@ Check everything at any time with `cq doctor`.
 
 | Button | What it does |
 | --- | --- |
-| **📁 Folder** | Browse your code folders. Tap a folder marked `›` to open it; tap one without `›` (or **✅ Use …**) to pick it. **⭐ Recent**, **🔍 Search** (type part of a name, e.g. `api` or `shop web`), **⬆️ Up**, **🔄 Rescan**. 📦 marks git repos. |
+| **📁 Folder** | Browse your code folders. The folders are listed by number, in full: tap a number to open a folder marked `›`, or to pick one without `›` (or **✅ Use this folder**). **⭐ Recent**, **🔍 Search** (type part of a name, e.g. `api` or `shop web`), **⬆️ Up**, **🔄 Rescan**. 📦 marks git repos. |
 | **🗺 Mode** | `plan → auto` (Afterhours approves the plan), `review → auto` (you approve it), `auto`, `accept edits`, `yolo` (no permission checks), `ask` (a question: Claude reads and answers, changes nothing) |
 | **🧠 Model** | `opus` · `sonnet` · `haiku`. With a plan, a second row picks the model that carries it out: plan with Opus, work with Sonnet ([more](#plan-with-one-model-work-with-another)) |
 | **⚡ Effort** | `low` · `medium` · `high` · `xhigh` · `max` |
@@ -99,12 +99,12 @@ The buttons under the text box:
 - **👀 Peek**: the running task's screen, with **⌨️ Type** (type into it) and **🔘 Keys** (press 1, 2, 3, Enter, Esc, arrows) for a screen Afterhours can't answer.
 - **💬 Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **✍️ Write here**: everything you type goes into that chat until you tap **⬅️ Leave chat**.
 
-**Messages from the bot come with buttons:**
+**Messages from the bot come with buttons.** A list (folders, chats, a question's options, the Mac's apps) is numbered in the message, every line in full, and its buttons are only the numbers, so nothing is cut off:
 
 | Message | Buttons |
 | --- | --- |
 | 🔐 Claude wants permission | **✅ Allow**, **❌ Deny**. Denied automatically after 15 minutes. |
-| ❓ Claude asks a question | One question at a time, every option written out in full. Tap one; where several apply, tick them and tap **✅ Done**; or **✍️ Type an answer**. **⬅️ Back** goes to the previous question. After 15 minutes Claude decides itself. |
+| ❓ Claude asks a question | One question at a time, every option numbered and written out in full. Tap its number; where several apply, tick them and tap **✅ Done**; or **✍️ Type an answer**. **⬅️ Back** goes to the previous question. After 15 minutes Claude decides itself. |
 | 📝 A plan for review | The whole plan, formatted, then **✅ Approve**, **✏️ Ask for changes** |
 | ⏸ A task hit a usage limit | **▶️ Continue now** (try before the reset, e.g. after buying extra usage), **👀 Peek**, **🛑 Kill** |
 | ⚠️ / ❌ A task paused or failed | **▶️ Go**, **🛑 Kill**, **👀 Peek**, **⌨️ Type**, **🔘 Keys** |
