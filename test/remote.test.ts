@@ -2,14 +2,14 @@
 // tasks and answers requests, under the machine's own rules.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MacInfo, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
 import { testRelay, type TestRelay } from '../relay/test/target'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
-import type { FolderMap } from '../src/daemon/folders'
+import { FolderMap } from '../src/daemon/folders'
 import { MacControl } from '../src/daemon/mac'
 import type { Notice } from '../src/daemon/notify'
 import { Remote } from '../src/daemon/remote'
@@ -18,7 +18,7 @@ import { FEATURES } from '../src/daemon/remote/router'
 import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { git } from '../src/daemon/system'
-import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
+import { codeRoots, DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { checkInitData, signInitData } from '../src/telegram/webapp'
 import { FakeMac, FakeTmux } from './fakes'
 
@@ -67,7 +67,6 @@ const chats: ChatSource = {
     return Boolean(c)
   },
 }
-const folders = { search: async () => [] } as unknown as FolderMap
 
 function machine(o: { remote?: Partial<Config['remote']>; appDir?: string; mac?: FakeMac } = {}) {
   const projects = join(dir, 'projects')
@@ -79,8 +78,11 @@ function machine(o: { remote?: Partial<Config['remote']>; appDir?: string; mac?:
     ...DEFAULT_CONFIG,
     defaults: { ...DEFAULT_CONFIG.defaults, model: 'haiku' },
     remote: { ...DEFAULT_CONFIG.remote, enabled: true, relay: relay.url, name: 'build-box', allowedRoots: [projects], ...o.remote },
+    folders: { roots: [projects], maxDepth: 6 },
   }
+  let homeFolder: string | undefined
   const store = new Store(':memory:')
+  const folders = new FolderMap({ roots: () => codeRoots(config), store, now: Date.now, log: () => {}, watch: false })
   let remote: Remote | null = null
   const runner = new Runner({
     store,
@@ -114,6 +116,8 @@ function machine(o: { remote?: Partial<Config['remote']>; appDir?: string; mac?:
     chats,
     folders,
     config: () => config,
+    home: () => homeFolder,
+    saveConfig: c => (config = c),
     command: (text, guard) =>
       runCommand(text, { runner, store, config: () => config, saveConfig: c => (config = c), now: Date.now, source: 'remote', guard, chats }),
     version: '0.1.0-test',
@@ -144,7 +148,11 @@ function machine(o: { remote?: Partial<Config['remote']>; appDir?: string; mac?:
     runner,
     project,
     outside,
+    folders,
     config: () => config,
+    setHome: (path: string | undefined) => {
+      homeFolder = path
+    },
     setRemote: (patch: Partial<Config['remote']>) => {
       config = { ...config, remote: { ...config.remote, ...patch } }
     },
@@ -508,8 +516,76 @@ describe('remote access', () => {
     const task = await conn.request({ type: 'task', job: inside.id })
     expect(task.data).toMatchObject({ plan: '## Plan', answer: 'Done: **all good**', job: { id: inside.id } })
     expect(await conn.request({ type: 'task', job: 999 })).toMatchObject({ ok: false, code: 'not-found' })
+    // Nothing typed: where you've worked, then the project folders.
     const folders = await conn.request({ type: 'folders', query: '' })
-    expect((folders.data as { path: string }[]).map(f => f.path)).toEqual([m.project])
+    expect((folders.data as { path: string; group: string }[]).map(f => [f.path, f.group])).toEqual([
+      [m.project, 'recent'],
+      [join(dir, 'projects'), 'root'],
+    ])
+  })
+
+  test('folders: search the project folders, browse them live, never outside them', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const projects = join(dir, 'projects')
+    for (const d of ['shop/.git', 'shop/web/src', 'notes/ideas']) mkdirSync(join(projects, d), { recursive: true })
+    writeFileSync(join(projects, 'shop', 'web', 'package.json'), '{}')
+    await m.folders.rebuild()
+    const hit = await conn.request({ type: 'folders', query: 'shop web' })
+    expect(hit.data).toEqual([{ path: join(projects, 'shop', 'web'), name: 'web', isRepo: false, kind: 'node', rel: 'shop/web' }])
+    // Browsing is what's on disk now, not the snapshot.
+    mkdirSync(join(projects, 'shop', 'brand-new'))
+    const listed = await conn.request({ type: 'folders', query: '', parent: join(projects, 'shop') })
+    expect((listed.data as { name: string; kind: string | null }[]).map(f => [f.name, f.kind])).toEqual([['brand-new', null], ['web', 'node']])
+    // A search finds it after a rescan.
+    expect((await conn.request({ type: 'folders', query: 'brand', rescan: true })).data).toMatchObject([{ name: 'brand-new' }])
+    // Outside the project folders: refused.
+    expect(await conn.request({ type: 'folders', query: '', parent: m.outside })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await conn.request({ type: 'folders', query: '', parent: join(projects, 'nothing') })).toMatchObject({ ok: false, code: 'not-found' })
+  })
+
+  test('project folders: anyone sees them; an owner adds and removes them inside the home folder, audited', async () => {
+    const m = machine()
+    const home = mkdtempSync(join(tmpdir(), 'cq-home-'))
+    m.setHome(home)
+    try {
+      for (const d of ['code/one/.git', 'code/two/.git', 'code/three/.git', 'Documents/old/stuff']) mkdirSync(join(home, d), { recursive: true })
+      const projects = join(dir, 'projects')
+      // The project folder is inside the shared folders here, and "home" is the test's own.
+      const owner = await pairedApp(m, { name: 'Laptop' })
+      const operator = await pairedApp(m, { role: 'operator', name: 'Tablet' })
+      const info = (await operator.conn.request({ type: 'folders.roots' })).data as { roots: { path: string }[]; suggestions: { path: string; repos: number }[]; home: string }
+      expect(info.roots.map(r => r.path)).toEqual([projects])
+      expect(info.home).toBe(home)
+      // An operator can see them but not change them.
+      expect(await operator.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code') })).toMatchObject({ ok: false, code: 'forbidden' })
+      expect(await operator.conn.request({ type: 'folders.roots', browse: home })).toMatchObject({ ok: false, code: 'forbidden' })
+
+      // The shared folders cover the home folder here.
+      m.setRemote({ allowedRoots: [projects, home] })
+      const suggested = (await owner.conn.request({ type: 'folders.roots' })).data as { suggestions: { path: string; repos: number }[] }
+      expect(suggested.suggestions.map(x => [x.path, x.repos])).toEqual([[join(home, 'code'), 3]])
+      const browsed = (await owner.conn.request({ type: 'folders.roots', browse: home })).data as { browse: { name: string }[] }
+      expect(browsed.browse.map(b => b.name)).toEqual(['code', 'Documents'])
+
+      const added = await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code') })
+      expect(added).toMatchObject({ ok: true, text: 'code is a project folder.' })
+      expect(m.config().folders.roots.map(p => p.replace(/^\/private/, ''))).toEqual([projects, join(home, 'code')].map(p => p.replace(/^\/private/, '')))
+      expect((added.data as { roots: { path: string; folders: number }[] }).roots.map(r => r.folders)).toEqual([expect.any(Number), 4])
+      // Already covered, and outside the home folder, and the home folder itself, are refused.
+      expect((await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code', 'one') })).text).toContain('already covered')
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: m.outside })).toMatchObject({ ok: false, code: 'policy' })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: home })).toMatchObject({ ok: false, code: 'policy' })
+      // Searching covers it now.
+      expect((await owner.conn.request({ type: 'folders', query: 'two' })).data).toMatchObject([{ name: 'two', rel: 'two' }])
+
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'remove', path: join(home, 'code') })).toMatchObject({ ok: true })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'remove', path: projects })).toMatchObject({ ok: false, code: 'invalid' })
+      const audit = (await owner.conn.request({ type: 'audit', limit: 50 })).data as { entries: { action: string; detail: string | null }[] }
+      expect(audit.entries.filter(e => e.action === 'folders.roots.set').map(e => e.detail?.split(' ')[0])).toContain('add')
+    } finally {
+      m.setHome(undefined)
+    }
   })
 
   test('any device may rename or remove itself, but only an owner may do that to others', async () => {

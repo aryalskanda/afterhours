@@ -189,8 +189,7 @@ export async function runDaemon(): Promise<void> {
 
   const folders = new FolderMap({
     roots: () => codeRoots(config),
-    maxDepth: () => config.folders.maxDepth,
-    cachePath: join(CQ_HOME, 'folders.json'),
+    store,
     now: Date.now,
     log,
   })
@@ -202,6 +201,7 @@ export async function runDaemon(): Promise<void> {
     chats,
     folders,
     config: getConfig,
+    saveConfig: putConfig,
     command: (text, guard) => runCommand(text, { ...commandContext('remote'), guard }),
     version: VERSION,
     git,
@@ -445,6 +445,7 @@ export async function runDaemon(): Promise<void> {
     keepAwake.set(false)
     // Sleep turned off for tasks goes back on; started again with work, it goes off again.
     lidAwake?.releaseNow()
+    folders.stopWatching()
     bridge?.stop()
     telegram?.stop()
     remote.stop()

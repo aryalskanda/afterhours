@@ -165,6 +165,35 @@ export type ProjectInfo = z.infer<typeof ProjectInfo>
 export const ProjectList = z.object({ projects: z.array(ProjectInfo) })
 export type ProjectList = z.infer<typeof ProjectList>
 
+/** A folder in a `folders` answer. */
+export const FolderHit = z.object({
+  path: z.string(),
+  name: z.string(),
+  isRepo: z.boolean().optional(),
+  /** What it is besides a git repo: node, python, rust, go, swift or claude. */
+  kind: z.string().nullable().optional(),
+  /** Browsing: it has folders of its own inside. */
+  hasChildren: z.boolean().optional(),
+  /** Searching: where it is, from its project folder ("nacho/automate"). */
+  rel: z.string().optional(),
+  /** With nothing typed: `recent` (used lately) or `root` (a project folder). */
+  group: z.enum(['recent', 'root']).optional(),
+})
+export type FolderHit = z.infer<typeof FolderHit>
+
+/** The answer to `folders.roots` and `folders.roots.set`. */
+export const FolderRoots = z.object({
+  roots: z.array(z.object({ path: z.string(), name: z.string(), folders: z.number().int() })),
+  /** When the folder map was last checked (ms). */
+  scannedAt: z.number().nullable(),
+  /** Folders that look like places for projects (several git repos inside), not yet added. */
+  suggestions: z.array(z.object({ path: z.string(), name: z.string(), repos: z.number().int() })),
+  home: z.string(),
+  /** With `browse`: that folder's subfolders. */
+  browse: z.array(FolderHit).optional(),
+})
+export type FolderRoots = z.infer<typeof FolderRoots>
+
 const Question = z.object({
   question: z.string(),
   header: z.string().optional(),
@@ -415,7 +444,16 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('chat.rename'), session: z.string().min(1).max(64), title: z.string().trim().min(1).max(120) }),
   /** The folders tasks and chats were in lately, most recent first (ProjectList). */
   withId({ type: z.literal('projects'), limit: z.number().int().min(1).max(100).optional() }),
-  withId({ type: z.literal('folders'), query: z.string().max(200) }),
+  /**
+   * Folders for a task: `query` searches the project folders (nothing typed: what you used lately,
+   * then the project folders); `parent` lists that folder's subfolders (browsing, always current);
+   * `rescan` looks at the disk again first. The answer is a FolderHit list.
+   */
+  withId({ type: z.literal('folders'), query: z.string().max(200), parent: z.string().max(4096).optional(), rescan: z.boolean().optional() }),
+  /** The project folders (FolderRoots), and with `browse` (owners) the folders in that folder of your home. */
+  withId({ type: z.literal('folders.roots'), browse: z.string().max(4096).optional() }),
+  /** Owners: add or remove a project folder (inside the home folder). */
+  withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove']), path: z.string().min(1).max(4096) }),
   withId({ type: z.literal('devices') }),
   withId({ type: z.literal('devices.remove'), device: PeerId }),
   withId({ type: z.literal('devices.rename'), device: PeerId, name: z.string().min(1).max(80) }),

@@ -87,7 +87,7 @@ export async function checks(): Promise<Check[]> {
   else info(`Runs in the background (${svc.name}) while you're logged in. To keep it running after you log out: sudo loginctl enable-linger $USER`)
   if (!readToken()) bad(`no token at ${paths.token} (the daemon creates it)`)
 
-  info(`Code folders: ${codeRoots(config).map(r => r.replace(homedir(), '~')).join(', ')}`)
+  info(`Project folders: ${codeRoots(config).map(r => r.replace(homedir(), '~')).join(', ')}`)
   for (const [name, dir] of Object.entries(config.aliases)) {
     const trusted = config.trustedDirs.includes(dir) || isTrusted(dir)
     info(`project ${name} → ${dir}${existsSync(dir) ? '' : ' (missing!)'}${trusted ? '' : ' (Claude will ask to trust it on first run)'}`)

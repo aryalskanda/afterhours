@@ -9,6 +9,7 @@ import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
 import { appCommand } from './app'
 import { awakeCommand } from './awake'
+import { foldersCommand } from './folders'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
 import { setup } from './setup'
 import { installHint } from '../platform/os'
@@ -29,6 +30,7 @@ Setup and service:
   cq devices           the devices paired with this machine; cq devices remove <name> cuts one off
   cq remote            remote access settings: relay, name, allowed folders, what apps may do
   cq audit             what apps did on this machine
+  cq folders           the project folders the apps and the bot search; cq folders add|remove <path>
   cq awake             whether the Mac stays awake while tasks run; cq awake lid on: with the lid closed too
   cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux)
   cq restart           restart it (on macOS, after granting Full Disk Access)
@@ -150,6 +152,9 @@ async function main(): Promise<void> {
       return
     case 'audit':
       if (!(await auditCommand(rest))) process.exitCode = 1
+      return
+    case 'folders':
+      if (!foldersCommand(rest)) process.exitCode = 1
       return
     case 'awake':
       if (!(await awakeCommand(rest))) process.exitCode = 1

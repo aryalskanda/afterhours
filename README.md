@@ -268,6 +268,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq doctor` | Check Claude Code, tmux, the background service, Full Disk Access and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
 | `cq pair` · `cq devices` · `cq remote` · `cq audit` | Pair an Afterhours app · list or remove paired devices · remote access settings · what apps did |
+| `cq folders` · `cq folders add <path>` | The project folders the apps and the bot search · add or remove one |
 | `cq awake` · `cq awake lid on` | Whether the Mac stays awake while tasks run · with the lid closed too (no keep-awake app needed) |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq update` | Update (Homebrew installs: `brew upgrade afterhours`) |
@@ -325,7 +326,7 @@ The words before the first colon count as options only if every one of them is a
 
 | Key | Default | |
 | --- | --- | --- |
-| `folders.roots` / `maxDepth` | chosen in `cq setup` / 6 | What the folder browser and search cover |
+| `folders.roots` | chosen in `cq setup` | The project folders the folder browser and search cover. Change them with `cq folders add\|remove <path>`, or from an app (owners). The map stays current: a watch updates it within seconds of a folder being made, renamed or removed, and the whole tree is checked every 15 minutes. It goes as deep as your folders do, and two levels inside a project (a git repo, a package…) |
 | `defaults` | plan → auto, `sonnet`, `high` | Used for your first task; after that, new cards start with your last choices |
 | `isolate` | `true` | New conversations run on their own branch |
 | `models` | `opus`, `sonnet`, `haiku` | Model buttons |
@@ -346,7 +347,7 @@ The words before the first colon count as options only if every one of them is a
 | `imessage.enabled` | `false` | Text commands over iMessage instead of Telegram (see below) |
 | `port`, `claudePath`, `tmuxPath` | 7787, from `PATH` | |
 
-Next to it: `state.db` (queue and history), `folders.json` (the folder map), `logs/cqd.log`, `jobs/` (per-task session settings) and `token` (how `cq` and the hooks talk to the background service).
+Next to it: `state.db` (queue and history), the folder map (in `state.db`), `logs/cqd.log`, `jobs/` (per-task session settings) and `token` (how `cq` and the hooks talk to the background service).
 
 **iMessage** (optional): text the commands to yourself at your **Apple ID email**. SMS is ignored on purpose, because SMS senders can be faked.
 

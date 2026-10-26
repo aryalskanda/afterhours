@@ -82,6 +82,7 @@ export interface Config {
   /** The Telegram bot you control cq from. Set up with `cq telegram <token>`. */
   telegram: { enabled: boolean; token: string | null; ownerId: number | null; ownerName: string | null }
   /** The folder map the Telegram folder browser and search use. */
+  /** The project folders searched and browsed (`cq folders`, or an owner in an app). `maxDepth` is no longer used: the map goes as deep as the tree, and two levels inside a project. */
   folders: { roots: string[]; maxDepth: number }
   /** Models offered as buttons. */
   models: string[]

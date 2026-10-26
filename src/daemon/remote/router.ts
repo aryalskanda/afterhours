@@ -13,6 +13,8 @@ import type {
   DiffSummary,
   FilePatch,
   FilesResult,
+  FolderHit,
+  FolderRoots,
   HostSession,
   MacInfo,
   MachineInfo,
@@ -27,7 +29,7 @@ import type {
   Snapshot,
   TranscriptPage,
 } from '@afterhours/protocol'
-import { expandHome, type Config } from '../../shared/config'
+import { codeRoots, COMMON_CODE_FOLDERS, expandHome, type Config } from '../../shared/config'
 import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../chats'
 import { claudeInfo } from '../claude-info'
@@ -37,7 +39,7 @@ import { oneLine } from '../format'
 import { slashCommands } from '../slash'
 import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
-import type { FolderMap } from '../folders'
+import { listChildren, relativeToRoots, suggestRoots, within as withinFolders, type FolderMap } from '../folders'
 import { settleBranch } from '../branches'
 import type { MacControl } from '../mac'
 import { taskStart, type Runner } from '../runner'
@@ -83,6 +85,8 @@ export const FEATURES = [
   'projects',
   'chat.rename',
   'effort.split',
+  'folders.browse',
+  'folders.roots',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -96,6 +100,8 @@ const NEEDS: Record<RequestType, Role> = {
   peek: 'viewer',
   chats: 'viewer',
   folders: 'viewer',
+  'folders.roots': 'viewer',
+  'folders.roots.set': 'owner',
   queue: 'operator',
   answer: 'operator',
   control: 'operator',
@@ -145,6 +151,7 @@ const CHANGES = new Set<RequestType>([
   'keys',
   'chat.write',
   'chat.rename',
+  'folders.roots.set',
   'devices.remove',
   'devices.rename',
   'command',
@@ -165,6 +172,10 @@ export interface RouterDeps {
   chats: ChatSource
   folders: FolderMap
   config: () => Config
+  /** The home folder project folders live in (the user's own, unless a test says otherwise). */
+  home?: () => string | undefined
+  /** Saves the settings (the project folders an owner changes from an app). */
+  saveConfig: (config: Config) => void
   /** Runs a text command; `guard` checks any job it would queue. */
   command: (text: string, guard: (spec: JobSpec) => string | null) => Promise<string | null>
   db: RemoteDb
@@ -252,6 +263,8 @@ function auditDetail(r: Request): string | null {
       return `${r.text.length} characters`
     case 'chat.rename':
       return r.session.slice(0, 8)
+    case 'folders.roots.set':
+      return `${r.action} ${r.path}`
     case 'keys':
       return r.keys.join(' ')
     case 'devices.remove':
@@ -282,6 +295,10 @@ function auditDetail(r: Request): string | null {
 
 export class Router {
   constructor(private readonly d: RouterDeps) {}
+
+  private home(): string {
+    return this.d.home?.() ?? homedir()
+  }
 
   async handle(session: HostSession, request: Request): Promise<void> {
     const changes = CHANGES.has(request.type)
@@ -517,15 +534,12 @@ export class Router {
       }
       case 'projects':
         return { ok: true, data: { projects: this.projects(r.limit ?? 30, roots) } satisfies ProjectList }
-      case 'folders': {
-        // Nothing typed yet: the folders tasks ran in lately.
-        if (!r.query.trim()) {
-          const recent = store.recentFolders(12).filter(p => isDir(p) && isAllowed(p, roots))
-          return { ok: true, data: recent.map(path => ({ path, name: path.split('/').pop() || path, isRepo: isDir(`${path}/.git`) })) }
-        }
-        const hits = await this.d.folders.search(r.query, store.recentFolders(8), 30)
-        return { ok: true, data: hits.filter(h => isAllowed(h.path, roots)).slice(0, 20) }
-      }
+      case 'folders':
+        return this.folders(r, roots, config, session.role)
+      case 'folders.roots':
+        return this.folderRoots(config, session.role, r.browse)
+      case 'folders.roots.set':
+        return this.setFolderRoot(r.action, r.path, name, config)
       case 'devices':
         return { ok: true, data: this.d.db.devices().map(publicDevice) }
       case 'devices.remove': {
@@ -858,6 +872,105 @@ export class Router {
     if (!listed || !allowedHere(join(root, listed.path))) return { ok: false, code: 'not-found', error: `No folder ${rel || root}.` }
     const entries = listed.entries.filter(e => allowedHere(join(root, e.path)))
     return { ok: true, data: { root, path: listed.path, entries } satisfies FilesResult }
+  }
+
+  /** The project folders: what the folder search and browser cover, inside what apps may use. */
+  private searchRoots(config: Config, roots: string[]): string[] {
+    return codeRoots(config).filter(r => isAllowed(r, roots))
+  }
+
+  /** Folders for a task: a search, a folder's subfolders, or (nothing typed) where you've worked and the project folders. */
+  private async folders(r: Extract<Request, { type: 'folders' }>, roots: string[], config: Config, role: Role): Promise<Outcome> {
+    const search = this.searchRoots(config, roots)
+    const used = (): string[] => {
+      const seen = new Set<string>()
+      for (const p of [...this.d.store.recentFolders(12), ...this.d.chats.recent(0, 30).chats.flatMap(c => (c.cwd ? [c.cwd] : []))]) seen.add(p)
+      return [...seen].filter(p => isDir(p) && isAllowed(p, roots))
+    }
+    if (r.rescan && RANK[role] >= RANK.operator) await this.d.folders.rebuild()
+    if (r.parent) {
+      const dir = realPath(resolve(expandHome(r.parent)))
+      if (!isDir(dir)) return { ok: false, code: 'not-found', error: 'That folder is gone.' }
+      if (!isAllowed(dir, roots) || !withinFolders(dir, search.map(realPath))) return { ok: false, code: 'policy', error: 'That folder is outside the project folders this machine shares with apps.' }
+      this.d.folders.touch(dir)
+      const children = listChildren(dir).filter(c => isAllowed(c.path, roots))
+      return { ok: true, data: children.map(c => ({ path: c.path, name: c.name, isRepo: c.isRepo, kind: c.kind, hasChildren: c.hasChildren })) satisfies FolderHit[] }
+    }
+    if (!r.query.trim()) {
+      const recent = used().slice(0, 12)
+      const data: FolderHit[] = [
+        ...recent.map(path => ({ path, name: basename(path) || path, isRepo: isDir(`${path}/.git`), group: 'recent' as const })),
+        ...search.map(path => ({ path, name: basename(path) || path, isRepo: isDir(`${path}/.git`), hasChildren: true, group: 'root' as const })),
+      ]
+      return { ok: true, data }
+    }
+    const hits = await this.d.folders.search(r.query, used(), 30)
+    const data: FolderHit[] = hits
+      .filter(h => isAllowed(h.path, roots))
+      .slice(0, 20)
+      .map(h => ({ ...h, rel: relativeToRoots(h.path, search) }))
+    return { ok: true, data }
+  }
+
+  private async rootsInfo(config: Config, roots: string[], browse?: FolderHit[]): Promise<FolderRoots> {
+    const search = codeRoots(config)
+    return {
+      roots: search.map(path => ({ path, name: basename(path) || path, folders: this.d.folders.countUnder(path) })),
+      scannedAt: this.d.folders.builtAt,
+      suggestions: suggestRoots(search, this.home(), COMMON_CODE_FOLDERS.map(expandHome)).filter(x => isAllowed(x.path, roots)),
+      home: this.home(),
+      ...(browse ? { browse } : {}),
+    }
+  }
+
+  /** The project folders, and for owners one of your folders' subfolders, to pick a new one from. */
+  private async folderRoots(config: Config, role: Role, browse?: string): Promise<Outcome> {
+    let list: FolderHit[] | undefined
+    if (browse !== undefined) {
+      if (role !== 'owner') return { ok: false, code: 'forbidden', error: 'Only an owner can pick project folders.' }
+      const home = realPath(this.home())
+      const dir = realPath(resolve(expandHome(browse || '~')))
+      if (!isDir(dir) || !withinFolders(dir, [home])) return { ok: false, code: 'policy', error: 'Browse inside your home folder.' }
+      list = listChildren(dir).map(c => ({ path: c.path, name: c.name, isRepo: c.isRepo, kind: c.kind, hasChildren: c.hasChildren }))
+    }
+    return { ok: true, data: await this.rootsInfo(config, allowedRoots(config), list) }
+  }
+
+  /** An owner adds or removes a project folder: it's searched and browsed from then on, and a change is audited. */
+  private async setFolderRoot(action: 'add' | 'remove', input: string, by: string, config: Config): Promise<Outcome> {
+    const home = realPath(this.home())
+    const path = realPath(resolve(expandHome(input)))
+    const configured = codeRoots(config).map(raw => ({ raw, real: realPath(raw) }))
+    const have = configured.map(c => c.real)
+    let next: string[]
+    let text: string
+    if (action === 'add') {
+      if (!isDir(path)) return { ok: false, code: 'not-found', error: 'That isn’t a folder.' }
+      if (path === home || !withinFolders(path, [home])) return { ok: false, code: 'policy', error: 'A project folder has to be inside your home folder, and not the home folder itself.' }
+      const covering = have.find(h => withinFolders(path, [h]))
+      if (covering) return { ok: true, text: `${basename(path)} is already covered by ${basename(covering)}.`, data: await this.rootsInfo(config, allowedRoots(config)) }
+      // Folders inside the new one are part of it now.
+      next = [...configured.filter(c => !withinFolders(c.real, [path])).map(c => c.raw), path]
+      text = `${basename(path)} is a project folder.`
+    } else {
+      if (!have.includes(path)) return { ok: false, code: 'not-found', error: 'That isn’t one of the project folders.' }
+      if (have.length === 1) return { ok: false, code: 'invalid', error: 'Keep at least one project folder.' }
+      next = configured.filter(c => c.real !== path).map(c => c.raw)
+      text = `${basename(path)} is no longer a project folder.`
+    }
+    let updated: Config = { ...config, folders: { ...config.folders, roots: next } }
+    // Apps may run tasks in it, when they're limited to certain folders.
+    if (action === 'add' && config.remote.allowedRoots.length > 0 && !isAllowed(path, allowedRoots(config))) {
+      updated = { ...updated, remote: { ...config.remote, allowedRoots: [...config.remote.allowedRoots, path] } }
+    }
+    if (action === 'remove' && config.remote.allowedRoots.length > 1 && config.remote.allowedRoots.some(r => realPath(resolve(expandHome(r))) === path)) {
+      updated = { ...updated, remote: { ...config.remote, allowedRoots: config.remote.allowedRoots.filter(r => realPath(resolve(expandHome(r))) !== path) } }
+    }
+    this.d.saveConfig(updated)
+    this.d.log(`${by} ${action === 'add' ? 'added' : 'removed'} the project folder ${path}`)
+    this.d.folders.refreshIfStale()
+    await this.d.folders.refresh()
+    return { ok: true, text, data: await this.rootsInfo(updated, allowedRoots(updated)) }
   }
 
   /**

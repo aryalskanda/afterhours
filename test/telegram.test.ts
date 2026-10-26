@@ -138,7 +138,7 @@ function setup(o: { app?: TelegramAppLink; mac?: FakeMac; git?: BranchGit } = {}
     log: () => {},
     sleep: async () => {},
   })
-  const folders = new FolderMap({ roots: () => [root], maxDepth: () => 6, cachePath: join(home, 'folders.json'), now: () => now, log: () => {} })
+  const folders = new FolderMap({ roots: () => [root], store, now: () => now, log: () => {}, watch: false })
   const later: (() => void)[] = []
   const mac = o.mac
     ? new MacControl({ system: o.mac, store, runner, notify: n => void bridge.notify(n), now: () => now, log: () => {}, sleep: async () => {}, later: run => later.push(run) })

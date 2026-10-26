@@ -41,6 +41,8 @@ export interface RemoteDeps {
   chats: ChatSource
   folders: FolderMap
   config: () => Config
+  saveConfig: (config: Config) => void
+  home?: () => string | undefined
   command: (text: string, guard: (spec: JobSpec) => string | null) => Promise<string | null>
   version: string
   log: (line: string) => void
@@ -121,6 +123,8 @@ export class Remote {
       chats: d.chats,
       folders: d.folders,
       config: d.config,
+      saveConfig: d.saveConfig,
+      home: d.home,
       command: d.command,
       db: this.db,
       feed: this.feed,
