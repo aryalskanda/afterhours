@@ -239,6 +239,11 @@ export const PolicyInfo = z.object({
   allowTyping: z.boolean(),
   /** Owners may quit apps and sleep the Mac (missing from machines before it). */
   allowMac: z.boolean().optional(),
+  /**
+   * Owners only: the switches other devices go by. An owner's own flags above are always on, as
+   * the owner's chat is; these are what an owner changes (`settings.remote`).
+   */
+  other: z.object({ allowBypass: z.boolean(), allowScreens: z.boolean(), allowTyping: z.boolean(), allowMac: z.boolean() }).optional(),
 })
 export type PolicyInfo = z.infer<typeof PolicyInfo>
 
@@ -449,6 +454,14 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('folders.roots'), browse: z.string().max(4096).optional() }),
   /** Owners: how many tasks may run at once (1 to 3). */
   withId({ type: z.literal('settings.parallel'), n: z.number().int().min(1).max(3) }),
+  /** Owners: what other devices (operators and viewers) may do: skip permission prompts, see screens, type, quit apps and sleep. */
+  withId({
+    type: z.literal('settings.remote'),
+    bypass: z.boolean().optional(),
+    screens: z.boolean().optional(),
+    typing: z.boolean().optional(),
+    mac: z.boolean().optional(),
+  }),
   /** Owners: add or remove a project folder (inside the home folder). */
   withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove']), path: z.string().min(1).max(4096) }),
   withId({ type: z.literal('devices') }),

@@ -88,6 +88,7 @@ export const FEATURES = [
   'folders.browse',
   'folders.roots',
   'parallel',
+  'settings.remote',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -104,6 +105,7 @@ const NEEDS: Record<RequestType, Role> = {
   'folders.roots': 'viewer',
   'folders.roots.set': 'owner',
   'settings.parallel': 'owner',
+  'settings.remote': 'owner',
   queue: 'operator',
   answer: 'operator',
   control: 'operator',
@@ -155,6 +157,7 @@ const CHANGES = new Set<RequestType>([
   'chat.rename',
   'folders.roots.set',
   'settings.parallel',
+  'settings.remote',
   'devices.remove',
   'devices.rename',
   'command',
@@ -232,13 +235,25 @@ export function isAllowed(path: string, roots: string[]): boolean {
   return roots.some(r => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep))
 }
 
-export function policyInfo(config: Config): PolicyInfo {
+/**
+ * What a device of this role may do. The switches (`cq remote bypass on`, screens, typing, mac) limit
+ * the other devices; an owner's own device can do all of it, as the owner's chat can. The folders
+ * still apply to everyone.
+ */
+export function policyFor(config: Config, role: Role): Config['remote'] {
+  const r = config.remote
+  return role === 'owner' ? { ...r, allowBypass: true, allowScreens: true, allowTyping: true, allowMac: true } : r
+}
+
+export function policyInfo(config: Config, role: Role = 'viewer'): PolicyInfo {
+  const r = policyFor(config, role)
   return {
     allowedRoots: allowedRoots(config),
-    allowBypass: config.remote.allowBypass,
-    allowScreens: config.remote.allowScreens,
-    allowTyping: config.remote.allowTyping,
-    allowMac: config.remote.allowMac,
+    allowBypass: r.allowBypass,
+    allowScreens: r.allowScreens,
+    allowTyping: r.allowTyping,
+    allowMac: r.allowMac,
+    ...(role === 'owner' ? { other: { allowBypass: config.remote.allowBypass, allowScreens: config.remote.allowScreens, allowTyping: config.remote.allowTyping, allowMac: config.remote.allowMac } } : {}),
   }
 }
 
@@ -270,6 +285,11 @@ function auditDetail(r: Request): string | null {
       return `${r.action} ${r.path}`
     case 'settings.parallel':
       return `${r.n} at once`
+    case 'settings.remote':
+      return (['bypass', 'screens', 'typing', 'mac'] as const)
+        .filter(k => r[k] !== undefined)
+        .map(k => `${k} ${r[k] ? 'on' : 'off'}`)
+        .join(', ')
     case 'keys':
       return r.keys.join(' ')
     case 'devices.remove':
@@ -361,7 +381,7 @@ export class Router {
         return approvalInfo(a, { job: this.d.store.getJob(a.jobId), timeouts: config.timeouts, allowedBefore })
       }),
       limits: limitsInfo(this.d.runner.limits()),
-      policy: policyInfo(config),
+      policy: policyInfo(config, role),
       defaults: {
         plan: config.defaults.plan,
         review: config.defaults.review,
@@ -379,13 +399,13 @@ export class Router {
   }
 
   /** This machine's rules for tasks started remotely; a string says why not. */
-  guard(spec: JobSpec): string | null {
+  guard(spec: JobSpec, role: Role): string | null {
     const config = this.d.config()
     const roots = allowedRoots(config)
     if (!isAllowed(spec.projectDir, roots)) {
       return `${spec.projectDir} is outside the folders this machine lets apps use (${roots.join(', ')}). On the machine: cq remote allow <folder>.`
     }
-    if (spec.execMode === 'bypassPermissions' && !config.remote.allowBypass) {
+    if (spec.execMode === 'bypassPermissions' && !policyFor(config, role).allowBypass) {
       return "This machine doesn't let apps start tasks that skip permission prompts. On the machine: cq remote bypass on."
     }
     return null
@@ -394,7 +414,7 @@ export class Router {
   private async run(session: HostSession, r: Request, name: string): Promise<Outcome> {
     const { runner, store } = this.d
     const config = this.d.config()
-    const policy = config.remote
+    const policy = policyFor(config, session.role)
     const roots = allowedRoots(config)
     const notRunning = (job: number | undefined) => job !== undefined && !store.running().some(j => j.id === job)
     switch (r.type) {
@@ -429,7 +449,7 @@ export class Router {
         return { ok: true, data: { job: jobInfo(job), plan: job.planText, answer: job.lastMessage } }
       }
       case 'queue':
-        return this.queue(r, config)
+        return this.queue(r, config, session.role)
       case 'answer': {
         const approval = store.getApproval(r.code.toLowerCase())
         if (!approval) return { ok: false, code: 'not-found', error: `No request with code ${r.code}.` }
@@ -492,7 +512,7 @@ export class Router {
           if (store.getJob(r.job)?.status !== 'queued') return { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue.` }
           return { ok: true, text: runner.holdQueued(r.job, r.action === 'hold') }
         }
-        return this.changeQueued(r)
+        return this.changeQueued(r, session.role)
       case 'link': {
         const job = store.getJob(r.job)
         if (job && !isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
@@ -534,7 +554,7 @@ export class Router {
         return { ok: true, data: { chats: visible.map(chatInfo), more: list.more } }
       }
       case 'chat.write':
-        return this.writeToChat(r.session, r.text, name, config)
+        return this.writeToChat(r.session, r.text, name, config, session.role)
       case 'chat.rename': {
         const chat = this.d.chats.get(r.session)
         if (!chat?.cwd) return { ok: false, code: 'not-found', error: 'That conversation is gone.' }
@@ -554,6 +574,17 @@ export class Router {
         this.d.saveConfig({ ...config, parallel: r.n })
         this.d.log(`${name} set ${r.n} task${r.n === 1 ? '' : 's'} at once`)
         return { ok: true, text: r.n === 1 ? 'One task at a time.' : `Up to ${r.n} tasks at once, when they can’t get in each other’s way.`, data: { parallel: r.n } }
+      }
+      case 'settings.remote': {
+        const remote = { ...config.remote }
+        if (r.bypass !== undefined) remote.allowBypass = r.bypass
+        if (r.screens !== undefined) remote.allowScreens = r.screens
+        if (r.typing !== undefined) remote.allowTyping = r.typing
+        if (r.mac !== undefined) remote.allowMac = r.mac
+        const next = { ...config, remote }
+        this.d.saveConfig(next)
+        this.d.log(`${name} changed what other devices may do: ${auditDetail(r)}`)
+        return { ok: true, text: 'Saved.', data: policyInfo(next, session.role) }
       }
       case 'devices':
         return { ok: true, data: this.d.db.devices().map(publicDevice) }
@@ -583,7 +614,7 @@ export class Router {
         if ((word === 'default' || word === 'defaults') && /\b(yolo|bypass)\b/i.test(r.text) && !policy.allowBypass) {
           return { ok: false, code: 'policy', error: "This machine doesn't let apps make skipping permission prompts the default (cq remote bypass on)." }
         }
-        const text = await this.d.command(r.text, spec => this.guard(spec))
+        const text = await this.d.command(r.text, spec => this.guard(spec, session.role))
         return text === null ? { ok: false, code: 'invalid', error: `Unknown command "${word}". Try help.` } : { ok: true, text }
       }
       case 'mac': {
@@ -720,7 +751,7 @@ export class Router {
   }
 
   /** A queued task changed (`edit`) or moved (`move`). */
-  private changeQueued(r: Extract<Request, { type: 'job' }>): Outcome {
+  private changeQueued(r: Extract<Request, { type: 'job' }>, role: Role): Outcome {
     const job = this.d.store.getJob(r.job)
     if (!job || job.status !== 'queued') return { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue.` }
     if (r.action === 'move') {
@@ -752,7 +783,7 @@ export class Router {
       if (typeof s === 'string') return { ok: false, code: 'invalid', error: s }
       Object.assign(patch, s)
     }
-    const refusal = this.guard({ ...job, ...patch, execMode: patch.execMode ?? job.execMode } as JobSpec)
+    const refusal = this.guard({ ...job, ...patch, execMode: patch.execMode ?? job.execMode } as JobSpec, role)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
     this.d.store.updateJob(job.id, patch)
     return { ok: true, text: `Changed #${job.id}.`, data: { job: jobInfo(this.d.store.getJob(job.id)!) } }
@@ -1022,7 +1053,7 @@ export class Router {
       .slice(0, limit)
   }
 
-  private queue(r: Extract<Request, { type: 'queue' }>, config: Config): Outcome {
+  private queue(r: Extract<Request, { type: 'queue' }>, config: Config, role: Role): Outcome {
     const o = r.options ?? {}
     let projectDir = resolve(expandHome(r.folder))
     let sessionId: string | undefined
@@ -1061,7 +1092,7 @@ export class Router {
       attachments: attachments.length ? attachments : null,
       group: o.group ?? null,
     }
-    const refusal = this.guard(spec)
+    const refusal = this.guard(spec, role)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
     const twin = spec.group ? null : this.waitingTwin(spec)
     if (twin) return { ok: true, text: `Already queued as #${twin.id}.`, data: { job: jobInfo(twin) } }
@@ -1080,7 +1111,7 @@ export class Router {
   }
 
   /** Typed into the chat if the queue is running it and it's free, else a task that continues it. */
-  private async writeToChat(sessionId: string, text: string, name: string, config: Config): Promise<Outcome> {
+  private async writeToChat(sessionId: string, text: string, name: string, config: Config, role: Role): Promise<Outcome> {
     const chat = this.d.chats.get(sessionId)
     if (!chat?.cwd || !existsSync(chat.cwd)) return { ok: false, code: 'not-found', error: 'That conversation is gone.' }
     if (!isAllowed(chat.cwd, allowedRoots(config))) return { ok: false, code: 'policy', error: 'That conversation is outside the folders this machine shares with apps.' }
@@ -1098,7 +1129,7 @@ export class Router {
       prompt: text,
     })
     // A chat continues in its own mode, which may be one that skips permission prompts.
-    const refusal = this.guard(spec)
+    const refusal = this.guard(spec, role)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
     const twin = this.waitingTwin(spec)
     if (twin) return { ok: true, text: `Already sent to ${title} as #${twin.id}.`, data: { job: jobInfo(twin) } }

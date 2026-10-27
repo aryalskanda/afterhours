@@ -212,9 +212,10 @@ describe('remote access', () => {
 
     const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
     expect(await operator.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'forbidden' })
+    // The switch limits other devices; the owner's own phone keeps the Mac.
     m.setRemote({ allowMac: false })
-    expect(await owner.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'policy' })
-    expect(await owner.conn.request({ type: 'command', text: 'sleep' })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await owner.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: true })
+    expect(owner.snapshots[0]!.policy.other?.allowMac).toBe(true)
   })
 
   test('a machine that is not a Mac offers no Mac controls', async () => {
@@ -248,9 +249,14 @@ describe('remote access', () => {
     expect(snap.role).toBe('owner')
     // The address apps should use from now on.
     expect(snap.relay).toBe(relay.url)
-    expect(snap.policy.allowBypass).toBe(false)
+    // An owner's own device can do it all; the switches (here, bypass off) are what others go by.
+    expect(snap.policy.allowBypass).toBe(true)
+    expect(snap.policy.other).toMatchObject({ allowBypass: false, allowScreens: true, allowTyping: true })
     expect(snap.policy.allowedRoots[0]).toEndWith('projects')
     expect(m.remote.devices().map(d => d.name)).toEqual(['Test phone'])
+    const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
+    expect(operator.snapshots[0]!.policy.allowBypass).toBe(false)
+    expect(operator.snapshots[0]!.policy.other).toBeUndefined()
   })
 
   test('tasks run only in the folders the machine allows', async () => {
@@ -285,7 +291,10 @@ describe('remote access', () => {
 
   test("tasks that skip permission prompts need the machine's yes", async () => {
     const m = machine()
-    const { conn } = await pairedApp(m)
+    // An owner's phone can, as the owner's chat can; another device needs the switch.
+    const owner = await pairedApp(m)
+    expect((await owner.conn.request({ type: 'queue', folder: m.project, prompt: 'owner yolo', options: { mode: 'bypassPermissions' } })).ok).toBe(true)
+    const { conn } = await pairedApp(m, { role: 'operator', name: 'Other phone' })
     const refused = await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { mode: 'bypassPermissions' } })
     expect(refused).toMatchObject({ ok: false, code: 'policy' })
     m.setRemote({ allowBypass: true })
@@ -301,15 +310,16 @@ describe('remote access', () => {
     expect((await viewer.conn.request({ type: 'snapshot' })).ok).toBe(true)
 
     const owner = await pairedApp(m)
+    const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
     m.setRemote({ allowTyping: false })
-    expect(await owner.conn.request({ type: 'say', text: 'hello' })).toMatchObject({ ok: false, code: 'policy' })
-    expect(await owner.conn.request({ type: 'command', text: 'say hello' })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await operator.conn.request({ type: 'say', text: 'hello' })).toMatchObject({ ok: false, code: 'policy' })
+    expect(await operator.conn.request({ type: 'keys', keys: ['Enter'] })).toMatchObject({ ok: false, code: 'policy' })
     expect(await owner.conn.request({ type: 'command', text: `trust ${m.project}` })).toMatchObject({ ok: false, code: 'policy' })
   })
 
   test('writing into a chat that skips permission prompts needs the machine\'s yes, and so does making it the default', async () => {
     const m = machine()
-    const { conn } = await pairedApp(m)
+    const { conn } = await pairedApp(m, { role: 'operator', name: 'Other phone' })
     conversations = [
       {
         sessionId: '3f0c2a9e-0000-4000-8000-000000000001',
@@ -329,13 +339,29 @@ describe('remote access', () => {
     const refused = await conn.request({ type: 'chat.write', session: conversations[0]!.sessionId, text: 'Carry on' })
     expect(refused).toMatchObject({ ok: false, code: 'policy' })
     expect(m.store.queued()).toHaveLength(0)
-    expect(await conn.request({ type: 'command', text: 'defaults yolo' })).toMatchObject({ ok: false, code: 'policy' })
+    // Commands are the owner's; an owner can make it the default, as the owner's chat can.
+    expect(await conn.request({ type: 'command', text: 'defaults yolo' })).toMatchObject({ ok: false, code: 'forbidden' })
     expect(m.config().defaults.execMode).toBe('auto')
 
     m.setRemote({ allowBypass: true })
     const allowed = await conn.request({ type: 'chat.write', session: conversations[0]!.sessionId, text: 'Carry on' })
     expect(allowed.ok).toBe(true)
     expect(m.store.queued().map(j => [j.sessionId, j.execMode, j.prompt])).toEqual([[conversations[0]!.sessionId, 'bypassPermissions', 'Carry on']])
+  })
+
+  test('an owner sets what other devices may do; it is audited, and others can’t', async () => {
+    const m = machine()
+    const owner = await pairedApp(m)
+    const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
+    expect(await operator.conn.request({ type: 'settings.remote', bypass: true })).toMatchObject({ ok: false, code: 'forbidden' })
+    const r = await owner.conn.request({ type: 'settings.remote', bypass: true, typing: false })
+    expect(r.ok).toBe(true)
+    expect(r.data).toMatchObject({ allowBypass: true, other: { allowBypass: true, allowTyping: false, allowScreens: true } })
+    expect(m.config().remote).toMatchObject({ allowBypass: true, allowTyping: false })
+    expect(m.remote.auditLog(5).map(e => `${e.action}: ${e.detail}`)).toContain('settings.remote: bypass on, typing off')
+    // The operator, on its next snapshot, goes by the new switches.
+    const snap = await operator.conn.request({ type: 'snapshot' })
+    expect(snap.data).toMatchObject({ policy: { allowBypass: true, allowTyping: false } })
   })
 
   test('a retried request is carried out once and answered the same', async () => {
