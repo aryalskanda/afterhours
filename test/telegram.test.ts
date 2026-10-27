@@ -1062,6 +1062,87 @@ describe('killing a stuck task', () => {
   })
 })
 
+describe('more than one task at once', () => {
+  const spec = (dir: string, prompt: string) => ({ projectDir: dir, prompt, plan: false, review: false, execMode: 'auto' as const, model: 'sonnet', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'test' })
+  /** Two tasks running side by side, in different folders. */
+  async function both() {
+    const h = await paired()
+    h.config().parallel = 2
+    const a = h.runner.enqueue(spec(join(h.root, 'alpha'), 'Fix the parser'))
+    const b = h.runner.enqueue(spec(join(h.root, 'beta'), 'Write the docs'))
+    await h.runner.tick()
+    await h.runner.tick()
+    return { h, a, b }
+  }
+
+  test('📊 Status lists every running task, each with its own Kill', async () => {
+    const { h, a, b } = await both()
+    await h.say('/status')
+    const view = h.api.view(h.api.last().id)
+    expect(view.html).toContain(`<b>#${a.id}</b>`)
+    expect(view.html).toContain(`<b>#${b.id}</b>`)
+    expect(view.html).toContain('Up to 2 tasks at once.')
+    const kills = view.keyboard.flat().map(x => x.text).filter(t => t.startsWith('🛑'))
+    expect(kills).toEqual([`🛑 Kill #${a.id}`, `🛑 Kill #${b.id}`])
+  })
+
+  test('👀 Peek asks which task, with them numbered; a number shows that one', async () => {
+    const { h, a, b } = await both()
+    await h.say('/peek')
+    const picker = h.api.view(h.api.last().id)
+    expect(picker.html).toContain('Peek at <b>which task?</b>')
+    expect(picker.html).toContain(`<b>1.</b> <b>#${a.id}</b>`)
+    expect(picker.html).toContain(`<b>2.</b> <b>#${b.id}</b>`)
+    expect(picker.keyboard.flat().map(x => x.text)).toEqual(['1', '2'])
+    h.tmux.windows.get(windowName(b.id))!.screen = 'Writing the docs…'
+    await h.tap(choice(picker, `#${b.id}`), h.api.last().id)
+    const shown = h.api.view(h.api.last().id)
+    expect(shown.html).toContain(`<b>#${b.id}</b>`)
+    expect(shown.html).toContain('Writing the docs')
+    // Its buttons are about that task: Stop and Kill name it.
+    expect(shown.keyboard.flat().map(x => x.callback_data)).toEqual(expect.arrayContaining([`j:${b.id}:stop`, `j:${b.id}:kill`, `g:peek:${b.id}`]))
+  })
+
+  test('/kill with several running asks which, with their numbers; one number then a second tap ends that one only', async () => {
+    const { h, a, b } = await both()
+    await h.say('/kill')
+    const picker = h.api.view(h.api.last().id)
+    expect(picker.html).toContain('Kill which task?')
+    const kill = choice(picker, `#${b.id}`)
+    await h.tap(kill, h.api.last().id)
+    expect(h.api.answers.at(-1)!.text).toContain(`Tap 🛑 Kill again to end #${b.id}`)
+    await h.tap(kill, h.api.last().id)
+    expect([a.id, b.id].map(id => h.store.getJob(id)!.status)).toEqual(['running', 'cancelled'])
+    // With one left, /kill needs no number.
+    await h.say('/kill')
+    expect(h.store.getJob(a.id)!.status).toBe('cancelled')
+  })
+
+  test('/settings: Tasks at once, 1 · 2 · 3, from the chat', async () => {
+    const h = await paired()
+    await h.say('/settings')
+    const msg = h.api.last().id
+    expect(h.api.view(msg).html).toContain('Tasks at once: <b>1</b>')
+    await h.tap(button(h.api.view(msg).keyboard, '2 at once'), msg)
+    expect(h.config().parallel).toBe(2)
+    expect(h.api.view(msg).html).toContain('Tasks at once: <b>2</b>')
+    expect(h.api.view(msg).keyboard.flat().map(x => x.text)).toContain('✓ 2 at once')
+  })
+
+  test('a typed message goes to the task you picked', async () => {
+    const { h, a, b } = await both()
+    for (const j of [a, b]) {
+      const sid = h.store.getJob(j.id)!.sessionId!
+      await h.runner.onHook('SessionStart', j.id, { session_id: sid, transcript_path: `/t${j.id}.jsonl` })
+      await h.runner.onHook('UserPromptSubmit', j.id, { session_id: sid, permission_mode: 'auto' })
+    }
+    await h.tap(`g:type:${b.id}`, h.api.last().id)
+    await h.say('also add a changelog')
+    expect(h.tmux.windows.get(windowName(b.id))!.input).toContain('text:also add a changelog')
+    expect(h.tmux.windows.get(windowName(a.id))!.input).not.toContain('text:also add a changelog')
+  })
+})
+
 describe('the Mac, from the bot', () => {
   test("/mac: what keeps it awake, and quitting an app takes a second tap; one that won't offers Force quit", async () => {
     const sys = new FakeMac()

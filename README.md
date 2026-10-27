@@ -174,6 +174,15 @@ To move to another relay (a hosted one, say): `cq remote relay wss://relay.examp
 
 The relay can also run inside Afterhours (`remote.serve`), for a Mac that is reachable from the internet.
 
+## Run tasks side by side
+
+By default one task runs at a time. To run two or three (Claude Code in two projects, say), set **Tasks at once**: `cq parallel 2`, **/settings** in the bot, or **This Mac → Tasks at once** in the app (owners). The next task starts beside the running ones only when it can't get in their way:
+
+- **never in the same conversation**, and **never changing the same folder** (or one inside the other);
+- another folder, a task on **its own branch** (its own worktree), or a task that **only answers** runs beside anything.
+
+A task that can't start yet keeps its place; a later one that can goes first. They share your usage limit: when one hits it, nothing new starts until the reset, and each running task continues then. With several running, **stop**, **kill**, **say**, **peek** and the bot's buttons name the task (`stop #14`, or its number in the list).
+
 ## Kill a stuck task
 
 A task can get stuck: waiting for a chat that's open in VS Code, at a screen nobody can answer, or silent. **Kill** ends it now, from the app, the bot (**🛑 Kill**, `/kill`) or the terminal (`cq kill [#]`):

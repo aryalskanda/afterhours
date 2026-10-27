@@ -183,3 +183,51 @@ describe('the Mac, in text', () => {
     expect(await runCommand('sleep', ctx(null).ctx)).toBe('Only a Mac can do that.')
   })
 })
+
+describe('more than one task at once', () => {
+  const spec = (dir: string) => ({ projectDir: dir, prompt: 'x', plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'test' })
+  function setup(parallel = 1) {
+    let saved: Config = { ...config, parallel }
+    const store = new Store(':memory:')
+    const calls: string[] = []
+    const runner = {
+      get parallel() {
+        return saved.parallel
+      },
+      paused: false,
+      stop: async (id?: number) => (calls.push(`stop ${id}`), 'stopped'),
+      say: async (text: string, id?: number) => (calls.push(`say ${id} ${text}`), 'typed'),
+      kill: async (id: number) => (calls.push(`kill ${id}`), 'killed'),
+      collision: () => null,
+      limits: () => ({}),
+      runtimeInfo: () => null,
+    } as unknown as Runner
+    return { store, runner, calls, saved: () => saved, ctx: { runner, store, config: () => saved, saveConfig: (c: Config) => (saved = c), now: () => Date.now(), source: 'cli' as const, cwd: project } }
+  }
+
+  test('parallel shows and sets how many, 1 to 3', async () => {
+    const t = setup()
+    expect(await runCommand('parallel', t.ctx)).toContain('Up to 1 task at once')
+    expect(await runCommand('parallel 2', t.ctx)).toContain('Up to 2 tasks at once')
+    expect(t.saved().parallel).toBe(2)
+    expect(await runCommand('parallel 5', t.ctx)).toBe('Usage: parallel 1, 2 or 3.')
+    expect(await runCommand('parallel 1', t.ctx)).toContain('One task at a time')
+  })
+
+  test('with several running, a command that acts on one asks which; naming it does it', async () => {
+    const t = setup(2)
+    for (const dir of [project, join(project, 'b')]) t.store.updateJob(t.store.addJob(spec(dir), 1).id, { status: 'running' })
+    expect(await runCommand('stop', t.ctx)).toBe('Several are running (#1, #2): stop #<number>.')
+    expect(await runCommand('kill', t.ctx)).toBe('Several are running (#1, #2): kill <number>.')
+    expect(await runCommand('say hello', t.ctx)).toBe('Several are running (#1, #2): say #<number> <text>.')
+    expect(t.calls).toEqual([])
+    expect(await runCommand('stop #2', t.ctx)).toBe('stopped')
+    expect(await runCommand('say #1 hello there', t.ctx)).toBe('typed')
+    expect(await runCommand('kill 2', t.ctx)).toBe('killed')
+    expect(t.calls).toEqual(['stop 2', 'say 1 hello there', 'kill 2'])
+    // Status lists both.
+    const status = await runCommand('st', t.ctx)
+    expect(status!.split('\n').filter(l => l.startsWith('▶')).length).toBe(2)
+    expect(status).toContain('Up to 2 tasks at once.')
+  })
+})
