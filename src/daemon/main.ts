@@ -140,7 +140,7 @@ export async function runDaemon(): Promise<void> {
     liveSessions: () => liveSessions(),
     conversation: s => liveConversation(s),
     findConversation: sessionId => findConversation(sessionId),
-    queued: sessionId => store.active()?.sessionId === sessionId || store.pendingForSession(sessionId) !== null,
+    queued: sessionId => store.running().some(j => j.sessionId === sessionId) || store.pendingForSession(sessionId) !== null,
     limits: () => runner.limits(),
     store,
     notify: notice => notifier.send(notice),

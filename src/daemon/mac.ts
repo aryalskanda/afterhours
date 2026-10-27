@@ -105,7 +105,7 @@ export class MacControl {
       quitFirst: quitBeforeSleep(apps, disabled).map(a => a.pid),
       sleepWhenDone: plan ? { on: true, quit: plan.names, waiting: this.waitingFor() } : { on: false, quit: [], waiting: null },
       idleSeconds: idle,
-      running: this.d.store.active()?.id ?? null,
+      running: this.d.store.running().at(-1)?.id ?? null,
       lidClosed: { on: lid?.config().keepAwakeLidClosed ?? false, ready, holding: lid?.awake.holds ?? false },
     }
   }
@@ -187,12 +187,12 @@ export class MacControl {
         this.goingToSleep = false
       })
     }, SLEEP_DELAY_MS)
-    const running = this.d.store.active()
+    const running = this.d.store.running()
     return {
       ok: true,
       text:
         `Going to sleep${quitted.length ? `, after quitting ${names(quitted)}` : ''}.` +
-        `${running ? ` #${running.id} pauses until the Mac wakes.` : ''} It can't be woken from your phone: open its lid or press a key.`,
+        `${running.length ? ` ${running.map(j => `#${j.id}`).join(' and ')} ${running.length === 1 ? 'pauses' : 'pause'} until the Mac wakes.` : ''} It can't be woken from your phone: open its lid or press a key.`,
     }
   }
 
@@ -220,7 +220,7 @@ export class MacControl {
 
   /** Nothing is running, and nothing in the queue can start now. */
   private queueDone(): boolean {
-    if (this.d.store.active()) return false
+    if (this.d.store.running().length > 0) return false
     if (this.d.runner.paused) return true
     const now = this.d.now()
     return this.d.store.queued().every(j => j.onHold || (j.notBefore !== null && j.notBefore > now))

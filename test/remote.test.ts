@@ -963,6 +963,38 @@ describe('machines, money, safety', () => {
     expect(await conn.request({ type: 'chat.rename', session: 'c', title: 'Mine' })).toMatchObject({ ok: false, code: 'policy' })
   })
 
+  test('tasks at once: the snapshot lists every running task; an owner sets how many; stop and say name a task', async () => {
+    const m = machine()
+    const { conn, snapshots } = await pairedApp(m)
+    expect(snapshots[0]!.features).toContain('parallel')
+    expect(snapshots[0]).toMatchObject({ parallel: 1, running: [] })
+    const operator = await pairedApp(m, { role: 'operator', name: 'Tablet' })
+    // Only an owner changes it.
+    expect(await operator.conn.request({ type: 'settings.parallel', n: 2 })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await conn.request({ type: 'settings.parallel', n: 4 as 3 })).toMatchObject({ ok: false })
+    expect(await conn.request({ type: 'settings.parallel', n: 2 })).toMatchObject({ ok: true, data: { parallel: 2 } })
+    expect(m.config().parallel).toBe(2)
+    const other = join(dir, 'projects', 'blog')
+    mkdirSync(other, { recursive: true })
+    const spec = (projectDir: string) => ({ projectDir, prompt: 'x', plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'test' })
+    const a = m.runner.enqueue(spec(m.project))
+    const b = m.runner.enqueue(spec(other))
+    await m.runner.tick()
+    await m.runner.tick()
+    const snap = (await conn.request({ type: 'snapshot' })).data as { parallel: number; active: { id: number }; running: { id: number }[] }
+    expect(snap.parallel).toBe(2)
+    expect(snap.running.map(j => j.id)).toEqual([a.id, b.id])
+    expect(snap.active.id).toBe(a.id)
+    // A control names its task: stopping #b holds only #b.
+    expect(await conn.request({ type: 'control', action: 'stop', job: b.id })).toMatchObject({ ok: true })
+    expect([a.id, b.id].map(id => m.store.getJob(id)!.status)).toEqual(['running', 'held'])
+    // #c isn't running: refused, not done to another task.
+    expect(await conn.request({ type: 'control', action: 'stop', job: 999 })).toMatchObject({ ok: false, code: 'gone' })
+    expect(await conn.request({ type: 'say', text: 'hello', job: 999 })).toMatchObject({ ok: false, code: 'gone' })
+    const audit = (await conn.request({ type: 'audit', limit: 50 })).data as { entries: { action: string; detail: string | null }[] }
+    expect(audit.entries.find(e => e.action === 'settings.parallel')?.detail).toBe('2 at once')
+  })
+
   test('health for everyone, the log only for owners; restart and invites for owners', async () => {
     const m = machine()
     require('node:fs').writeFileSync(join(dir, 'cqd.log'), 'line one\nline two\n')

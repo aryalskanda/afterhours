@@ -332,6 +332,15 @@ export class Store {
       .map(toJob)
   }
 
+  /** Every task running or held (paused, or waiting on a conversation), oldest first. */
+  running(): Job[] {
+    return this.db
+      .query<Row, []>(`SELECT * FROM jobs WHERE status IN ('running', 'held') ORDER BY id`)
+      .all()
+      .map(toJob)
+  }
+
+  /** The oldest of them: "the task", where only one is meant. */
   active(): Job | null {
     const row = this.db
       .query<Row, []>(`SELECT * FROM jobs WHERE status IN ('running', 'held') ORDER BY id LIMIT 1`)

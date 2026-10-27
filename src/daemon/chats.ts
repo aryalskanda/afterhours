@@ -36,26 +36,28 @@ export interface ChatSource {
 }
 
 export function chatSource(o: { store: Store; liveSessions: () => LiveSession[]; claudeDir?: string }): ChatSource {
-  const withState = (c: Conversation, live: LiveSession[], running: string | null): Chat => {
-    const holder = c.sessionId === running ? undefined : live.find(s => s.sessionId === c.sessionId)
-    return { ...c, where: holder ? whereLabel(holder) : null, busy: holder?.status === 'busy', running: c.sessionId === running }
+  /** The conversations the queue is running right now (one for each task running). */
+  const sessionsRunning = () => new Set(o.store.running().flatMap(j => (j.sessionId ? [j.sessionId] : [])))
+  const withState = (c: Conversation, live: LiveSession[], running: Set<string>): Chat => {
+    const holder = running.has(c.sessionId) ? undefined : live.find(s => s.sessionId === c.sessionId)
+    return { ...c, where: holder ? whereLabel(holder) : null, busy: holder?.status === 'busy', running: running.has(c.sessionId) }
   }
   return {
     list(folder, limit) {
       const dirs = [folder, ...o.store.worktreeDirs(folder).filter(d => existsSync(d))]
       const live = o.liveSessions()
-      const running = o.store.active()?.sessionId ?? null
+      const running = sessionsRunning()
       return listConversations(dirs, limit, o.claudeDir).map(c => withState(c, live, running))
     },
     recent(page, perPage) {
       const { chats, more } = listRecentConversations(page * perPage, perPage, o.claudeDir)
       const live = o.liveSessions()
-      const running = o.store.active()?.sessionId ?? null
+      const running = sessionsRunning()
       return { chats: chats.map(c => withState(c, live, running)), more }
     },
     get(sessionId) {
       const c = findConversation(sessionId, o.claudeDir)
-      return c ? withState(c, o.liveSessions(), o.store.active()?.sessionId ?? null) : null
+      return c ? withState(c, o.liveSessions(), sessionsRunning()) : null
     },
     rename(sessionId, title) {
       return renameConversation(sessionId, title, o.claudeDir)

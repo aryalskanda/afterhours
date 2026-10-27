@@ -48,7 +48,8 @@ type Pending =
   | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
   | { kind: 'followup'; jobId: number }
-  | { kind: 'say' }
+  /** What you type next goes into this running task (the latest one when no number). */
+  | { kind: 'say'; job?: number }
 
 /** The chat you're inside (💬 Chats → ✍️ Write here): what you type goes into it. */
 interface Focus {
@@ -582,7 +583,9 @@ export class TelegramBridge {
       case 'kill': {
         // /kill ends the running task; /kill 14 ends #14 (a queued one comes off the queue).
         const arg = /^\/kill(?:@\S+)?\s+#?(\d+)\s*$/.exec(text)?.[1]
-        const id = arg ? Number(arg) : this.o.store.active()?.id
+        const running = this.o.store.running()
+        if (!arg && running.length > 1) return void (await this.send(chat, ui.killPickerView(running, this.noticeContext())))
+        const id = arg ? Number(arg) : running[0]?.id
         await this.sendText(chat, id === undefined ? 'Nothing is running.' : await this.o.runner.kill(id, { by: 'Telegram' }))
         return
       }
@@ -667,7 +670,7 @@ export class TelegramBridge {
         return this.showDraft(chat, draft)
       }
       case 'say':
-        await this.sendText(chat, await this.o.runner.say(text))
+        await this.sendText(chat, await this.o.runner.say(text, p.job))
         return
     }
   }
@@ -718,18 +721,19 @@ export class TelegramBridge {
   }
 
   private async showQueue(chat: number, messageId?: number): Promise<void> {
-    const view = ui.queueView(this.o.store.active(), this.o.store.queued(), this.uiContext(), this.o.runner.paused)
+    const view = ui.queueView(this.o.store.running(), this.o.store.queued(), this.uiContext(), this.o.runner.paused)
     if (messageId) await this.edit(chat, messageId, view)
     else messageId = (await this.send(chat, view)).message_id
     this.queueMessages.add(messageId)
   }
 
   private statusInfo(): ui.StatusInfo {
-    const active = this.o.store.active()
-    const info = active ? this.o.runner.runtimeInfo(active.id) : null
     return {
-      active,
-      lastTool: info?.lastTool ? { tool: info.lastTool, at: info.lastActivity } : null,
+      running: this.o.store.running().map(job => {
+        const info = this.o.runner.runtimeInfo(job.id)
+        return { job, lastTool: info?.lastTool ? { tool: info.lastTool, at: info.lastActivity } : null }
+      }),
+      parallel: this.o.runner.parallel,
       approvals: this.o.store.pendingApprovals(),
       queued: this.o.store.queued(),
       paused: this.o.runner.paused,
@@ -823,8 +827,14 @@ export class TelegramBridge {
     if (this.statusMessages.size > 50) this.statusMessages.delete(this.statusMessages.values().next().value!)
   }
 
-  private async showPeek(chat: number, messageId?: number): Promise<void> {
-    const s = await this.o.runner.screen(30)
+  private async showPeek(chat: number, messageId?: number, jobId?: number): Promise<void> {
+    const running = this.o.store.running()
+    // Several running and none chosen: which one?
+    if (jobId === undefined && running.length > 1) {
+      await this.send(chat, ui.runningPickerView(running, 'peek', this.noticeContext()))
+      return
+    }
+    const s = await this.o.runner.screen(30, false, jobId)
     const view = ui.peekView(s?.jobId ?? null, s?.text ?? '')
     if (messageId) await this.edit(chat, messageId, view)
     else messageId = (await this.send(chat, view)).message_id
@@ -849,6 +859,7 @@ export class TelegramBridge {
       models: config.models,
       watch: config.watchSessions,
       autoContinue: config.autoContinueChats,
+      parallel: this.o.runner.parallel,
       now: this.o.now(),
     })
   }
@@ -1122,15 +1133,18 @@ export class TelegramBridge {
   private whenText(job: Job): string {
     const now = this.o.now()
     const ahead = this.o.store.queued().findIndex(j => j.id === job.id)
-    const active = this.o.store.active()
-    if (ahead === 0 && !active) {
+    const running = this.o.store.running()
+    const active = running.at(-1)
+    if (ahead === 0 && running.length === 0) {
       if (this.o.runner.paused) return 'The queue is paused: /resume to start it.'
       const until = this.o.runner.limits().blockedUntil
       if (until && until > now) return `Starts after the usage limit resets at ${formatClock(until, now)}.`
       return 'Starting now.'
     }
     const others = ahead > 0 ? ` and ${ahead} more` : ''
-    return active ? `Runs after #${active.id}${others}.` : `${ahead} ahead of it.`
+    // Beside what's running, when it may and they can't get in each other's way.
+    if (ahead === 0 && running.length < this.o.runner.parallel && !this.o.runner.collision(job, running) && !this.o.runner.paused) return `Starts beside ${running.map(j => `#${j.id}`).join(' and ')}.`
+    return active ? `Runs after #${running.map(j => j.id).join(' or #')}${others}.` : `${ahead} ahead of it.`
   }
 
   private async onApprovalButton(chat: number, message: TgMessage | undefined, code: string, op: string): Promise<string> {
@@ -1256,14 +1270,14 @@ export class TelegramBridge {
   private async onJobButton(chat: number, message: TgMessage | undefined, id: number, op: string): Promise<string | undefined> {
     const job = this.o.store.getJob(id)
     if (!job) return `No job #${id}.`
-    const active = this.o.store.active()?.id === id
+    const active = this.o.store.running().some(j => j.id === id)
     let reply: string
     switch (op) {
       case 'peek':
-        await this.showPeek(chat)
+        await this.showPeek(chat, undefined, id)
         return
       case 'stop':
-        return active ? this.o.runner.stop() : `#${id} isn't running.`
+        return active ? this.o.runner.stop(id) : `#${id} isn't running.`
       case 'link': {
         const asked = this.o.runner.requestLink(id, 'telegram')
         if (asked.ok && message) await this.settle(chat, message, asked.text)
@@ -1282,18 +1296,18 @@ export class TelegramBridge {
         return reply
       }
       case 'go':
-        return active ? this.o.runner.go() : `#${id} isn't the current job.`
+        return active ? this.o.runner.go(id) : `#${id} isn't running.`
       case 'now':
         return active ? this.o.runner.continueNow() : `#${id} isn't waiting for a usage limit any more.`
       case 'fork':
-        return active ? this.o.runner.fork() : `#${id} isn't waiting any more.`
+        return active ? this.o.runner.fork(id) : `#${id} isn't waiting any more.`
       case 'take':
         if (!active) return `#${id} isn't waiting any more.`
-        reply = await this.o.runner.takeover()
+        reply = await this.o.runner.takeover(id)
         await this.settle(chat, message, reply)
         return reply
       case 'skip':
-        if (active) reply = await this.o.runner.skip()
+        if (active) reply = await this.o.runner.skip(undefined, id)
         else if (job.status === 'queued') reply = await this.o.runner.remove(id)
         else return `#${id} is already ${job.status}.`
         await this.settle(chat, message, reply)
@@ -1502,9 +1516,17 @@ export class TelegramBridge {
       case 'q':
         await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
         return 'Updated.'
-      case 'peek':
-        await this.showPeek(chat, at && this.peekMessages.has(at) ? at : undefined)
+      case 'peek': {
+        const id = parts[1] ? Number(parts[1]) : undefined
+        const running = this.o.store.running()
+        // Several running and none chosen: which one?
+        if (id === undefined && running.length > 1) {
+          await this.send(chat, ui.runningPickerView(running, 'peek', this.noticeContext()))
+          return
+        }
+        await this.showPeek(chat, at && this.peekMessages.has(at) ? at : undefined, id)
         return 'Updated.'
+      }
       case 'pause':
         this.o.runner.setPaused(true)
         await refresh()
@@ -1533,25 +1555,44 @@ export class TelegramBridge {
         await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
         return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} off the queue.`
       }
+      case 'par': {
+        const n = Number(parts[1])
+        if (!Number.isInteger(n) || n < 1 || n > 3) return
+        this.o.saveConfig({ ...this.o.config(), parallel: n })
+        if (at) await this.edit(chat, at, this.settingsView())
+        return n === 1 ? 'One task at a time.' : `Up to ${n} tasks at once.`
+      }
       case 'rescan':
         await this.o.folders.rebuild()
         if (at) await this.edit(chat, at, this.settingsView())
         return `Folder map rebuilt: ${this.o.folders.size} folders.`
       case 'type': {
-        const job = this.o.store.active()
+        const running = this.o.store.running()
+        const id = parts[1] ? Number(parts[1]) : undefined
+        if (id === undefined && running.length > 1) {
+          await this.send(chat, ui.runningPickerView(running, 'type', this.noticeContext()))
+          return
+        }
+        const job = id !== undefined ? running.find(j => j.id === id) : running[0]
         if (!job) return 'Nothing is running.'
-        this.setPending({ kind: 'say' })
+        this.setPending({ kind: 'say', job: job.id })
         await this.sendText(chat, `⌨️ Send what to type into #${job.id}. It's typed as you write it, then Enter.`)
         return 'Waiting for what to type.'
       }
       case 'keys': {
-        const job = this.o.store.active()
+        const running = this.o.store.running()
+        const id = parts[1] ? Number(parts[1]) : undefined
+        if (id === undefined && running.length > 1) {
+          await this.send(chat, ui.runningPickerView(running, 'keys', this.noticeContext()))
+          return
+        }
+        const job = id !== undefined ? running.find(j => j.id === id) : running[0]
         if (!job) return 'Nothing is running.'
         await this.send(chat, ui.keysView(job.id))
         return
       }
       case 'k':
-        return parts[1] ? this.o.runner.keys([parts[1]]) : undefined
+        return parts[1] ? this.o.runner.keys([parts[1]], parts[2] ? Number(parts[2]) : undefined) : undefined
       case 'watch': {
         const config = this.o.config()
         config.watchSessions = !config.watchSessions

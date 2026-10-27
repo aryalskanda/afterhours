@@ -46,11 +46,14 @@ export class Feed {
   }
 
   state(): State {
-    const active = this.d.store.active()
+    const running = this.d.store.running()
+    const active = running[0] ?? null
     return {
       type: 'state',
       paused: this.d.runner.paused,
       active: active ? jobInfo(active, { brief: true }) : null,
+      running: running.map(j => jobInfo(j, { brief: true })),
+      parallel: this.d.runner.parallel,
       queued: this.d.store.queued().map(j => jobInfo(j, { brief: true })),
       limits: limitsInfo(this.d.runner.limits()),
     }

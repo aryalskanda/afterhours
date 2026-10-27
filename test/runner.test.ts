@@ -1443,3 +1443,152 @@ describe('attachments', () => {
     expect(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2)).toEqual(['--add-dir', '/tmp/cqhome/uploads'])
   })
 })
+
+describe('tasks at once', () => {
+  /** A harness allowing `n` tasks at once, with a second project folder next to the first. */
+  function two(n = 2, opts: { gitRepo?: boolean } = {}) {
+    const h = setup({}, opts)
+    h.config().parallel = n
+    const other = mkdtempSync(join(tmpdir(), 'cq-run-b-'))
+    return { h, other }
+  }
+  /** Queues a task and ticks until it has started (one start per tick). */
+  const start = async (h: Harness, over: Partial<JobSpec> = {}) => {
+    const job = h.runner.enqueue(h.spec({ plan: false, ...over }))
+    await h.runner.tick()
+    return job
+  }
+  const statuses = (h: Harness, ...ids: number[]) => ids.map(id => h.store.getJob(id)!.status)
+
+  test('one at a time stays the default: a second waits for the first', async () => {
+    const h = setup()
+    const a = await start(h)
+    const b = await start(h, { projectDir: mkdtempSync(join(tmpdir(), 'cq-run-b-')) })
+    expect(statuses(h, a.id, b.id)).toEqual(['running', 'queued'])
+  })
+
+  test('two folders run side by side, each with its own window, hooks and Stop', async () => {
+    const { h, other } = two()
+    const a = await start(h)
+    const b = await start(h, { projectDir: other })
+    expect(statuses(h, a.id, b.id)).toEqual(['running', 'running'])
+    expect([...h.tmux.windows.keys()]).toEqual([windowName(a.id), windowName(b.id)])
+    expect(h.store.running().map(j => j.id)).toEqual([a.id, b.id])
+    // Their hooks are their own.
+    for (const j of [a, b]) {
+      const sid = h.store.getJob(j.id)!.sessionId!
+      await h.runner.onHook('SessionStart', j.id, { session_id: sid, transcript_path: `/tmp/${j.id}.jsonl` })
+      await h.runner.onHook('UserPromptSubmit', j.id, { session_id: sid, permission_mode: 'auto' })
+    }
+    // Stop by number holds only that one; with none given, the one that started last.
+    await h.runner.stop(a.id)
+    expect(statuses(h, a.id, b.id)).toEqual(['held', 'running'])
+    await h.runner.go(a.id)
+    expect(statuses(h, a.id, b.id)).toEqual(['running', 'running'])
+    await h.runner.stop()
+    expect(statuses(h, a.id, b.id)).toEqual(['running', 'held'])
+    // Kill ends one and leaves the other.
+    await h.runner.kill(b.id)
+    expect(statuses(h, a.id, b.id)).toEqual(['running', 'cancelled'])
+    expect(h.tmux.windows.has(windowName(a.id))).toBe(true)
+    expect(h.tmux.windows.has(windowName(b.id))).toBe(false)
+  })
+
+  test('both finish on their own, and the queue moves on', async () => {
+    const { h, other } = two()
+    const a = await start(h)
+    const b = await start(h, { projectDir: other })
+    const c = h.runner.enqueue(h.spec({ plan: false, prompt: 'third' }))
+    for (const j of [a, b]) await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: `done ${j.id}` })
+    h.advance(2000)
+    await h.runner.tick()
+    for (const j of [a, b]) h.tmux.windows.get(windowName(j.id))!.dead = true
+    await h.runner.tick()
+    expect(statuses(h, a.id, b.id)).toEqual(['done', 'done'])
+    await h.runner.tick()
+    expect(h.store.getJob(c.id)!.status).toBe('running')
+  })
+
+  test('the same folder changing files in place waits; its own branch, or only answering, runs beside', async () => {
+    const { h } = two(3, { gitRepo: true })
+    mkdirSync(join(h.project, '.git'), { recursive: true })
+    const a = await start(h)
+    // The same folder, in place: waits (two tasks would write the same files).
+    const inPlace = await start(h, { isolate: false, sessionPolicy: 'new' })
+    expect(h.store.getJob(inPlace.id)!.status).toBe('queued')
+    expect(h.runner.collision(h.store.getJob(inPlace.id)!, [h.store.getJob(a.id)!])).toEqual({ job: a.id, why: 'folder' })
+    // On its own branch: beside it.
+    const branch = await start(h, { isolate: true, sessionPolicy: 'new' })
+    expect(h.store.getJob(branch.id)!.status).toBe('running')
+    expect(h.store.getJob(branch.id)!.workDir).toContain('afterhours-')
+    // Only answering: beside both.
+    const ask = await start(h, { plan: false, execMode: 'plan', sessionPolicy: 'new', prompt: 'what does it do?' })
+    expect(h.store.running().length).toBe(3)
+    expect(h.store.getJob(ask.id)!.status).toBe('running')
+    // The waiting one starts once the one it collides with is done.
+    await h.runner.kill(a.id)
+    await h.runner.tick()
+    expect(h.store.getJob(inPlace.id)!.status).toBe('running')
+    // Three at once is the most: a fourth waits for a slot.
+    const fourth = await start(h, { projectDir: mkdtempSync(join(tmpdir(), 'cq-run-c-')) })
+    expect(h.store.getJob(fourth.id)!.status).toBe('queued')
+  })
+
+  test('a folder inside another counts as the same place; siblings do not', () => {
+    const { h, other } = two()
+    const running = h.runner.enqueue(h.spec({ plan: false, projectDir: other }))
+    const asRunning = { ...running, status: 'running' as const, launchSpec: { cwd: other, argv: [] } }
+    const inside = h.runner.enqueue(h.spec({ plan: false, projectDir: join(other, 'web') }))
+    const sibling = h.runner.enqueue(h.spec({ plan: false, projectDir: `${other}-sibling` }))
+    expect(h.runner.collision(inside, [asRunning])).toEqual({ job: running.id, why: 'folder' })
+    expect(h.runner.collision(sibling, [asRunning])).toBeNull()
+  })
+
+  test('never two tasks in one conversation', async () => {
+    const { h, other } = two()
+    const a = await start(h, { projectDir: other })
+    const sid = h.store.getJob(a.id)!.sessionId!
+    // A follow-up in the same conversation, even from another folder, waits.
+    const follow = h.runner.enqueue(h.spec({ plan: false, sessionId: sid, sessionPolicy: 'session', projectDir: h.project }))
+    expect(h.runner.collision(follow, [h.store.getJob(a.id)!])).toEqual({ job: a.id, why: 'conversation' })
+    await h.runner.tick()
+    expect(h.store.getJob(follow.id)!.status).toBe('queued')
+  })
+
+  test('a later task in another folder passes one that has to wait', async () => {
+    const { h, other } = two()
+    const a = await start(h)
+    const waits = await start(h) // same folder, in place
+    const passes = await start(h, { projectDir: other })
+    expect(statuses(h, a.id, waits.id, passes.id)).toEqual(['running', 'queued', 'running'])
+  })
+
+  test('a usage limit stops everything from starting, and the setting is kept between 1 and 3', async () => {
+    const { h, other } = two(2)
+    const a = await start(h)
+    h.store.updateJob(a.id, { phase: 'limited' })
+    const b = await start(h, { projectDir: other })
+    expect(h.store.getJob(b.id)!.status).toBe('queued')
+    h.config().parallel = 9
+    expect(h.runner.parallel).toBe(3)
+    h.config().parallel = 0
+    expect(h.runner.parallel).toBe(1)
+  })
+
+  test('a typed message goes into the running task that has that conversation', async () => {
+    const { h, other } = two()
+    const a = await start(h)
+    const b = await start(h, { projectDir: other })
+    for (const j of [a, b]) {
+      const sid = h.store.getJob(j.id)!.sessionId!
+      await h.runner.onHook('SessionStart', j.id, { session_id: sid, transcript_path: `/tmp/${j.id}.jsonl` })
+      await h.runner.onHook('UserPromptSubmit', j.id, { session_id: sid, permission_mode: 'auto' })
+    }
+    const sidB = h.store.getJob(b.id)!.sessionId!
+    expect(await h.runner.typeIfFree(sidB, 'also cache it')).toBe(b.id)
+    expect(h.tmux.windows.get(windowName(b.id))!.input).toContain('text:also cache it')
+    expect(h.tmux.windows.get(windowName(a.id))!.input).not.toContain('text:also cache it')
+    expect(await h.runner.say('and a test', a.id)).toBe(`Typed into #${a.id}.`)
+    expect(await h.runner.say('x', 999)).toBe("#999 isn't running.")
+  })
+})

@@ -447,6 +447,8 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('folders'), query: z.string().max(200), parent: z.string().max(4096).optional(), rescan: z.boolean().optional() }),
   /** The project folders (FolderRoots), and with `browse` (owners) the folders in that folder of your home. */
   withId({ type: z.literal('folders.roots'), browse: z.string().max(4096).optional() }),
+  /** Owners: how many tasks may run at once (1 to 3). */
+  withId({ type: z.literal('settings.parallel'), n: z.number().int().min(1).max(3) }),
   /** Owners: add or remove a project folder (inside the home folder). */
   withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove']), path: z.string().min(1).max(4096) }),
   withId({ type: z.literal('devices') }),
@@ -562,7 +564,12 @@ export type Event = z.infer<typeof Event>
 export const State = z.object({
   type: z.literal('state'),
   paused: z.boolean(),
+  /** The oldest task running (the only one, where one runs at a time). */
   active: JobInfo.nullable(),
+  /** Every task running (up to `parallel`), oldest first. Missing from older machines: `[active]`. */
+  running: z.array(JobInfo).optional(),
+  /** How many tasks may run at once. */
+  parallel: z.number().int().optional(),
   queued: z.array(JobInfo),
   limits: LimitsInfo,
 })
@@ -602,6 +609,8 @@ export const Snapshot = z.object({
   role: Role,
   paused: z.boolean(),
   active: JobInfo.nullable(),
+  running: z.array(JobInfo).optional(),
+  parallel: z.number().int().optional(),
   queued: z.array(JobInfo),
   recent: z.array(JobInfo),
   approvals: z.array(ApprovalInfo),

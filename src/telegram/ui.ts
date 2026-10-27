@@ -380,14 +380,14 @@ export function enteredChatHtml(c: Chat, ctx: NoticeContext): string {
 
 /** 🔘 Keys: press keys in the running task, for a screen Afterhours doesn't know. */
 export function keysView(jobId: number): View {
-  const k = (label: string, key: string) => btn(label, `g:k:${key}`)
+  const k = (label: string, key: string) => btn(label, `g:k:${key}:${jobId}`)
   return {
     html: `🔘 <b>Press keys in #${jobId}</b>\n<i>For a screen ${BRAND.name} can't answer. 👀 Peek shows the result.</i>`,
     keyboard: [
       [k('1', '1'), k('2', '2'), k('3', '3')],
       [k('⏎ Enter', 'Enter'), k('⎋ Esc', 'Escape'), k('⇥ Tab', 'Tab')],
       [k('↑', 'Up'), k('↓', 'Down'), k('⇧⇥ Shift-Tab', 'BTab')],
-      [btn('👀 Peek', 'g:peek')],
+      [btn('👀 Peek', `g:peek:${jobId}`)],
     ],
   }
 }
@@ -795,9 +795,10 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
 // --- 📊 Status ------------------------------------------------------------------------------
 
 export interface StatusInfo {
-  active: Job | null
-  /** The running task's last tool and when it ran. */
-  lastTool: { tool: string; at: number } | null
+  /** Every task running, oldest first, each with its last tool and when it ran. */
+  running: { job: Job; lastTool: { tool: string; at: number } | null }[]
+  /** How many may run at once. */
+  parallel: number
   /** Requests waiting on you. */
   approvals: Approval[]
   queued: Job[]
@@ -839,14 +840,14 @@ const WAITING: Record<Approval['kind'], string> = {
 /** 📊 Status: what's running, what's waiting on you (with its buttons), what's next, the limits. */
 export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   const lines = ['📊 <b>Status</b>']
-  const a = s.active
-  if (a) {
+  const many = s.running.length > 1
+  for (const { job: a, lastTool } of s.running) {
     const since = a.startedAt ? ` · ${duration(ctx.now - a.startedAt)}` : ''
     lines.push(`▶️ <b>#${a.id}</b> · ${esc(ctx.label(a.projectDir))} · ${esc(phaseText(a))}${since}`, `“${esc(oneLine(a.prompt, 140))}”`)
-    if (s.lastTool) lines.push(`🔧 last: ${esc(s.lastTool.tool)}, ${duration(ctx.now - s.lastTool.at)} ago`)
-  } else {
-    lines.push(s.paused ? '⏸ Nothing running; the queue is paused.' : '💤 Nothing running.')
+    if (lastTool) lines.push(`🔧 last: ${esc(lastTool.tool)}, ${duration(ctx.now - lastTool.at)} ago`)
   }
+  if (s.running.length === 0) lines.push(s.paused ? '⏸ Nothing running; the queue is paused.' : '💤 Nothing running.')
+  else if (s.parallel > 1) lines.push(`<i>Up to ${s.parallel} tasks at once.</i>`)
   for (const ap of s.approvals) lines.push(`⏳ <b>Waiting on you</b> (#${ap.jobId}): ${WAITING[ap.kind]}`)
   if (s.queued.length > 0) {
     lines.push(`<b>Next</b>${s.queued.length > 3 ? ` (${s.queued.length} waiting)` : ''}:`)
@@ -859,7 +860,7 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   const stale = read && ctx.now - read > 30 * 60_000 ? `<i>Usage as of ${esc(formatClock(read, ctx.now))}; it updates while a task runs.</i>` : ''
   if (limits.length > 0) lines.push('', ...limits, ...(stale ? [stale] : []))
   else if (read) lines.push('', `<i>No usage reading since the last reset; it updates while a task runs.</i>`)
-  if (s.paused && a) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
+  if (s.paused && s.running.length > 0) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
 
   const keyboard: InlineKeyboard = []
   for (const ap of s.approvals.slice(0, 3)) {
@@ -873,7 +874,8 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
     [btn('🔄 Refresh', 'g:st'), s.paused ? btn('▶️ Resume', 'g:resume') : btn('⏸ Pause', 'g:pause'), btn('👀 Peek', 'g:peek')],
     [btn('📋 Queue', 'g:q'), btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys')],
   )
-  if (a) keyboard.push([btn(`🛑 Kill #${a.id}`, `j:${a.id}:kill`)])
+  // Each running task has its own Kill; with several, Peek, Type and Keys ask which.
+  for (const { job: a } of s.running) keyboard.push([btn(`🛑 Kill #${a.id}`, `j:${a.id}:kill`)])
   return { html: lines.join('\n'), keyboard }
 }
 
@@ -881,13 +883,13 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
  * 📋 Queue: the running task, then each waiting one with ⬆️ ⬇️ (move it), ⏸ / ▶️ (hold it in its
  * place, or let it start again) and 🗑, by its number.
  */
-export function queueView(active: Job | null, queued: Job[], ctx: UiContext, paused: boolean): View {
+export function queueView(running: Job[], queued: Job[], ctx: UiContext, paused: boolean): View {
   const lines: string[] = ['📋 <b>Queue</b>']
-  if (active) lines.push(`▶ <b>#${active.id}</b> ${jobHeader(active, ctx)}\n   “${esc(oneLine(active.prompt, 90))}”`)
+  for (const active of running) lines.push(`▶ <b>#${active.id}</b> ${jobHeader(active, ctx)}\n   “${esc(oneLine(active.prompt, 90))}”`)
   queued.forEach((job, i) =>
     lines.push(`${i + 1}. <b>#${job.id}</b>${job.onHold ? ' ⏸ <i>on hold</i>' : ''} ${jobHeader(job, ctx)}\n   “${esc(oneLine(job.prompt, 90))}”`),
   )
-  if (!active && queued.length === 0) lines.push('<i>Nothing queued. Send a prompt to add one.</i>')
+  if (running.length === 0 && queued.length === 0) lines.push('<i>Nothing queued. Send a prompt to add one.</i>')
   if (paused) lines.push('⏸ <i>Paused: nothing new starts until you resume.</i>')
   const shown = queued.slice(0, 20)
   const keyboard: InlineKeyboard = shown.map((job, i) => [
@@ -906,9 +908,32 @@ export function peekView(jobId: number | null, screen: string): View {
   return {
     html: `👀 <b>#${jobId}</b>\n<pre>${esc(clip(screen, 3500)) || '(blank screen)'}</pre>`,
     keyboard: [
-      [btn('🔄 Refresh', 'g:peek'), btn('⏹ Stop', `j:${jobId}:stop`)],
-      [btn('⌨️ Type', 'g:type'), btn('🔘 Keys', 'g:keys'), btn('🛑 Kill', `j:${jobId}:kill`)],
+      [btn('🔄 Refresh', `g:peek:${jobId}`), btn('⏹ Stop', `j:${jobId}:stop`)],
+      [btn('⌨️ Type', `g:type:${jobId}`), btn('🔘 Keys', `g:keys:${jobId}`), btn('🛑 Kill', `j:${jobId}:kill`)],
     ],
+  }
+}
+
+/** /kill with several running: which one (tap again to confirm, as on a card). */
+export function killPickerView(running: Job[], ctx: NoticeContext): View {
+  return {
+    html:
+      '🛑 <b>Kill which task?</b>\n' +
+      running.map((j, i) => numbered(i + 1, `<b>#${j.id}</b> · ${esc(ctx.label(j.projectDir))}\n   “${esc(oneLine(j.prompt, 120))}”`)).join('\n') +
+      '\n<i>Tap its number, then again to confirm: Claude and everything it started stop.</i>',
+    keyboard: numberRows(running.map(j => ({ data: `j:${j.id}:kill` }))),
+  }
+}
+
+/** Which of the running tasks: the tasks numbered in the message, and their numbers as buttons (`verb`: peek, type, keys). */
+export function runningPickerView(running: Job[], verb: 'peek' | 'type' | 'keys', ctx: NoticeContext): View {
+  const what = { peek: '👀 Peek at', type: '⌨️ Type into', keys: '🔘 Press keys in' }[verb]
+  return {
+    html:
+      `${what} <b>which task?</b>\n` +
+      running.map((j, i) => numbered(i + 1, `<b>#${j.id}</b> · ${esc(ctx.label(j.projectDir))}\n   “${esc(oneLine(j.prompt, 120))}”`)).join('\n') +
+      '\n<i>Tap its number.</i>',
+    keyboard: numberRows(running.map(j => ({ data: `g:${verb}:${j.id}` }))),
   }
 }
 
@@ -920,6 +945,8 @@ export function settingsView(o: {
   models: string[]
   watch: boolean
   autoContinue: boolean
+  /** How many tasks may run at once. */
+  parallel: number
   now: number
 }): View {
   const built = o.builtAt ? `rebuilt ${duration(o.now - o.builtAt)} ago` : 'not built yet'
@@ -930,12 +957,14 @@ export function settingsView(o: {
       `Notifications: <b>${esc(o.notify)}</b>\n` +
       `Folder map: ${o.folders} folders under ${o.roots.map(r => esc(basename(r))).join(', ')} · ${built}\n` +
       `Models: ${esc(o.models.join(', '))} <i>(change in ~/${BRAND.homeDir}/config.json)</i>\n` +
+      `Tasks at once: <b>${o.parallel}</b>${o.parallel > 1 ? ' <i>(the next starts beside the running ones only in another folder, on its own branch, or when it only answers)</i>' : ''}\n` +
       `Other chats: ${o.watch ? `I tell you when one in VS Code or a terminal hits a usage limit${o.autoContinue ? ', and continue it at the reset' : ''}` : 'not watched'}\n` +
       '<i>New tasks start with the choices you used last.</i>',
     keyboard: [
       [n('all', '🔔 All'), n('important', '🔕 Important'), n('off', '🔇 Off')],
       // Continuing a chat by itself follows from watching them: it's offered only while they're watched.
       [btn(o.watch ? '👀 Watching other chats ✓' : '👀 Watch other chats', 'g:watch'), ...(o.watch ? [btn(o.autoContinue ? '▶️ Auto-continue ✓' : '▶️ Auto-continue', 'g:auto')] : [])],
+      [1, 2, 3].map(n => btn(`${o.parallel === n ? '✓ ' : ''}${n} at once`, `g:par:${n}`)),
       [btn('🔄 Rescan folders', 'g:rescan')],
     ],
   }

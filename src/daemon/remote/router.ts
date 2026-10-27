@@ -87,6 +87,7 @@ export const FEATURES = [
   'effort.split',
   'folders.browse',
   'folders.roots',
+  'parallel',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -102,6 +103,7 @@ const NEEDS: Record<RequestType, Role> = {
   folders: 'viewer',
   'folders.roots': 'viewer',
   'folders.roots.set': 'owner',
+  'settings.parallel': 'owner',
   queue: 'operator',
   answer: 'operator',
   control: 'operator',
@@ -152,6 +154,7 @@ const CHANGES = new Set<RequestType>([
   'chat.write',
   'chat.rename',
   'folders.roots.set',
+  'settings.parallel',
   'devices.remove',
   'devices.rename',
   'command',
@@ -265,6 +268,8 @@ function auditDetail(r: Request): string | null {
       return r.session.slice(0, 8)
     case 'folders.roots.set':
       return `${r.action} ${r.path}`
+    case 'settings.parallel':
+      return `${r.n} at once`
     case 'keys':
       return r.keys.join(' ')
     case 'devices.remove':
@@ -337,7 +342,8 @@ export class Router {
 
   snapshot(role: Role): Snapshot {
     const config = this.d.config()
-    const active = this.d.store.active()
+    const running = this.d.store.running()
+    const active = running[0] ?? null
     return {
       type: 'snapshot',
       seq: this.d.db.lastSeq(),
@@ -345,6 +351,8 @@ export class Router {
       role,
       paused: this.d.runner.paused,
       active: active ? jobInfo(active) : null,
+      running: running.map(j => jobInfo(j)),
+      parallel: this.d.runner.parallel,
       queued: this.d.store.queued().map(j => jobInfo(j, { brief: true })),
       recent: this.d.store.recentFinished(10).map(j => jobInfo(j, { brief: true })),
       approvals: this.d.store.pendingApprovals().map(a => {
@@ -388,7 +396,7 @@ export class Router {
     const config = this.d.config()
     const policy = config.remote
     const roots = allowedRoots(config)
-    const notRunning = (job: number | undefined) => job !== undefined && store.active()?.id !== job
+    const notRunning = (job: number | undefined) => job !== undefined && !store.running().some(j => j.id === job)
     switch (r.type) {
       case 'sync':
         session.subscribed = true
@@ -397,7 +405,8 @@ export class Router {
       case 'snapshot':
         return { ok: true, data: this.snapshot(session.role) }
       case 'jobs': {
-        const active = store.active()
+        const running = store.running()
+        const active = running[0] ?? null
         const limit = r.recent ?? 20
         // Newest first by number, so `before` pages back with no gaps.
         const folder = r.folder ? resolve(expandHome(r.folder)) : undefined
@@ -407,6 +416,7 @@ export class Router {
           ok: true,
           data: {
             active: active ? jobInfo(active) : null,
+            running: running.map(j => jobInfo(j)),
             queued: store.queued().map(j => jobInfo(j)),
             recent: found.slice(0, limit).map(j => jobInfo(j)),
             more: found.length > limit,
@@ -443,14 +453,14 @@ export class Router {
         }
         switch (r.action) {
           case 'go':
-            return { ok: true, text: await runner.go() }
+            return { ok: true, text: await runner.go(r.job) }
           case 'pause':
             runner.setPaused(true)
             return { ok: true, text: 'Paused. The running task keeps going; nothing new starts until you resume.' }
           case 'stop':
-            return { ok: true, text: await runner.stop() }
+            return { ok: true, text: await runner.stop(r.job) }
           case 'skip':
-            return { ok: true, text: await runner.skip(name) }
+            return { ok: true, text: await runner.skip(name, r.job) }
           case 'clear': {
             const removed = runner.clear()
             return { ok: true, text: removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} task${removed.length === 1 ? '' : 's'} off the queue.`, data: { removed } }
@@ -465,9 +475,9 @@ export class Router {
           case 'continue':
             return { ok: true, text: await runner.continueNow() }
           case 'fork':
-            return { ok: true, text: await runner.fork() }
+            return { ok: true, text: await runner.fork(r.job) }
           case 'takeover':
-            return { ok: true, text: await runner.takeover() }
+            return { ok: true, text: await runner.takeover(r.job) }
         }
         break
       }
@@ -492,14 +502,14 @@ export class Router {
       case 'peek': {
         if (!policy.allowScreens) return { ok: false, code: 'policy', error: 'This machine keeps its screens to itself (cq remote screens on).' }
         if (notRunning(r.job)) return { ok: false, code: 'gone', error: `#${r.job} isn't running.` }
-        const screen = await runner.screen(r.lines ?? 40, r.ansi === true)
+        const screen = await runner.screen(r.lines ?? 40, r.ansi === true, r.job)
         return screen ? { ok: true, data: { job: screen.jobId, text: screen.text } } : { ok: true, data: null, text: 'Nothing is running.' }
       }
       case 'say':
       case 'keys': {
         if (!policy.allowTyping) return { ok: false, code: 'policy', error: "This machine doesn't let apps type into tasks (cq remote typing on)." }
         if (notRunning(r.job)) return { ok: false, code: 'gone', error: `#${r.job} isn't running.` }
-        return { ok: true, text: r.type === 'say' ? await runner.say(r.text) : await runner.keys(r.keys) }
+        return { ok: true, text: r.type === 'say' ? await runner.say(r.text, r.job) : await runner.keys(r.keys, r.job) }
       }
       case 'chats': {
         if (r.folder && !isAllowed(r.folder, roots)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }
@@ -540,6 +550,11 @@ export class Router {
         return this.folderRoots(config, session.role, r.browse)
       case 'folders.roots.set':
         return this.setFolderRoot(r.action, r.path, name, config)
+      case 'settings.parallel': {
+        this.d.saveConfig({ ...config, parallel: r.n })
+        this.d.log(`${name} set ${r.n} task${r.n === 1 ? '' : 's'} at once`)
+        return { ok: true, text: r.n === 1 ? 'One task at a time.' : `Up to ${r.n} tasks at once, when they can’t get in each other’s way.`, data: { parallel: r.n } }
+      }
       case 'devices':
         return { ok: true, data: this.d.db.devices().map(publicDevice) }
       case 'devices.remove': {

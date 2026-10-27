@@ -265,7 +265,58 @@ export class Runner {
   }
 
   hasWork(): boolean {
-    return this.d.store.active() !== null || (!this.paused && this.d.store.queued().length > 0)
+    return this.d.store.running().length > 0 || (!this.paused && this.d.store.queued().length > 0)
+  }
+
+  /** How many tasks may run at once (1 to 3). */
+  get parallel(): number {
+    const n = Math.floor(this.d.config().parallel ?? 1)
+    return Number.isFinite(n) ? Math.min(3, Math.max(1, n)) : 1
+  }
+
+  /**
+   * The task a control means: the one named, else (where several run) the one that started last,
+   * preferring one that `prefer` picks. Null when nothing is running.
+   */
+  private target(id?: number, prefer?: (job: Job) => boolean): Job | null {
+    const running = this.d.store.running()
+    if (id !== undefined) return running.find(j => j.id === id) ?? null
+    return (prefer && running.filter(prefer).at(-1)) || running.at(-1) || null
+  }
+
+  /**
+   * What a task would collide with: its conversation, and the folder it changes. Two tasks run
+   * side by side only when neither matches the other: never in one conversation, never changing
+   * one folder (or one inside the other). A task on its own branch changes only its worktree, and
+   * one that only answers changes nothing.
+   */
+  private footprint(job: Job): { session: string | null; dir: string | null; worktree: boolean } {
+    const running = job.status === 'running' || job.status === 'held'
+    const session = job.sessionId ?? (job.sessionPolicy === 'continue' ? (this.d.store.getThread(job.projectDir)?.sessionId ?? null) : null)
+    if (job.execMode === 'plan' && !job.plan) return { session, dir: null, worktree: false }
+    if (running) {
+      const dir = job.workDir ?? job.launchSpec?.cwd ?? job.projectDir
+      return { session, dir, worktree: Boolean(job.workDir) }
+    }
+    // Queued: a new conversation in a git repo gets its own worktree; anything else works in place.
+    const own = job.isolate && !session && !job.workDir && existsSync(join(job.projectDir, '.git'))
+    return { session, dir: own ? null : (job.workDir ?? job.projectDir), worktree: Boolean(job.workDir) }
+  }
+
+  /** What stops `job` starting beside `running`: the task it collides with, and how; null when nothing does. */
+  collision(job: Job, running: Job[]): { job: number; why: 'conversation' | 'folder' } | null {
+    const mine = this.footprint(job)
+    for (const other of running) {
+      const theirs = this.footprint(other)
+      if (mine.session && mine.session === theirs.session) return { job: other.id, why: 'conversation' }
+      const a = mine.dir
+      const b = theirs.dir
+      if (!a || !b) continue
+      // A worktree is a checkout of its own (it sits inside its project's folder): only the same one collides.
+      const nested = !mine.worktree && !theirs.worktree && (a.startsWith(`${b}/`) || b.startsWith(`${a}/`))
+      if (a === b || nested) return { job: other.id, why: 'folder' }
+    }
+    return null
   }
 
   /** The usage limits as they stand now: a window that has reset since the last reading is unknown. */
@@ -301,9 +352,13 @@ export class Runner {
     this.ticking = true
     this.tickStartedAt = this.d.now()
     try {
-      const job = this.d.store.active()
-      if (job) await this.supervise(job)
-      else await this.startNext()
+      const running = this.d.store.running()
+      for (const job of running) {
+        // One that ended while another was looked at is left alone.
+        if (!this.ended(job.id)) await this.supervise(this.d.store.getJob(job.id) ?? job)
+      }
+      // A slot that frees up this tick is filled on the next one; one that was free starts a task now.
+      if (running.length < this.parallel) await this.startNext()
     } catch (err) {
       this.d.log(`tick failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`)
     } finally {
@@ -316,6 +371,10 @@ export class Runner {
     const now = this.d.now()
     const blockedUntil = this.limits().blockedUntil
     if (blockedUntil && now < blockedUntil) return
+    const running = this.d.store.running()
+    if (running.length >= this.parallel) return
+    // The account's usage limit stops every task, so nothing new starts while one waits on it.
+    if (running.some(j => j.phase === 'limited')) return
     for (const job of this.d.store.queued()) {
       // On hold, or scheduled for later: it keeps its place, and the next one may go first.
       if (job.onHold) continue
@@ -331,6 +390,8 @@ export class Runner {
           continue
         }
       }
+      // Beside a running task only when they can't get in each other's way; it keeps its place otherwise.
+      if (running.length > 0 && this.collision(job, running)) continue
       await this.launch(job)
       return
     }
@@ -1308,8 +1369,10 @@ export class Runner {
 
   // --- your controls --------------------------------------------------------------
 
-  async go(): Promise<string> {
-    const job = this.d.store.active()
+  /** Go: continue a paused task (the one named, else a paused one, else a limited one), or resume the queue. */
+  async go(id?: number): Promise<string> {
+    const job = this.target(id, j => j.status === 'held') ?? (id === undefined ? this.target(undefined, j => j.phase === 'limited') : null)
+    if (id !== undefined && !job) return `#${id} isn't running.`
     if (job?.status === 'held') return this.resumeHeld(job)
     if (job?.phase === 'limited') return this.continueNow()
     if (this.paused) {
@@ -1357,14 +1420,16 @@ export class Runner {
    * (extra usage bought, or a reset time that was wrong). If it's still limited, the wait starts again.
    */
   async continueNow(): Promise<string> {
-    const job = this.d.store.active()
-    if (job?.phase === 'limited' && job.status === 'running') {
-      const rt = this.runtime(job)
-      rt.limit ??= { at: this.limits().blockedUntil ?? null, since: this.d.now(), stage: 0 }
-      rt.limit.force = true
-      if (rt.limit.stage > 0) rt.limit.stage = 0
-      this.d.log(`#${job.id}: asked to continue now`)
-      return `Trying #${job.id} again now.`
+    const limited = this.d.store.running().filter(j => j.phase === 'limited' && j.status === 'running')
+    if (limited.length > 0) {
+      for (const job of limited) {
+        const rt = this.runtime(job)
+        rt.limit ??= { at: this.limits().blockedUntil ?? null, since: this.d.now(), stage: 0 }
+        rt.limit.force = true
+        if (rt.limit.stage > 0) rt.limit.stage = 0
+        this.d.log(`#${job.id}: asked to continue now`)
+      }
+      return `Trying ${limited.map(j => `#${j.id}`).join(' and ')} again now.`
     }
     const until = this.limits().blockedUntil
     if (until && until > this.d.now()) {
@@ -1374,9 +1439,9 @@ export class Runner {
     return 'Nothing is waiting for a usage limit.'
   }
 
-  async stop(): Promise<string> {
-    const job = this.d.store.active()
-    if (!job) return 'Nothing is running.'
+  async stop(id?: number): Promise<string> {
+    const job = this.target(id, j => j.status === 'running')
+    if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
     if (job.status === 'running') {
       await this.d.tmux.sendKeys(windowName(job.id), 'Escape')
       this.d.store.updateJob(job.id, { status: 'held', holdReason: 'stopped by you' })
@@ -1385,9 +1450,9 @@ export class Runner {
   }
 
   /** Skip: the running task ends now (a kill), and the queue moves on. */
-  async skip(by?: string): Promise<string> {
-    const job = this.d.store.active()
-    if (!job) return 'Nothing is running.'
+  async skip(by?: string, id?: number): Promise<string> {
+    const job = this.target(id)
+    if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
     return this.kill(job.id, { by })
   }
 
@@ -1498,8 +1563,8 @@ export class Runner {
     return `#${id} is next.`
   }
 
-  async fork(): Promise<string> {
-    const job = this.d.store.active()
+  async fork(id?: number): Promise<string> {
+    const job = this.target(id, j => j.holdReason === 'conflict')
     if (!job || job.holdReason !== 'conflict') return 'Nothing is waiting on a busy conversation.'
     this.d.store.updateJob(job.id, { fork: true })
     await this.launch({ ...this.d.store.getJob(job.id)!, status: 'queued' })
@@ -1507,8 +1572,8 @@ export class Runner {
   }
 
   /** Takes the conversation the current job waits on over from the window that has it open. */
-  async takeover(): Promise<string> {
-    const job = this.d.store.active()
+  async takeover(id?: number): Promise<string> {
+    const job = this.target(id, j => j.holdReason === 'conflict')
     if (!job || job.holdReason !== 'conflict' || !job.sessionId) return 'Nothing is waiting on a conversation that is open somewhere else.'
     const asked = this.d.store.updateJob(job.id, { takeoverAt: this.d.now() })
     const holders = this.d.sessionHolders(job.sessionId)
@@ -1523,9 +1588,9 @@ export class Runner {
     return `#${job.id} couldn't take the conversation over: it's still open${h ? ` in ${whereLabel(h)}` : ''}.`
   }
 
-  async say(text: string): Promise<string> {
-    const job = this.d.store.active()
-    if (!job) return 'Nothing is running.'
+  async say(text: string, id?: number): Promise<string> {
+    const job = this.target(id, j => j.status === 'running')
+    if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
     const pane = await this.d.tmux.pane(windowName(job.id))
     if (!pane || pane.dead) return `#${job.id} has no live session; reply go to restart it.`
     await this.typeLine(windowName(job.id), text)
@@ -1541,7 +1606,7 @@ export class Runner {
    * option) or while a plan, a limit or the end of the task is being handled. Returns the job id.
    */
   async typeIfFree(sessionId: string, text: string): Promise<number | null> {
-    const job = this.d.store.active()
+    const job = this.d.store.running().find(j => j.sessionId === sessionId)
     if (!job || job.sessionId !== sessionId || job.status !== 'running' || job.phase !== 'working') return null
     if (this.d.store.pendingApprovals(job.id).length > 0) return null
     const rt = this.runtimes.get(job.id)
@@ -1553,9 +1618,9 @@ export class Runner {
     return job.id
   }
 
-  async keys(keys: string[]): Promise<string> {
-    const job = this.d.store.active()
-    if (!job) return 'Nothing is running.'
+  async keys(keys: string[], id?: number): Promise<string> {
+    const job = this.target(id, j => j.status === 'running')
+    if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
     const pane = await this.d.tmux.pane(windowName(job.id))
     if (!pane || pane.dead) return `#${job.id} has no live session.`
     const names = keys.map(tmuxKeyName)
@@ -1568,15 +1633,15 @@ export class Runner {
   }
 
   /** The last `lines` of the running job's screen; `escapes` keeps its colours. */
-  async screen(lines: number, escapes = false): Promise<{ jobId: number; text: string } | null> {
-    const job = this.d.store.active()
+  async screen(lines: number, escapes = false, id?: number): Promise<{ jobId: number; text: string } | null> {
+    const job = this.target(id, j => j.status === 'running')
     if (!job) return null
     return { jobId: job.id, text: tail(await this.d.tmux.capture(windowName(job.id), Math.max(lines, 40) + 20, escapes), lines) }
   }
 
-  async peek(lines: number): Promise<string> {
-    const s = await this.screen(lines)
-    if (!s) return 'Nothing is running.'
+  async peek(lines: number, id?: number): Promise<string> {
+    const s = await this.screen(lines, false, id)
+    if (!s) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
     return s.text ? `#${s.jobId}:\n${s.text}` : `#${s.jobId} has nothing on screen.`
   }
 }

@@ -219,8 +219,10 @@ q myapp plan opus max: <prompt> · options before the colon
   new = fresh conversation · now = run next · @<id> = that conversation
   take = close that conversation where it's open (VS Code, a terminal) and continue it here
   branch = on its own git branch · here = in your checkout
-ls · st · peek [lines] · plan [#] · chats [project]
+ls · st · peek [#] [lines] · plan [#] · chats [project]
 pause · go · stop · skip · kill [#] (ends it now, and what it started) · rm <#> · top <#>
+  with several running, name the task: stop #14 · say #14 <text> · peek #14
+parallel [1-3] (how many tasks may run at once: another starts beside the running ones only in another folder, on its own branch, or when it only answers)
 hold <#> (keeps its place, doesn't start) · release <#> · clear (empties the queue)
 link [#] (a live link: a claude.ai page showing the result) · q … link: <prompt> (ends with one)
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
@@ -244,10 +246,15 @@ function enqueue(text: string, ctx: CommandContext): string {
   ctx.store.kvSet('lastProject', spec.projectDir)
   const config = ctx.config()
   const ahead = ctx.store.queued().findIndex(j => j.id === job.id)
-  const active = ctx.store.active()
+  const running = ctx.store.running()
+  const active = running.at(-1) ?? null
   const blockedUntil = ctx.runner.limits().blockedUntil
+  // Beside what's running, when it's allowed to and they can't get in each other's way.
+  const beside = running.length > 0 && running.length < ctx.runner.parallel && ahead === 0 && !ctx.runner.collision(job, running)
   const when =
-    ahead === 0 && !active
+    beside && !ctx.runner.paused && !(blockedUntil && blockedUntil > ctx.now())
+      ? `starting beside ${running.map(j => `#${j.id}`).join(' and ')}`
+      : ahead === 0 && !active
       ? ctx.runner.paused
         ? 'queue is paused, reply go to start'
         : blockedUntil && blockedUntil > ctx.now()
@@ -300,8 +307,7 @@ function list(ctx: CommandContext): string {
   const config = ctx.config()
   const now = ctx.now()
   const lines: string[] = []
-  const active = ctx.store.active()
-  if (active) {
+  for (const active of ctx.store.running()) {
     const since = active.startedAt ? ` ${duration(now - active.startedAt)}` : ''
     lines.push(`▶ ${jobLine(active, config.aliases)} · ${phaseText(active.phase, active.status === 'held', active.holdReason)}${since}`)
     lines.push(`   “${oneLine(active.prompt, 80)}”`)
@@ -346,8 +352,8 @@ function status(ctx: CommandContext): string {
   const config = ctx.config()
   const now = ctx.now()
   const lines: string[] = []
-  const active = ctx.store.active()
-  if (active) {
+  const running = ctx.store.running()
+  for (const active of running) {
     const since = active.startedAt ? ` ${duration(now - active.startedAt)}` : ''
     lines.push(`▶ ${jobLine(active, config.aliases)} · ${phaseText(active.phase, active.status === 'held', active.holdReason)}${since}`)
     const info = ctx.runner.runtimeInfo(active.id)
@@ -358,18 +364,33 @@ function status(ctx: CommandContext): string {
       const until = ctx.runner.limits().blockedUntil
       if (until) lines.push(`   continues after ${formatClock(until, now)}`)
     }
-  } else {
-    lines.push(ctx.runner.paused ? '⏸ Paused.' : 'Idle.')
   }
+  if (running.length === 0) lines.push(ctx.runner.paused ? '⏸ Paused.' : 'Idle.')
+  else if (ctx.runner.parallel > 1) lines.push(`Up to ${ctx.runner.parallel} tasks at once.`)
   lines.push(...limitsText(ctx))
   const waiting = ctx.store.queued().length
   lines.push(`Queue: ${waiting} waiting${ctx.runner.paused ? ' (paused)' : ''}`)
   return lines.join('\n')
 }
 
+/** A task number at the start of the arguments ("#14", "14 40"): the task, and what's left. */
+function taskArg(rest: string): { id?: number; rest: string } {
+  const m = /^#(\d+)\b\s*(.*)$/s.exec(rest.trim())
+  return m ? { id: Number(m[1]), rest: m[2]!.trim() } : { rest: rest.trim() }
+}
+
+/** The task a stop, go or skip means: the one named, or the only one running; asks which when several run. */
+function which(ctx: CommandContext, rest: string, verb: string): { id?: number } | string {
+  const m = /^#?(\d+)$/.exec(rest.trim())
+  if (m) return { id: Number(m[1]) }
+  const running = ctx.store.running()
+  if (running.length > 1) return `Several are running (${running.map(j => `#${j.id}`).join(', ')}): ${verb} #<number>.`
+  return {}
+}
+
 function showPlan(rest: string, ctx: CommandContext): string {
   const id = Number.parseInt(rest.replace('#', ''), 10)
-  const job = Number.isFinite(id) ? ctx.store.getJob(id) : (ctx.store.active() ?? ctx.store.lastJob())
+  const job = Number.isFinite(id) ? ctx.store.getJob(id) : (ctx.store.running().at(-1) ?? ctx.store.lastJob())
   if (!job) return 'No such job.'
   return job.planText ? `#${job.id} plan:\n${excerpt(job.planText, 3000)}` : `#${job.id} has no plan yet.`
 }
@@ -509,29 +530,50 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
     case 'st':
     case 'status':
       return status(ctx)
-    case 'peek':
-      return ctx.runner.peek(clampInt(rest, 25, 5, 150))
+    case 'peek': {
+      // peek: the latest task's screen; peek #14, or peek #14 40: that one.
+      const w = taskArg(rest)
+      return ctx.runner.peek(clampInt(w.rest, 25, 5, 150), w.id)
+    }
     case 'plan':
       return showPlan(rest, ctx)
+    case 'parallel': {
+      const config = ctx.config()
+      if (!rest) return `Up to ${ctx.runner.parallel} task${ctx.runner.parallel === 1 ? '' : 's'} at once. parallel 1, 2 or 3 changes it.`
+      const n = Number(rest)
+      if (!Number.isInteger(n) || n < 1 || n > 3) return 'Usage: parallel 1, 2 or 3.'
+      ctx.saveConfig({ ...config, parallel: n })
+      return n === 1
+        ? 'One task at a time. Whatever is running keeps going.'
+        : `Up to ${n} tasks at once. The next starts beside the running ones when it's in another folder, on its own branch, or only answers; otherwise it waits.`
+    }
     case 'pause':
       ctx.runner.setPaused(true)
       return 'Paused. The current job keeps going; nothing new starts until you reply go.'
     case 'go':
-    case 'resume':
-      return ctx.runner.go()
-    case 'stop':
-      return ctx.runner.stop()
-    case 'skip':
-      return ctx.runner.skip()
+    case 'resume': {
+      const w = which(ctx, rest, 'go')
+      return typeof w === 'string' ? w : ctx.runner.go(w.id)
+    }
+    case 'stop': {
+      const w = which(ctx, rest, 'stop')
+      return typeof w === 'string' ? w : ctx.runner.stop(w.id)
+    }
+    case 'skip': {
+      const w = which(ctx, rest, 'skip')
+      return typeof w === 'string' ? w : ctx.runner.skip(undefined, w.id)
+    }
     case 'link': {
       // link: a live link for the running task (at its end); link 14: for that one.
-      const id = rest ? Number(rest.replace(/^#/, '')) : (ctx.store.active()?.id ?? ctx.store.recentFinished(1)[0]?.id)
+      const id = rest ? Number(rest.replace(/^#/, '')) : (ctx.store.running().at(-1)?.id ?? ctx.store.recentFinished(1)[0]?.id)
       if (id === undefined || !Number.isInteger(id)) return 'Usage: link [#id]'
       return ctx.runner.requestLink(id, ctx.source).text
     }
     case 'kill': {
       // kill: the running task; kill 14: that one (a queued one comes off the queue).
-      const id = rest ? Number(rest.replace(/^#/, '')) : ctx.store.active()?.id
+      const running = ctx.store.running()
+      if (!rest && running.length > 1) return `Several are running (${running.map(j => `#${j.id}`).join(', ')}): kill <number>.`
+      const id = rest ? Number(rest.replace(/^#/, '')) : running[0]?.id
       if (id === undefined) return 'Nothing is running.'
       if (!Number.isInteger(id)) return 'Usage: kill [#id]'
       return ctx.runner.kill(id, { by: ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this Mac' })
@@ -551,16 +593,31 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       const removed = ctx.runner.clear()
       return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.map(id => `#${id}`).join(', ')} off the queue.`
     }
-    case 'say':
-      return rest ? ctx.runner.say(rest) : 'Usage: say <text>'
+    case 'say': {
+      // say <text>; say #14 <text> when several run.
+      const w = taskArg(rest)
+      if (!w.rest) return 'Usage: say [#job] <text>'
+      const running = ctx.store.running()
+      if (w.id === undefined && running.length > 1) return `Several are running (${running.map(j => `#${j.id}`).join(', ')}): say #<number> <text>.`
+      return ctx.runner.say(w.rest, w.id)
+    }
     case 'keys':
-    case 'key':
-      return rest ? ctx.runner.keys(rest.split(/\s+/)) : 'Usage: keys <keys>, e.g. keys 1, keys Enter, keys Escape'
-    case 'fork':
-      return ctx.runner.fork()
+    case 'key': {
+      const w = taskArg(rest)
+      if (!w.rest) return 'Usage: keys [#job] <keys>, e.g. keys 1, keys Enter, keys Escape'
+      const running = ctx.store.running()
+      if (w.id === undefined && running.length > 1) return `Several are running (${running.map(j => `#${j.id}`).join(', ')}): keys #<number> <keys>.`
+      return ctx.runner.keys(w.rest.split(/\s+/), w.id)
+    }
+    case 'fork': {
+      const w = taskArg(rest)
+      return ctx.runner.fork(w.id)
+    }
     case 'take':
-    case 'takeover':
-      return ctx.runner.takeover()
+    case 'takeover': {
+      const w = taskArg(rest)
+      return ctx.runner.takeover(w.id)
+    }
     case 'chats':
     case 'sessions':
       return chats(rest, ctx)

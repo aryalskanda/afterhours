@@ -92,6 +92,11 @@ export interface Config {
   autoContinueChats: boolean
   /** When a task that took a chat from VS Code ends, open the chat there again so VS Code is up to date. */
   reopenInVsCode: boolean
+  /**
+   * How many tasks may run at once (1 to 3). Another starts beside the running ones only when it
+   * can't collide with them: another folder, its own branch, or a task that only answers.
+   */
+  parallel: number
   /** Hold a `caffeinate -i` assertion while jobs are pending. */
   keepAwake: boolean
   /** And on a Mac, with the lid closed too: sleep turned off while jobs are pending (cq awake lid on). */
@@ -164,6 +169,7 @@ export const DEFAULT_CONFIG: Config = {
   watchSessions: true,
   autoContinueChats: true,
   reopenInVsCode: true,
+  parallel: 1,
   keepAwake: true,
   keepAwakeLidClosed: false,
   remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
