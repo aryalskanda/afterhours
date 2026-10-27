@@ -89,6 +89,7 @@ export const FEATURES = [
   'folders.roots',
   'parallel',
   'settings.remote',
+  'queue.edit.when',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -777,7 +778,8 @@ export class Router {
       patch.workEffort = (o.plan ?? job.plan) && work && work !== effort ? work : null
     }
     if (o.isolate !== undefined && !job.sessionId) patch.isolate = o.isolate
-    const when = o.notBefore !== undefined || o.atReset !== undefined || o.afterJob !== undefined || o.repeatDaily !== undefined || o.maxMinutes !== undefined
+    if (o.link !== undefined) patch.wantLink = o.link
+    const when = o.schedule === true || o.notBefore !== undefined || o.atReset !== undefined || o.afterJob !== undefined || o.repeatDaily !== undefined || o.maxMinutes !== undefined
     if (when) {
       const s = this.schedule(o, job)
       if (typeof s === 'string') return { ok: false, code: 'invalid', error: s }
@@ -797,16 +799,8 @@ export class Router {
     if (job.status === 'queued' || job.status === 'running' || job.status === 'held') return { ok: false, code: 'gone', error: `#${job.id} hasn't finished.` }
     if (!isAllowed(job.projectDir, roots)) return { ok: false, code: 'policy', error: 'That task ran outside the folders this machine shares with apps.' }
     if (r.action === 'pr' && role !== 'owner') return { ok: false, code: 'forbidden', error: 'A pull request pushes the code out of this machine: that needs an owner.' }
-    if (r.action !== 'pr') {
-      const done = await settleBranch(this.d.store, this.d.git, job.id, r.action)
-      return done.ok ? { ok: true, text: done.text } : { ok: false, code: done.code, error: done.text }
-    }
-    const title = oneLine(job.prompt, 72)
-    const body = `${job.prompt}\n\n${job.summary ? `${job.summary}\n\n` : ''}From Afterhours task #${job.id}.`
-    const done = await this.d.git.pullRequest(job.workDir ?? job.projectDir, job.branch, title, body)
-    if (!done.ok) return { ok: false, code: 'failed', error: done.text }
-    this.d.store.updateJob(job.id, { branchNote: done.url ?? done.text })
-    return { ok: true, text: done.text }
+    const done = await settleBranch(this.d.store, this.d.git, job.id, r.action)
+    return done.ok ? { ok: true, text: done.text } : { ok: false, code: done.code, error: done.text }
   }
 
   private transcript(r: Extract<Request, { type: 'transcript' }>, roots: string[]): Outcome {

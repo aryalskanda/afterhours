@@ -248,6 +248,7 @@ export async function runDaemon(): Promise<void> {
       commandContext: () => commandContext('cli'),
       mac,
       git,
+      uploadsDir: paths.uploads,
       now: Date.now,
       log,
     })

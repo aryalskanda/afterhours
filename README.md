@@ -82,14 +82,16 @@ Check everything at any time with `cq doctor`.
 | Button | What it does |
 | --- | --- |
 | **📁 Folder** | Browse your code folders. The folders are listed by number, in full: tap a number to open a folder marked `›`, or to pick one without `›` (or **✅ Use this folder**). **⭐ Recent**, **🔍 Search** (type part of a name, e.g. `api` or `shop web`), **⬆️ Up**, **🔄 Rescan**. 📦 marks git repos. |
-| **🗺 Mode** | `plan → auto` (Afterhours approves the plan), `review → auto` (you approve it), `auto`, `accept edits`, `yolo` (no permission checks), `ask` (a question: Claude reads and answers, changes nothing) |
+| **🗺 Mode** | Two choices, as in the app. **How**: `plan → work` (Afterhours approves the plan), `review the plan` (you approve it), `no plan`, `ask` (a question: Claude reads and answers, changes nothing). **Permissions**: `auto`, `accept edits`, `⚠️ yolo` (no permission checks). So "plan, then yolo" is two taps |
 | **🧠 Model** | `opus` · `sonnet` · `haiku`. With a plan, a second row picks the model that carries it out: plan with Opus, work with Sonnet ([more](#plan-with-one-model-work-with-another)) |
-| **⚡ Effort** | `low` · `medium` · `high` · `xhigh` · `max` |
+| **⚡ Effort** | `low` · `medium` · `high` · `xhigh` · `max`. With a plan, **🛠 Work effort…** picks the effort that carries the plan out: plan at max, work at medium |
 | **💬 Chat…** | Which conversation to continue: **🆕 New chat**, **🔁 Last Afterhours chat** in that folder, or one of the folder's recent chats from anywhere, VS Code and the terminal included. 🟢 open elsewhere · 🟡 working there · ⏸ stopped at a usage limit |
 | **🤝 Take over** / **⏳ Wait instead** | For a chat that's open in VS Code or a terminal: close it there when the task starts, or wait until you close it ([more](#continue-a-vs-code-chat-from-your-phone)) |
 | **🌿 Own branch** / **📂 Work in place** | For a new conversation: run it on its own branch, or in your checkout |
 | **🔗 Live link** | End with a live link: a claude.ai page showing the result, to open on your phone ([more](#live-links)) |
-| **⏰ Later** | When it may start: in an hour, tonight at 23:00, 07:00, or a time you type (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`) |
+| **⏰ Later** | When it may start: in an hour, tonight at 23:00, 07:00, or a time you type (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`); **🔁 Every day…** at a time; **♻️ At the reset** of the 5-hour limit; **⏭ After a task…** has finished well |
+| **⋯ More** | **⏱ Time limit** (stop it after 30 min, 1 h…), **🔀 Three ways** (three tasks, each on its own branch: one per model, or one model three times; when all finish you get one message to compare them and **✅ Keep** one, which is merged while the others are thrown away) |
+| **📎 Files** | Send a photo or file in the chat (with a caption as the prompt, if you like): it's kept on the Mac and Claude is told to read it. Up to 10, 5 MB each |
 
 The buttons under the text box:
 
@@ -165,9 +167,10 @@ A command-line app does the same from any computer: `bun scripts/remote-client.t
 The machine decides what apps may do, and no app can change it:
 
 - `cq remote allow <folder>`: apps run tasks only in these folders (default: your home folder).
-- `cq remote bypass on|off`: tasks that skip permission prompts (off by default).
-- `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task.
-- `cq remote mac on|off`: whether owners may quit apps on this Mac and put it to sleep (on by default).
+- `cq remote bypass on|off`: tasks that skip permission prompts, from operator devices (off by default). An owner's phone can always, as your own Telegram chat can.
+- `cq remote screens on|off` and `cq remote typing on|off`: seeing and typing into the running task, from operator and viewer devices.
+- `cq remote mac on|off`: whether other devices may quit apps on this Mac and put it to sleep (owners always may).
+- Owners can set all four from the app: *This Mac → Other devices*.
 - `cq devices` lists paired devices; `cq devices remove <name>` cuts one off at once; `cq audit` shows what apps did.
 
 To move to another relay (a hosted one, say): `cq remote relay wss://relay.example.com/v1`. It checks the relay answers first, waiting up to a minute for a free host to wake. Apps connected at that moment hear the new address and follow by themselves; any other app pairs again. `cq remote status` and `cq doctor` say whether the relay answers, and how fast.
@@ -206,6 +209,18 @@ A task on **hold** keeps its place but doesn't start until you release it. From 
 ## Plan with one model, work with another
 
 A task that plans first can plan with one model and carry the plan out with another: Opus to think it through, Sonnet (or Haiku) to do the work. Once the plan is approved, by Afterhours or by you, the planner's session closes and the same conversation resumes on the work model, in the task's mode, told to carry the plan out. The plan is already in the conversation, so nothing is lost. In the app it's **Plan with** and **Work with**; in the bot, the second row of **🧠 Model**; in text, `q myapp plan opus>sonnet: …`, or `default opus>sonnet`.
+
+## The app and the bot do the same things
+
+Neither is the poorer one. The app is the nicer way to do each of these; the bot is another way to do them:
+
+- Everything on a card above: how and permissions (**yolo** included), plan and work model and effort, when it starts, time limit, three ways with compare and keep, files, live link, own branch.
+- **✏️ Change** on a waiting task changes all of that, the schedule too. In the app, Edit opens the New task screen.
+- Permission requests offer Claude Code's own "stop asking" rules (tap its number); a plan can be approved and then switched to accept edits or yolo.
+- **/tasks** lists the finished tasks, with search; a number opens one (follow up, live link, merge, **🔃 Pull request**, discard).
+- **/mac** also keeps the Mac awake with the lid closed.
+
+A device paired as an **owner** can do all of it, **yolo** included: the switches under `cq remote` (and the app's *This Mac → Other devices*) limit the *other* devices, operators and viewers.
 
 ## Live links
 

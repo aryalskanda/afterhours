@@ -68,6 +68,11 @@ describe('applyOption', () => {
     expect(apply('opus>nonsense').ok).toBe(false)
   })
 
+  test('plan at one effort, work at another: max>medium', () => {
+    expect(apply('max>medium').o).toEqual({ effort: 'max', workEffort: 'medium', plan: true })
+    expect(apply('max>nonsense').ok).toBe(false)
+  })
+
   test('full model ids and aliases are case-insensitive', () => {
     expect(apply('claude-opus-5-5').o.model).toBe('claude-opus-5-5')
     expect(apply('NACHO').o.project).toBe(project)

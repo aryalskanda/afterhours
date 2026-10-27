@@ -18,6 +18,10 @@ export interface TgMessage {
   chat: TgChat
   date: number
   text?: string
+  /** A photo or file you sent, with its caption. */
+  caption?: string
+  photo?: { file_id: string; file_size?: number; width: number; height: number }[]
+  document?: { file_id: string; file_name?: string; file_size?: number }
 }
 
 export interface TgCallbackQuery {
@@ -66,6 +70,8 @@ export interface BotApi {
   answerCallbackQuery(id: string, text?: string): Promise<void>
   setMyCommands(commands: { command: string; description: string }[]): Promise<void>
   setChatMenuButton(chatId: number, button: MenuButton): Promise<void>
+  /** A file you sent, downloaded: null when it's too big (Telegram's own limit is 20 MB; ours 5). */
+  downloadFile(fileId: string, maxBytes: number): Promise<{ name: string; bytes: Uint8Array } | null>
 }
 
 export class TelegramError extends Error {
@@ -118,6 +124,21 @@ export class TelegramApi implements BotApi {
         continue
       }
       throw new TelegramError(method, json.error_code ?? res.status, json.description ?? 'unknown error')
+    }
+  }
+
+  async downloadFile(fileId: string, maxBytes: number): Promise<{ name: string; bytes: Uint8Array } | null> {
+    const file = await this.call<{ file_path?: string; file_size?: number }>('getFile', { file_id: fileId })
+    if (!file.file_path || (file.file_size ?? 0) > maxBytes) return null
+    try {
+      const res = await fetch(`https://api.telegram.org/file/bot${this.token}/${file.file_path}`, { signal: AbortSignal.timeout(60_000) })
+      if (!res.ok) throw new TelegramError('file', res.status, `HTTP ${res.status}`)
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      return bytes.length > maxBytes ? null : { name: file.file_path.split('/').pop() ?? 'file', bytes }
+    } catch (err) {
+      if (err instanceof TelegramError) throw err
+      // Never let the token (it's in the URL) reach a log line.
+      throw new TelegramError('file', 0, (err instanceof Error ? err.message : String(err)).split(this.token).join('***'))
     }
   }
 

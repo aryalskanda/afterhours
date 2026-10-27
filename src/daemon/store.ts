@@ -348,6 +348,11 @@ export class Store {
     return row ? toJob(row) : null
   }
 
+  /** The tasks of one "three ways" group, in order. */
+  inGroup(group: string): Job[] {
+    return this.db.query<Row, [string]>('SELECT * FROM jobs WHERE job_group = ? ORDER BY id').all(group).map(toJob)
+  }
+
   recentFinished(limit: number): Job[] {
     return this.db
       .query<Row, [number]>(

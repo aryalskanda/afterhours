@@ -347,6 +347,8 @@ export const QueueOptions = z.object({
   repeatDaily: z.number().int().min(0).max(1439).optional(),
   /** Stop it after this many minutes of work. */
   maxMinutes: z.number().int().min(1).max(1440).optional(),
+  /** Changing a waiting task: when it starts and its time limit are exactly what's given here (none given: right away, no limit). */
+  schedule: z.boolean().optional(),
   /** Files uploaded for it (the paths `upload` gave back); Claude is told to read them. */
   attachments: z.array(z.string().max(4096)).max(10).optional(),
   /** Tasks queued together to compare, e.g. the same prompt three ways. */

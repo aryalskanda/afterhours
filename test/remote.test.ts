@@ -417,6 +417,23 @@ describe('remote access', () => {
     expect(m.store.getJob(id)!.workModel).toBeNull()
   })
 
+  test('a waiting task’s start, time limit and link can be changed, and cleared again', async () => {
+    const m = machine()
+    const { conn, snapshots } = await pairedApp(m)
+    expect(snapshots[0]!.features).toContain('queue.edit.when')
+    const later = Date.now() + 3 * 3600_000
+    const r = await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { notBefore: later, maxMinutes: 30 } })
+    const id = (r.data as { job: { id: number } }).job.id
+    expect(m.store.getJob(id)).toMatchObject({ notBefore: later, maxMinutes: 30, wantLink: false })
+    // Edited with the schedule: what's given is what it has, so nothing given means right away.
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { schedule: true, link: true } })
+    expect(m.store.getJob(id)).toMatchObject({ notBefore: null, maxMinutes: null, wantLink: true })
+    // Without it, an edit leaves the schedule alone.
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { notBefore: later, maxMinutes: 60 } })
+    await conn.request({ type: 'job', action: 'edit', job: id, options: { model: 'haiku' } })
+    expect(m.store.getJob(id)).toMatchObject({ notBefore: later, maxMinutes: 60, model: 'haiku' })
+  })
+
   test('plan at one effort, work at another, from an app; changed while queued', async () => {
     const m = machine()
     const { conn, snapshots } = await pairedApp(m)

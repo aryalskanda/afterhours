@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
@@ -35,6 +35,12 @@ class FakeApi implements BotApi {
 
   async getMe(): Promise<TgUser> {
     return { id: 1, is_bot: true, first_name: 'cq', username: 'cq_test_bot' }
+  }
+  /** Files "sent" by a test, by file id. */
+  files = new Map<string, { name: string; bytes: Uint8Array }>()
+  async downloadFile(id: string, maxBytes: number): Promise<{ name: string; bytes: Uint8Array } | null> {
+    const f = this.files.get(id)
+    return f && f.bytes.length <= maxBytes ? f : null
   }
   getUpdates(): Promise<never> {
     return new Promise(() => {}) // the tests feed updates through handle()
@@ -169,6 +175,7 @@ function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
       config = c
     },
     commandContext: () => ({ runner, store, config: () => config, saveConfig: c => (config = c), now: () => now, source: 'cli' }),
+    uploadsDir: join(home, 'uploads'),
     now: () => now,
     log: () => {},
   })
@@ -176,6 +183,11 @@ function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
   const from = (id: number) => ({ id, is_bot: false, first_name: id === OWNER ? 'Skanda' : 'Mallory', username: id === OWNER ? 'skanda' : 'mallory' })
   const say = (text: string, user = OWNER) =>
     bridge.handle({ update_id: updateId++, message: { message_id: updateId, from: from(user), chat: { id: user, type: 'private' }, date: 0, text } } as TgUpdate)
+  /** A photo or file from you, with an optional caption. */
+  const sendFile = (id: string, name: string, bytes: string | Uint8Array, caption?: string) => {
+    api.files.set(id, { name, bytes: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes })
+    return bridge.handle({ update_id: updateId++, message: { message_id: updateId, from: from(OWNER), chat: { id: OWNER, type: 'private' }, date: 0, document: { file_id: id, file_name: name }, ...(caption ? { caption } : {}) } } as TgUpdate)
+  }
   const tap = (data: string, messageId: number, user = OWNER) =>
     bridge.handle({
       update_id: updateId++,
@@ -195,6 +207,7 @@ function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
     later,
     config: () => config,
     say,
+    sendFile,
     tap,
     now: () => now,
     advance: (ms: number) => (now += ms),
@@ -218,7 +231,9 @@ async function running(h: Harness) {
   await h.tap(choice(h.api.view(card), 'beta'), card)
   await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
   await h.tap(button(h.api.view(card).keyboard, '🗺 Mode'), card)
-  await h.tap(button(h.api.view(card).keyboard, /^auto$/), card)
+  await h.tap(button(h.api.view(card).keyboard, 'no plan'), card)
+  await h.tap(button(h.api.view(card).keyboard, /^(✓ )?auto$/), card)
+  await h.tap(button(h.api.view(card).keyboard, '↩️ Back'), card)
   await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
   await h.runner.tick()
   const job = h.store.active()!
@@ -279,7 +294,9 @@ describe('queueing with buttons', () => {
     await h.tap(button(h.api.view(card.id).keyboard, '⚡ Effort'), card.id)
     await h.tap(button(h.api.view(card.id).keyboard, /^low$/), card.id)
     await h.tap(button(h.api.view(card.id).keyboard, '🗺 Mode'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, /^auto$/), card.id)
+    await h.tap(button(h.api.view(card.id).keyboard, 'no plan'), card.id)
+    await h.tap(button(h.api.view(card.id).keyboard, /^(✓ )?auto$/), card.id)
+    await h.tap(button(h.api.view(card.id).keyboard, '↩️ Back'), card.id)
     view = h.api.view(card.id)
     expect(view.html).toContain('🗺 auto · 🧠 sonnet · ⚡ low')
 
@@ -1152,7 +1169,7 @@ describe('the Mac, from the bot', () => {
     expect(msg.html).toContain('Sleep is turned off while Vorssaint runs')
     // The apps are listed in full in the message, and their buttons are only their numbers.
     expect(msg.html).toContain('<b>1.</b> Vorssaint ☰ ☕')
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '1', '2', '3', '4', '🔄 Refresh'])
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '1', '2', '3', '4', '💡 Awake with the lid closed', '🔄 Refresh'])
     const monosnap = choice(h.api.view(msg.id), 'Monosnap')
     await h.tap(monosnap, msg.id)
     expect(h.api.answers.at(-1)!.text).toBe('Tap again to quit Monosnap.')
@@ -1285,6 +1302,7 @@ describe('what the bot does without the app', () => {
       git: {
         mergeBranch: async (_dir, branch) => (merged.push(branch), { ok: true, text: `Merged ${branch} into main.` }),
         discardBranch: async (_dir, branch) => (merged.push(`-${branch}`), { ok: true, text: '' }),
+        pullRequest: async (_dir, branch) => (merged.push(`pr:${branch}`), { ok: true, text: 'Opened a pull request.', url: 'https://example.test/pr/1' }),
       },
     })
     const job = await running(h)
@@ -1299,5 +1317,210 @@ describe('what the bot does without the app', () => {
     expect(merged).toEqual(['afterhours/1-do-the-thing'])
     expect(h.api.last().html).toContain('Merged afterhours/1-do-the-thing into main.')
     expect(h.store.getJob(job.id)!.branchNote).toBe('Merged afterhours/1-do-the-thing into main.')
+  })
+})
+
+describe('everything the app has, in the bot', () => {
+  /** A card in beta, ready to queue. */
+  async function card(h: Harness, prompt = 'Do the thing') {
+    await h.say(prompt)
+    const id = h.api.last().id
+    // The next card starts in the folder used last.
+    if (h.api.view(id).html.includes('no folder yet')) {
+      await h.tap(button(h.api.view(id).keyboard, '📁 Folder'), id)
+      await h.tap(choice(h.api.view(id), 'beta'), id)
+      await h.tap(button(h.api.view(id).keyboard, '✅ Use this folder'), id)
+    }
+    return id
+  }
+  const kb = (h: Harness, id: number) => h.api.view(id).keyboard
+
+  test('plan with one effort, work with another; it is on the card, the task and the next card', async () => {
+    const h = await paired()
+    const id = await card(h)
+    await h.tap(button(kb(h, id), '🗺 Mode'), id)
+    await h.tap(button(kb(h, id), /plan → work$/), id)
+    await h.tap(button(kb(h, id), '↩️ Back'), id)
+    await h.tap(button(kb(h, id), '⚡ Effort'), id)
+    await h.tap(button(kb(h, id), /^max$/), id)
+    await h.tap(button(kb(h, id), '⚡ Effort'), id)
+    await h.tap(button(kb(h, id), '🛠 Work effort…'), id)
+    await h.tap(button(kb(h, id), /^low$/), id)
+    expect(h.api.view(id).html).toContain('⚡ max → low')
+    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    expect(h.store.queued()[0]).toMatchObject({ plan: true, effort: 'max', workEffort: 'low' })
+    expect(h.api.view(id).html).toContain('/max→low')
+    await h.say('another')
+    expect(h.api.view(h.api.last().id).html).toContain('⚡ max → low')
+  })
+
+  test('how it goes about it and what it may do are chosen apart: plan, then yolo', async () => {
+    const h = await paired()
+    const id = await card(h)
+    await h.tap(button(kb(h, id), '🗺 Mode'), id)
+    await h.tap(button(kb(h, id), /^review the plan$/), id)
+    await h.tap(button(kb(h, id), /yolo/), id)
+    await h.tap(button(kb(h, id), '↩️ Back'), id)
+    expect(h.api.view(id).html).toContain('review→yolo')
+    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    expect(h.store.queued()[0]).toMatchObject({ plan: true, review: true, execMode: 'bypassPermissions' })
+    // Asking only: no permissions to choose.
+    const second = await card(h, 'What does it do?')
+    await h.tap(button(kb(h, second), '🗺 Mode'), second)
+    await h.tap(button(kb(h, second), /ask/), second)
+    expect(kb(h, second).flat().map(b => b.text)).not.toContain('⚠️ yolo')
+  })
+
+  test('Starts: every day, after another task, a time limit, and the card says so', async () => {
+    const h = await paired()
+    await running(h)
+    const id = await card(h, 'Nightly checks')
+    await h.tap(button(kb(h, id), '⏰ Later'), id)
+    await h.tap(button(kb(h, id), '🔁 Every day…'), id)
+    await h.say('02:30')
+    const shown = h.api.last().id
+    expect(h.api.view(shown).html).toContain('every day at 02:30')
+    await h.tap(button(kb(h, shown), '⋯ More'), shown)
+    await h.tap(button(kb(h, shown), '⏱ Time limit…'), shown)
+    await h.tap(button(kb(h, shown), /^1 h$/), shown)
+    await h.tap(button(kb(h, shown), '↩️ Back'), shown)
+    await h.tap(button(kb(h, shown), '▶️ Queue'), shown)
+    const job = h.store.queued()[0]!
+    expect(job).toMatchObject({ repeatDaily: 150, maxMinutes: 60 })
+    expect(new Date(job.notBefore!).getHours() * 60 + new Date(job.notBefore!).getMinutes()).toBe(150)
+
+    const second = await card(h, 'Then the report')
+    await h.tap(button(kb(h, second), '⏰ Later'), second)
+    await h.tap(button(kb(h, second), '⏭ After a task…'), second)
+    await h.tap(choice(h.api.view(second), 'Do the thing'), second)
+    expect(h.api.view(second).html).toContain('starts after #')
+    await h.tap(button(kb(h, second), '▶️ Queue'), second)
+    expect(h.store.queued().at(-1)!.afterJob).toBe(h.store.active()!.id)
+  })
+
+  test('Starts: at the limit reset, when it is known', async () => {
+    const h = await paired()
+    const id = await card(h)
+    await h.tap(button(kb(h, id), '⏰ Later'), id)
+    expect(kb(h, id).flat().map(b => b.text).some(t => t.includes('At the reset'))).toBe(false)
+    h.store.kvSet('limits', { fiveHour: { usedPct: 80, resetsAt: h.now() + 2 * 3_600_000 } })
+    await h.tap(button(kb(h, id), '↩️ Back'), id)
+    await h.tap(button(kb(h, id), '⏰ Later'), id)
+    await h.tap(button(kb(h, id), 'At the reset'), id)
+    expect(h.api.view(id).html).toContain('when the 5-hour limit resets')
+    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    expect(h.store.queued()[0]!.notBefore).toBe(h.now() + 2 * 3_600_000)
+  })
+
+  test('three ways: three branches to compare, then keep one', async () => {
+    const merged: string[] = []
+    const h = await paired({
+      git: {
+        mergeBranch: async (_d, branch) => (merged.push(`+${branch}`), { ok: true, text: `Merged ${branch}.` }),
+        discardBranch: async (_d, branch) => (merged.push(`-${branch}`), { ok: true, text: '' }),
+        pullRequest: async () => ({ ok: true, text: 'pr' }),
+      },
+    })
+    const id = await card(h, 'Redo the parser')
+    await h.tap(button(kb(h, id), '⋯ More'), id)
+    await h.tap(button(kb(h, id), '🔀 Three models'), id)
+    await h.tap(button(kb(h, id), '↩️ Back'), id)
+    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    const jobs = h.store.queued()
+    expect(jobs).toHaveLength(3)
+    expect(new Set(jobs.map(j => j.group)).size).toBe(1)
+    expect(jobs.every(j => j.isolate)).toBe(true)
+    expect(new Set(jobs.map(j => j.model)).size).toBe(3)
+    expect(h.api.view(id).html).toContain('Each on its own branch')
+    // Finish them one by one: one message to compare, after the last.
+    const finish = async (j: (typeof jobs)[number]) => {
+      h.store.updateJob(j.id, { status: 'done', branch: `afterhours/${j.id}-x`, summary: `did it ${j.model}`, finishedAt: h.now() })
+      await h.bridge.notify({ type: 'done', job: h.store.getJob(j.id)!, diff: null, next: null })
+    }
+    await finish(jobs[0]!)
+    await finish(jobs[1]!)
+    expect(h.api.sent.some(m => m.html.includes('The three ways are done'))).toBe(false)
+    await finish(jobs[2]!)
+    const compare = h.api.sent.find(m => m.html.includes('The three ways are done'))!
+    expect(compare.html).toContain('did it')
+    const keep = button(h.api.view(compare.id).keyboard, `Keep #${jobs[1]!.id}`)
+    await h.tap(keep, compare.id)
+    expect(merged).toEqual([])
+    await h.tap(keep, compare.id)
+    expect(merged).toEqual([`-afterhours/${jobs[0]!.id}-x`, `+afterhours/${jobs[1]!.id}-x`, `-afterhours/${jobs[2]!.id}-x`])
+  })
+
+  test('a photo or file goes on the card as an attachment, and its caption is the prompt', async () => {
+    const h = await paired()
+    await h.sendFile('f1', 'notes.txt', 'remember this', 'Summarise the notes')
+    const id = h.api.last().id
+    expect(h.api.view(id).html).toContain('Summarise the notes')
+    expect(h.api.view(id).html).toContain('📎 1 file')
+    // A second file lands on the same card.
+    await h.sendFile('f2', 'more.txt', 'and this')
+    const again = h.api.last().id
+    expect(h.api.view(again).html).toContain('📎 2 files')
+    await h.tap(button(h.api.view(again).keyboard, '📁 Folder'), again)
+    await h.tap(choice(h.api.view(again), 'beta'), again)
+    await h.tap(button(h.api.view(again).keyboard, '✅ Use this folder'), again)
+    await h.tap(button(h.api.view(again).keyboard, '▶️ Queue'), again)
+    const job = h.store.queued()[0]!
+    expect(job.attachments).toHaveLength(2)
+    expect(readFileSync(job.attachments![0]!, 'utf8')).toBe('remember this')
+    // Too big a file is refused, not saved.
+    await h.sendFile('big', 'big.bin', new Uint8Array(6 * 1024 * 1024))
+    expect(h.api.last().html).toContain('bigger than 5 MB')
+  })
+
+  test('a permission request offers Claude Code’s own “stop asking” rules; a plan can be approved then yolo', async () => {
+    const h = await paired()
+    const job = await running(h)
+    await h.bridge.notify({ type: 'permission', job: h.store.getJob(job.id)!, code: 'permrl', tool: 'Bash', detail: 'npm test', minutes: 15, suggestions: ['Always allow commands starting with npm test in this project'] })
+    const msg = h.api.last()
+    expect(msg.html).toContain('Or allow it and stop asking')
+    expect(msg.html).toContain('npm test in this project')
+    expect(h.api.view(msg.id).keyboard.flat().some(b => b.callback_data === 'a:permrl:r0')).toBe(true)
+    await h.bridge.notify({ type: 'plan_review', job: h.store.getJob(job.id)!, code: 'rvwmd' })
+    const review = h.api.last()
+    const labels = h.api.view(review.id).keyboard.flat().map(b => b.text)
+    expect(labels).toEqual(expect.arrayContaining(['✅ Approve, then accept edits', '✅ Approve, then ⚠️ yolo']))
+  })
+
+  test('/tasks lists the finished ones; words find one; a number opens it', async () => {
+    const h = await paired()
+    const spec = (prompt: string) => ({ projectDir: join(h.root, 'beta'), prompt, plan: false, review: false, execMode: 'auto' as const, model: 'opus', effort: 'high' as const, sessionPolicy: 'new' as const, source: 'cli' })
+    const a = h.store.addJob(spec('Fix the flaky test'), h.now())
+    const b = h.store.addJob(spec('Write the changelog'), h.now())
+    h.store.updateJob(a.id, { status: 'done', lastMessage: 'Fixed.', finishedAt: h.now() })
+    h.store.updateJob(b.id, { status: 'failed', error: 'It broke.', finishedAt: h.now() })
+    await h.say('/tasks')
+    const list = h.api.last()
+    expect(list.html).toContain('Tasks')
+    expect(list.html).toContain('Fix the flaky test')
+    expect(list.html).toContain('Write the changelog')
+    await h.tap('g:tsearch', list.id)
+    await h.say('flaky')
+    const found = h.api.last()
+    expect(found.html).toContain('matching “flaky”')
+    expect(found.html).not.toContain('changelog')
+    await h.tap(button(h.api.view(found.id).keyboard, /^1$/), found.id)
+    expect(h.api.last().html).toContain(`#${a.id} done`)
+  })
+
+  test('the Mac screen can keep it awake with the lid closed', async () => {
+    const mac = new FakeMac()
+    const h = await paired({ mac })
+    await h.say('/mac')
+    const view = h.api.last()
+    expect(h.api.view(view.id).keyboard.flat().map(b => b.text)).toContain('💡 Awake with the lid closed')
+    await h.tap('m:l', view.id)
+    expect(h.api.answers.at(-1)?.text).toBeTruthy()
+  })
+
+  test('typed efforts can split too: max>medium', async () => {
+    const h = await paired()
+    await h.say(`q ${h.root}/alpha plan max>medium: Rework the importer`)
+    const id = h.api.last().id
+    expect(h.api.view(id).html).toContain('⚡ max → medium')
   })
 })

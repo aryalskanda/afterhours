@@ -59,6 +59,8 @@ export interface QueueOptions {
   /** `link`: end with a live link (a claude.ai artifact). */
   wantLink?: boolean
   effort?: Effort
+  /** `max>medium`: plan with max, work with medium. */
+  workEffort?: Effort
   policy?: SessionPolicy
   sessionId?: string
   isolate?: boolean
@@ -84,6 +86,14 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
   const t = token.toLowerCase()
   if (t in EFFORTS) {
     out.effort = EFFORTS[t]
+    return true
+  }
+  // Plan at one effort, work at another: max>medium.
+  const efforts = /^([^>]+)>([^>]+)$/.exec(t)
+  if (efforts && efforts[1]! in EFFORTS && efforts[2]! in EFFORTS) {
+    out.effort = EFFORTS[efforts[1]!]
+    out.workEffort = EFFORTS[efforts[2]!]
+    if (out.plan === undefined) out.plan = true
     return true
   }
   const isModel = (m: string) => MODELS.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m)
@@ -199,7 +209,7 @@ export function buildSpec(text: string, ctx: CommandContext): JobSpec | string {
     execMode: options.execMode ?? d.execMode,
     model: options.model ?? d.model,
     workModel: options.workModel ?? (options.model === undefined ? d.workModel : undefined) ?? null,
-    workEffort: options.effort === undefined ? (d.workEffort ?? null) : null,
+    workEffort: options.workEffort ?? (options.effort === undefined ? (d.workEffort ?? null) : null),
     wantLink: options.wantLink,
     effort: options.effort ?? d.effort,
     sessionPolicy: options.policy ?? 'continue',
@@ -215,7 +225,7 @@ export const HELP = `${BRAND.name}: queue Claude Code prompts.
 q <prompt> · queue with your defaults
 q myapp plan opus max: <prompt> · options before the colon
   modes: plan review auto edits yolo plan+edits plan+yolo · ask = answer only, read-only
-  models: opus sonnet haiku fable · opus>sonnet = plan with opus, work with sonnet · effort: low med high xhigh max
+  models: opus sonnet haiku fable · opus>sonnet = plan with opus, work with sonnet · effort: low med high xhigh max · max>medium = plan with max, work with medium
   new = fresh conversation · now = run next · @<id> = that conversation
   take = close that conversation where it's open (VS Code, a terminal) and continue it here
   branch = on its own git branch · here = in your checkout
@@ -490,13 +500,16 @@ function defaults(rest: string, ctx: CommandContext): string {
     if (options.model) d.model = options.model
     // A model on its own does both; opus>sonnet sets both.
     if (options.model) d.workModel = options.workModel ?? null
-    if (options.effort) d.effort = options.effort
+    if (options.effort) {
+      d.effort = options.effort
+      d.workEffort = options.workEffort ?? null
+    }
     ctx.saveConfig(config)
   }
   const d = config.defaults
   const project = d.project ? projectLabel(d.project, config.aliases) : '(last used)'
   const mode = d.review ? 'review' : d.plan ? 'plan' : 'no plan'
-  return `Defaults: ${project} · ${mode} then ${d.execMode} · ${d.model}${d.workModel ? `>${d.workModel}` : ''}/${d.effort}`
+  return `Defaults: ${project} · ${mode} then ${d.execMode} · ${d.model}${d.workModel ? `>${d.workModel}` : ''}/${d.effort}${d.workEffort ? `>${d.workEffort}` : ''}`
 }
 
 function notifyLevel(rest: string, ctx: CommandContext): string {

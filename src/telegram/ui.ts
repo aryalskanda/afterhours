@@ -144,6 +144,31 @@ export const MODES = {
 
 export type ModeKey = keyof typeof MODES
 
+/** How it goes about it: plan first, plan you review, straight to work, or only answer. */
+export const HOW = {
+  plan: { label: 'plan → work', hint: `Claude plans first; ${BRAND.name} approves the plan and Claude carries it out`, plan: true, review: false },
+  review: { label: 'review the plan', hint: 'like plan, but you approve the plan here first', plan: true, review: true },
+  none: { label: 'no plan', hint: 'Claude goes straight to the work', plan: false, review: false },
+  ask: { label: '💭 ask', hint: 'a question: Claude reads and answers, changes nothing', plan: false, review: false },
+} as const
+export type HowKey = keyof typeof HOW
+
+/** What it may do without asking (not for a question). */
+export const PERMISSIONS = {
+  auto: { label: 'auto', hint: 'auto mode decides what needs your permission', execMode: 'auto' },
+  edits: { label: 'accept edits', hint: 'file edits are allowed, anything else asks you', execMode: 'acceptEdits' },
+  yolo: { label: '⚠️ yolo', hint: 'no permission checks at all', execMode: 'bypassPermissions' },
+} as const satisfies Record<string, { label: string; hint: string; execMode: ExecMode }>
+export type PermissionKey = keyof typeof PERMISSIONS
+
+export function howOf(d: { plan: boolean; review: boolean; execMode: ExecMode }): HowKey {
+  return d.execMode === 'plan' ? 'ask' : d.review ? 'review' : d.plan ? 'plan' : 'none'
+}
+
+export function permissionOf(d: { execMode: ExecMode }): PermissionKey {
+  return d.execMode === 'bypassPermissions' ? 'yolo' : d.execMode === 'acceptEdits' ? 'edits' : 'auto'
+}
+
 export function modeOf(d: { plan: boolean; review: boolean; execMode: ExecMode }): ModeKey | null {
   for (const [key, m] of Object.entries(MODES) as [ModeKey, (typeof MODES)[ModeKey]][]) {
     if (m.plan === d.plan && m.review === d.review && m.execMode === d.execMode) return key
@@ -165,6 +190,10 @@ export interface UiContext {
   hasConversation: (folder: string) => boolean
   /** A conversation by session id, with where it's open right now. */
   chat: (sessionId: string) => Chat | null
+  /** When the 5-hour limit resets, while that's still ahead. */
+  resetsAt?: number | null
+  /** The running and waiting tasks, for "after #N". */
+  ahead?: { id: number; prompt: string }[]
 }
 
 /** A new conversation starts here (rather than continuing one), so branch isolation applies. */
@@ -187,6 +216,24 @@ function chatLabel(d: Draft, ctx: UiContext, chat: Chat | null): string {
   )
 }
 
+/** Whether the draft starts later than "as soon as it's its turn". */
+export function startsLater(d: Pick<Draft, 'notBefore' | 'repeatDaily' | 'atReset' | 'afterJob'>): boolean {
+  return Boolean(d.notBefore || d.repeatDaily !== null || d.atReset || d.afterJob !== null)
+}
+
+export function timeOfDay(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+
+function startLines(d: Draft, ctx: UiContext): string[] {
+  const now = ctx.now ?? Date.now()
+  if (d.repeatDaily !== null) return [`🔁 every day at ${timeOfDay(d.repeatDaily)}, on this Mac’s clock`]
+  if (d.atReset) return [ctx.resetsAt ? `♻️ starts at ${esc(formatClock(ctx.resetsAt, now))}, when the 5-hour limit resets` : '♻️ starts when the 5-hour limit resets']
+  if (d.afterJob !== null) return [`⏭ starts after #${d.afterJob} has finished well`]
+  if (d.notBefore) return [`⏰ starts at ${esc(formatClock(d.notBefore, now))}, or later if others are ahead`]
+  return []
+}
+
 export function draftCard(d: Draft, ctx: UiContext): View {
   const id = d.id
   const chat = d.sessionId ? ctx.chat(d.sessionId) : null
@@ -195,15 +242,19 @@ export function draftCard(d: Draft, ctx: UiContext): View {
     ...(d.editJob ? [`✏️ <b>Changing #${d.editJob}</b>`] : []),
     d.prompt ? quote(d.prompt, 1500) : '📝 <i>Now send the prompt as your next message.</i>',
     folder,
-    `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)}${d.plan && d.workModel ? ` → ${esc(d.workModel)}` : ''} · ⚡ ${d.effort}`,
+    `🗺 ${esc(modeLabel(d))} · 🧠 ${esc(d.model)}${d.plan && d.workModel ? ` → ${esc(d.workModel)}` : ''} · ⚡ ${d.effort}${d.plan && d.workEffort ? ` → ${d.workEffort}` : ''}`,
     ...(d.editJob ? [] : [chatLabel(d, ctx, chat)]),
-    ...(d.notBefore ? [`⏰ starts at ${esc(formatClock(d.notBefore, ctx.now ?? Date.now()))}, or later if others are ahead`] : []),
+    ...startLines(d, ctx),
     ...(d.wantLink ? ['🔗 ends with a live link (a claude.ai page you can open on your phone)'] : []),
+    ...(d.maxMinutes ? [`⏱ stopped after ${d.maxMinutes >= 60 && d.maxMinutes % 60 === 0 ? `${d.maxMinutes / 60} h` : `${d.maxMinutes} min`} of work`] : []),
+    ...(d.threeWays ? [`🔀 three ways: ${d.threeWays === 'models' ? 'one on each of three models' : `${esc(d.model)}, three times`}, each on its own branch`] : []),
+    ...(d.attachments.length > 0 ? [`📎 ${d.attachments.length} file${d.attachments.length === 1 ? '' : 's'} for Claude to read`] : []),
   ].join('\n')
   const chatButton = btn('💬 Chat…', `d:${id}:t`)
   const branchButton = startsNewChat(d, ctx) ? [btn(d.isolate ? '📂 Work in place' : '🌿 Own branch', `d:${id}:i`)] : []
   const takeButton = chat?.where ? [btn(d.takeover ? '⏳ Wait instead' : '🤝 Take over', `d:${id}:h`)] : []
-  const later = btn(d.notBefore ? '⏰ Later ✓' : '⏰ Later', `d:${id}:a`)
+  const later = btn(startsLater(d) ? '⏰ Later ✓' : '⏰ Later', `d:${id}:a`)
+  const more = btn('⋯ More', `d:${id}:mo`)
   const link = btn(d.wantLink ? '🔗 Live link ✓' : '🔗 Live link', `d:${id}:l`)
   // Changing a queued task: its folder and conversation stay; the rest can change.
   if (d.editJob) {
@@ -211,7 +262,7 @@ export function draftCard(d: Draft, ctx: UiContext): View {
       html,
       keyboard: [
         [btn('✏️ Prompt', `d:${id}:p`), btn('🗺 Mode', `d:${id}:o`), btn('🧠 Model', `d:${id}:m`)],
-        ...layout([btn('⚡ Effort', `d:${id}:e`), link, later]),
+        ...layout([btn('⚡ Effort', `d:${id}:e`), link, later, more]),
         [btn('💾 Save', `d:${id}:q`), btn('✖️ Never mind', `d:${id}:x`)],
       ],
     }
@@ -225,26 +276,67 @@ export function draftCard(d: Draft, ctx: UiContext): View {
     html,
     keyboard: [
       [btn('📁 Folder', `d:${id}:f`), btn('🗺 Mode', `d:${id}:o`), btn('🧠 Model', `d:${id}:m`)],
-      ...layout([btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton, link, later]),
+      ...layout([btn('⚡ Effort', `d:${id}:e`), chatButton, ...branchButton, ...takeButton, link, later, more]),
       [go, btn('✖️ Discard', `d:${id}:x`)],
     ],
   }
 }
 
-/** ⏰ Later: when the task may start. */
-export function laterView(d: Draft, now: number): View {
+/** ⏰ Starts: when the task may start. */
+export function laterView(d: Draft, now: number, ctx: UiContext = { models: [], folderId: () => 0, label: x => x, hasConversation: () => false, chat: () => null }): View {
   const id = d.id
   const at = (ms: number) => formatClock(ms, now)
+  const current = startLines(d, { ...ctx, now })[0]
   return {
     html:
       `⏰ <b>When may it start?</b>\n` +
-      `${d.notBefore ? `Now: at ${esc(at(d.notBefore))}.` : 'Now: as soon as it’s its turn.'}\n` +
+      `${current ? `Now: ${current.replace(/^\S+ /, '')}.` : 'Now: as soon as it’s its turn.'}\n` +
       '<i>Or type a time: 23:00, 11pm, in 2h, tomorrow 9am.</i>',
     keyboard: [
       [btn(`🕐 ${at(LATER.hour(now))}`, `d:${id}:a:h`), btn(`🌙 ${at(LATER.tonight(now))}`, `d:${id}:a:n`)],
       [btn(`☀️ ${at(LATER.morning(now))}`, `d:${id}:a:m`), btn('✍️ Type a time', `d:${id}:a:t`)],
-      [...(d.notBefore ? [btn('▶️ As soon as it can', `d:${id}:a:c`)] : []), btn('↩️ Back', `d:${id}:k`)],
+      [btn('🔁 Every day…', `d:${id}:a:d`), ...(ctx.resetsAt && ctx.resetsAt > now ? [btn(`♻️ At the reset (${at(ctx.resetsAt)})`, `d:${id}:a:r`)] : [])],
+      ...((ctx.ahead ?? []).filter(j => j.id !== d.editJob).length > 0 ? [[btn('⏭ After a task…', `d:${id}:a:af`)]] : []),
+      [...(startsLater(d) ? [btn('▶️ As soon as it can', `d:${id}:a:c`)] : []), btn('↩️ Back', `d:${id}:k`)],
     ],
+  }
+}
+
+/** ⏭ After a task: starts once that one has finished well. */
+export function afterView(d: Draft, ctx: UiContext): View {
+  const ahead = (ctx.ahead ?? []).filter(j => j.id !== d.editJob).slice(0, 10)
+  return {
+    html: `⏭ <b>Start after which task?</b>\n${ahead.map((j, i) => numbered(i + 1, `#${j.id} ${esc(oneLine(j.prompt, 70))}`)).join('\n')}\n<i>If it fails, this one doesn’t run.</i>`,
+    keyboard: [...numberRows(ahead.map(j => ({ data: `d:${d.id}:a:j:${j.id}` }))), [btn('↩️ Back', `d:${d.id}:a`)]],
+  }
+}
+
+/** ⋯ More: the rarer choices. */
+export function moreView(d: Draft): View {
+  const id = d.id
+  const newTask = !d.editJob && !d.sessionId
+  const limit = d.maxMinutes ? (d.maxMinutes >= 60 && d.maxMinutes % 60 === 0 ? `${d.maxMinutes / 60} h` : `${d.maxMinutes} min`) : 'none'
+  return {
+    html:
+      '⋯ <b>More</b>\n' +
+      `⏱ <b>Time limit</b>: ${limit}. <i>Stops it after that much work; you can let it go on.</i>\n` +
+      (newTask ? `🔀 <b>Three ways</b>: ${d.threeWays ? (d.threeWays === 'models' ? 'on three models' : `${esc(d.model)} three times`) : 'off'}. <i>Three tasks, each on its own branch, to compare.</i>\n` : '') +
+      (!d.editJob ? `📎 <b>Files</b>: ${d.attachments.length > 0 ? d.attachments.length : 'none'}. <i>Send a photo or file in this chat to attach it.</i>` : ''),
+    keyboard: [
+      [btn('⏱ Time limit…', `d:${id}:mo:t`)],
+      ...(newTask ? [[btn(d.threeWays === 'models' ? '✓ 🔀 Three models' : '🔀 Three models', `d:${id}:3:m`), btn(d.threeWays === 'same' ? '✓ 🔀 Same ×3' : '🔀 Same ×3', `d:${id}:3:s`)], ...(d.threeWays ? [[btn('🔀 Turn off three ways', `d:${id}:3:0`)]] : [])] : []),
+      ...(d.attachments.length > 0 ? [[btn('🗑 Remove the files', `d:${id}:at:x`)]] : []),
+      [btn('↩️ Back', `d:${id}:k`)],
+    ],
+  }
+}
+
+/** ⏱ How long it may work. */
+export function limitView(d: Draft): View {
+  const b = (label: string, minutes: number) => btn(`${(d.maxMinutes ?? 0) === minutes ? '✓ ' : ''}${label}`, `d:${d.id}:tl:${minutes}`)
+  return {
+    html: '⏱ <b>Time limit</b>\n<i>Stopped after this much work; you can let it go on.</i>',
+    keyboard: [[b('None', 0), b('30 min', 30), b('1 h', 60)], [b('2 h', 120), b('4 h', 240)], [btn('↩️ Back', `d:${d.id}:mo`)]],
   }
 }
 
@@ -430,16 +522,18 @@ export function searchView(d: Draft, query: string, hits: SearchHit[], ctx: UiCo
 }
 
 export function modeView(d: Draft): View {
-  const current = modeOf(d)
-  const lines = (Object.entries(MODES) as [ModeKey, (typeof MODES)[ModeKey]][]).map(
-    ([key, m]) => `${key === current ? '✓' : '•'} <b>${m.label}</b>: ${m.hint}`,
-  )
+  const how = howOf(d)
+  const perm = permissionOf(d)
+  const hows = (Object.entries(HOW) as [HowKey, (typeof HOW)[HowKey]][]).map(([key, h]) => `${key === how ? '✓' : '•'} <b>${h.label}</b>: ${h.hint}`)
+  const perms = (Object.entries(PERMISSIONS) as [PermissionKey, (typeof PERMISSIONS)[PermissionKey]][]).map(([key, p]) => `${key === perm ? '✓' : '•'} <b>${p.label}</b>: ${p.hint}`)
+  const h = (key: HowKey) => btn(`${key === how ? '✓ ' : ''}${HOW[key].label}`, `d:${d.id}:o:h:${key}`)
+  const p = (key: PermissionKey) => btn(`${key === perm && how !== 'ask' ? '✓ ' : ''}${PERMISSIONS[key].label}`, `d:${d.id}:o:p:${key}`)
   return {
-    html: `🗺 <b>Mode</b>\n${lines.join('\n')}`,
+    html: `🗺 <b>How</b>\n${hows.join('\n')}${how === 'ask' ? '' : `\n\n🔐 <b>Permissions</b>\n${perms.join('\n')}`}`,
     keyboard: [
-      [btn(`${current === 'plan' ? '✓ ' : ''}plan → auto`, `d:${d.id}:o:plan`), btn(`${current === 'review' ? '✓ ' : ''}review → auto`, `d:${d.id}:o:review`)],
-      [btn(`${current === 'auto' ? '✓ ' : ''}auto`, `d:${d.id}:o:auto`), btn(`${current === 'edits' ? '✓ ' : ''}accept edits`, `d:${d.id}:o:edits`)],
-      [btn(`${current === 'ask' ? '✓ ' : ''}💭 ask`, `d:${d.id}:o:ask`), btn(`${current === 'yolo' ? '✓ ' : ''}⚠️ yolo`, `d:${d.id}:o:yolo`)],
+      [h('plan'), h('review')],
+      [h('none'), h('ask')],
+      ...(how === 'ask' ? [] : [[p('auto'), p('edits'), p('yolo')]]),
       [btn('↩️ Back', `d:${d.id}:k`)],
     ],
   }
@@ -467,8 +561,20 @@ export function modelView(d: Draft, ctx: UiContext): View {
 export function effortView(d: Draft): View {
   const b = (e: Effort) => btn(`${e === d.effort ? '✓ ' : ''}${e}`, `d:${d.id}:e:${e}`)
   return {
-    html: '⚡ <b>Effort</b>\n<i>Higher effort thinks longer and uses more of your usage limit.</i>',
-    keyboard: [[b('low'), b('medium'), b('high')], [b('xhigh'), b('max')], [btn('↩️ Back', `d:${d.id}:k`)]],
+    html:
+      `⚡ <b>${d.plan ? 'Plan effort' : 'Effort'}</b>\n<i>Higher effort thinks longer and uses more of your usage limit.</i>` +
+      (d.plan ? `\n<b>Work effort</b> (once the plan is approved): ${esc(d.workEffort ?? 'the same')}` : ''),
+    keyboard: [[b('low'), b('medium'), b('high')], [b('xhigh'), b('max')], ...(d.plan ? [[btn('🛠 Work effort…', `d:${d.id}:we`)]] : []), [btn('↩️ Back', `d:${d.id}:k`)]],
+  }
+}
+
+/** 🛠 The effort that carries out the approved plan. */
+export function workEffortView(d: Draft): View {
+  const current = d.workEffort ?? d.effort
+  const b = (e: Effort) => btn(`${e === current ? '✓ ' : ''}${e}`, `d:${d.id}:we:${e}`)
+  return {
+    html: `🛠 <b>Work effort</b>\n<b>Plan</b>: ${esc(d.effort)}\n<b>Work</b>: ${esc(d.workEffort ?? 'the same')}\n<i>One effort writes the plan; once it’s approved, the other carries it out, in the same conversation.</i>`,
+    keyboard: [[b('low'), b('medium'), b('high')], [b('xhigh'), b('max')], [btn('↩️ Back', `d:${d.id}:e`)]],
   }
 }
 
@@ -476,9 +582,54 @@ export function queuedView(job: Job, when: string, ctx: UiContext, o: { changed?
   const later = job.notBefore && job.notBefore > (ctx.now ?? Date.now()) ? `⏰ Not before ${formatClock(job.notBefore, ctx.now ?? Date.now())}. ` : ''
   return {
     html:
-      `${o.changed ? '✏️' : '✅'} <b>${o.changed ? 'Changed' : 'Queued'} #${job.id}</b> · ${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}${job.workModel ? `→${esc(job.workModel)}` : ''}/${job.effort}\n` +
+      `${o.changed ? '✏️' : '✅'} <b>${o.changed ? 'Changed' : 'Queued'} #${job.id}</b> · ${esc(ctx.label(job.projectDir))} · ${esc(modeLabel(job))} · ${esc(job.model)}${job.workModel ? `→${esc(job.workModel)}` : ''}/${job.effort}${job.workEffort ? `→${job.workEffort}` : ''}\n` +
       `${quote(job.prompt, 1500)}\n<i>${esc(later)}${esc(when)}</i>`,
     keyboard: [[btn('⬆️ Run next', `j:${job.id}:top`), btn('🗑 Remove', `j:${job.id}:rm`)]],
+  }
+}
+
+/** 📚 Tasks: the finished ones, newest first, by number; words narrow them. */
+export function tasksView(jobs: Job[], o: { query: string; more: boolean }, ctx: NoticeContext): View {
+  const mark = (j: Job) => (j.status === 'done' ? '✅' : j.status === 'failed' ? '❌' : '⛔')
+  const lines = jobs.map((j, i) => numbered(i + 1, `${mark(j)} <b>#${j.id}</b> · ${esc(ctx.label(j.projectDir))} · ${esc(oneLine(j.prompt, 70))}${j.finishedAt ? ` · <i>${esc(formatClock(j.finishedAt, ctx.now))}</i>` : ''}`))
+  const last = jobs.at(-1)
+  return {
+    html: `📚 <b>Tasks</b>${o.query ? ` matching “${esc(o.query)}”` : ''}\n${lines.length > 0 ? lines.join('\n') : '<i>Nothing finished yet.</i>'}${lines.length > 0 ? '\n<i>Tap a number to open it.</i>' : ''}`,
+    keyboard: [
+      ...numberRows(jobs.map(j => ({ data: `j:${j.id}:open` }))),
+      [btn('🔍 Search', 'g:tsearch'), ...(o.more && last ? [btn('Older ›', `g:tasks:${last.id}`)] : []), ...(o.query ? [btn('✖️ Clear', 'g:tasks')] : [])],
+    ],
+  }
+}
+
+/** Three ways finished: each one's result, and which to keep. */
+export function compareView(jobs: Job[], ctx: UiContext): View {
+  const first = jobs[0]!
+  const lines = jobs.map((j, i) => {
+    const state = j.status === 'done' ? '✅' : j.status === 'failed' ? '❌' : '⛔'
+    const said = oneLine(j.summary || j.lastMessage || '', 160)
+    return `${i + 1}. ${state} <b>#${j.id}</b> ${esc(j.model)}/${j.effort}${j.branch ? ` · <code>${esc(j.branch)}</code>` : ''}${said ? `\n   <i>${esc(said)}</i>` : ''}`
+  })
+  const keepable = jobs.filter(j => j.status === 'done' && j.branch && !j.branchNote)
+  return {
+    html: `🔀 <b>The three ways are done</b> · ${esc(ctx.label(first.projectDir))}\n${quote(first.prompt, 300)}\n${lines.join('\n')}\n<i>Keep one: it’s merged, and the other two branches are thrown away.</i>`,
+    keyboard: [
+      ...(keepable.length > 0 ? [keepable.map(j => btn(`✅ Keep #${j.id}`, `g:keep:${j.id}`))] : []),
+      [btn('🗑 Keep none', `g:keep:0:${first.group}`)],
+    ],
+  }
+}
+
+/** Three ways queued: the three tasks, each on its own branch. */
+export function queuedWaysView(jobs: Job[], ctx: UiContext): View {
+  const first = jobs[0]!
+  return {
+    html:
+      `✅ <b>Queued ${jobs.map(j => `#${j.id}`).join(', ')}</b> · ${esc(ctx.label(first.projectDir))} · ${esc(modeLabel(first))}\n` +
+      `${quote(first.prompt, 1500)}\n` +
+      jobs.map(j => `• #${j.id} ${esc(j.model)}/${j.effort}`).join('\n') +
+      '\n<i>Each on its own branch. When all three have finished, you choose which to keep.</i>',
+    keyboard: [[btn('⬆️ Run next', `j:${first.id}:top`), btn('🗑 Remove all', `g:ways:${first.group}`)]],
   }
 }
 
@@ -638,16 +789,23 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       return longView(
         `📝 <b>#${n.job.id} plan ready for your review</b> · ${esc(ctx.label(n.job.projectDir))}`,
         n.job.planText,
-        [[btn('✅ Approve', `a:${n.code}:y`), btn('✏️ Ask for changes', `a:${n.code}:c`)]],
+        [
+          [btn('✅ Approve', `a:${n.code}:y`), btn('✏️ Ask for changes', `a:${n.code}:c`)],
+          [btn('✅ Approve, then accept edits', `a:${n.code}:me`), btn('✅ Approve, then ⚠️ yolo', `a:${n.code}:my`)],
+        ],
         { name: `plan-${n.job.id}.md`, caption: `#${n.job.id}'s plan` },
       )
-    case 'permission':
+    case 'permission': {
+      // Claude Code's own "stop asking" choices: allow this and apply one of them.
+      const rules = n.suggestions ?? []
       return {
         html:
           `🔐 <b>#${n.job.id} wants to use ${esc(n.tool)}</b> · ${esc(ctx.label(n.job.projectDir))}\n` +
-          `<pre>${esc(clip(n.detail, 3000))}</pre>\n<i>Denied automatically in ${n.minutes}m.</i>`,
-        keyboard: [[btn('✅ Allow', `a:${n.code}:y`), btn('❌ Deny', `a:${n.code}:n`)]],
+          `<pre>${esc(clip(n.detail, 3000))}</pre>\n<i>Denied automatically in ${n.minutes}m.</i>` +
+          (rules.length > 0 ? `\n\n<b>Or allow it and stop asking:</b>\n${rules.map((r, i) => numbered(i + 1, esc(clip(r, 160)))).join('\n')}\n<i>Tap a number to allow this and apply that rule.</i>` : ''),
+        keyboard: [[btn('✅ Allow', `a:${n.code}:y`), btn('❌ Deny', `a:${n.code}:n`)], ...numberRows(rules.map((_, i) => ({ data: `a:${n.code}:r${i}` })))],
       }
+    }
     case 'question':
       return questionView(n.job, n.code, n.questions, newQuestionState(), n.minutes)
     case 'trust':
@@ -675,7 +833,7 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       ]
         .filter(Boolean)
         .join('\n')
-      const branch = n.job.branch && !n.job.branchNote ? [[btn('🌿 Merge', `j:${n.job.id}:merge`), btn('🗑 Discard branch', `j:${n.job.id}:discard`)]] : []
+      const branch = n.job.branch && !n.job.branchNote ? [[btn('🌿 Merge', `j:${n.job.id}:merge`), btn('🔃 Pull request', `j:${n.job.id}:pr`), btn('🗑 Discard branch', `j:${n.job.id}:discard`)]] : []
       return longView(head, n.job.lastMessage, [[btn('➕ Follow up', `j:${n.job.id}:fu`), linkButton(n.job)], ...branch], {
         name: `answer-${n.job.id}.md`,
         caption: `#${n.job.id}: Claude's full answer`,
@@ -983,6 +1141,7 @@ export function macView(s: MacStatus): View {
   }
   if (s.sleepWhenDone.on) lines.push(`🌙 Sleeps once the queue is done${s.sleepWhenDone.waiting ? ` (waiting for ${esc(s.sleepWhenDone.waiting)})` : ''}.`)
   if (s.running !== null) lines.push(`▶️ #${s.running} is running: it pauses while the Mac sleeps.`)
+  if (s.lidClosed.on) lines.push(`💡 Stays awake with the lid closed while tasks run${s.lidClosed.holding ? ' (doing so now)' : ''}${s.lidClosed.ready ? '' : '; it needs <code>cq awake lid on</code> at the Mac once'}.`)
   const apps = [...s.apps].sort((a, b) => Number(b.keepsAwake) - Number(a.keepsAwake))
   if (apps.length > 0) {
     lines.push('', ...apps.map((a, i) => numbered(i + 1, `${esc(a.name)}${a.kind === 'menu' ? ' ☰' : ''}${a.keepsAwake ? ' ☕' : ''}`)))
@@ -993,6 +1152,7 @@ export function macView(s: MacStatus): View {
     keyboard: [
       [btn('😴 Sleep now', 'm:s'), btn(s.sleepWhenDone.on ? '🌙 Sleep when done ✓' : '🌙 Sleep when done', 'm:d')],
       ...numberRows(apps.map(a => ({ data: `m:q:${a.pid}` }))),
+      [btn(s.lidClosed.on ? '💡 Awake with the lid closed ✓' : '💡 Awake with the lid closed', 'm:l')],
       [btn('🔄 Refresh', 'm:r')],
     ],
   }
@@ -1021,13 +1181,13 @@ export const HELP_HTML =
   `${KEYS.chats}: any chat from any project, VS Code ones too. Open one and tap ✍️ Write here: everything you type then goes into that chat until you leave.\n` +
   '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +
   '💬 Chat… on a card continues any chat in that folder, including one open in VS Code: 🤝 Take over closes it there and continues it here.\n' +
-  '⏰ Later on a card picks when it may start. In 📋 Queue, ✏️ changes a waiting task (its prompt, mode, model, effort, live link, time).\n' +
+  '⏰ Later on a card picks when it may start (a time, every day, at the limit reset, after another task); ⋯ More has a time limit and three ways to compare. A photo or file you send is attached. In 📋 Queue, ✏️ changes a waiting task, all of that included. /tasks finds a finished one.\n' +
   '🖥 /mac: what is open on the Mac, to quit an app (Vorssaint, say), and 😴 sleep it now or once the queue is done. /sleep goes straight there.\n' +
   `${KEYS.queue} · ${KEYS.status} · ${KEYS.peek}\n\n` +
   "I'll message you when a plan is ready, when Claude needs permission or has a question (one question at a time, every option in full), when a usage limit pauses work, and when a job finishes. " +
   'News that needs nothing from you arrives silently. ' +
   'When a chat in VS Code or a terminal hits a usage limit, I offer to continue it here after the reset.\n\n' +
-  'Commands: /new /queue /status /peek /kill /mac /sleep /pause /resume /settings /cancel\n' +
+  'Commands: /new /queue /tasks /status /peek /kill /mac /sleep /pause /resume /settings /cancel\n' +
   'Typing <code>q myapp plan opus max: …</code> still works too.'
 
 /** What a tool asks to do, in words. */

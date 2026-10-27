@@ -44,6 +44,8 @@ export interface Choices {
   /** With a plan: the model that carries it out (null: `model` does both). */
   workModel: string | null
   effort: Effort
+  /** With a plan: the effort that carries it out (null: `effort` does both). */
+  workEffort: Effort | null
   /** Run a new conversation on its own git branch. */
   isolate: boolean
 }
@@ -61,8 +63,20 @@ export interface Draft extends Choices {
   followJob: number | null
   /** End with a live link (a claude.ai artifact). */
   wantLink: boolean
-  /** ⏰ Later: not before this time (ms). */
+  /** ⏰ Starts: not before this time (ms). */
   notBefore: number | null
+  /** ⏰ Starts: again every day at this time, in minutes after midnight. */
+  repeatDaily: number | null
+  /** ⏰ Starts: when the 5-hour limit resets. */
+  atReset: boolean
+  /** ⏰ Starts: only after this task has finished well. */
+  afterJob: number | null
+  /** ⏱ Stop it after this many minutes of work. */
+  maxMinutes: number | null
+  /** 🔀 Three ways: three tasks, each on its own branch: one per model, or the chosen model three times. */
+  threeWays: 'models' | 'same' | null
+  /** 📎 Files saved on the machine for Claude to read. */
+  attachments: string[]
   /** ✏️ Change: the card edits this queued task instead of queueing a new one. */
   editJob: number | null
   /** Folder the browser is showing. */
@@ -86,6 +100,7 @@ const COLUMNS: Record<keyof Draft, string> = {
   model: 'model',
   workModel: 'work_model',
   effort: 'effort',
+  workEffort: 'work_effort',
   isolate: 'isolate',
   newChat: 'new_chat',
   sessionId: 'session_id',
@@ -93,6 +108,12 @@ const COLUMNS: Record<keyof Draft, string> = {
   followJob: 'follow_job',
   wantLink: 'want_link',
   notBefore: 'not_before',
+  repeatDaily: 'repeat_daily',
+  atReset: 'at_reset',
+  afterJob: 'after_job',
+  maxMinutes: 'max_minutes',
+  threeWays: 'three_ways',
+  attachments: 'attachments',
   editJob: 'edit_job',
   browse: 'browse',
   messageId: 'message_id',
@@ -100,13 +121,13 @@ const COLUMNS: Record<keyof Draft, string> = {
   jobId: 'job_id',
   createdAt: 'created_at',
 }
-const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover', 'wantLink'])
+const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover', 'wantLink', 'atReset'])
 
 function toDraft(row: Row): Draft {
   const d = {} as Record<string, unknown>
   for (const [key, column] of Object.entries(COLUMNS) as [keyof Draft, string][]) {
     const value = row[column] ?? null
-    d[key] = BOOLEANS.has(key) ? value === 1 : value
+    d[key] = key === 'attachments' ? (typeof value === 'string' ? (JSON.parse(value) as string[]) : []) : BOOLEANS.has(key) ? value === 1 : value
   }
   return d as unknown as Draft
 }
@@ -114,6 +135,7 @@ function toDraft(row: Row): Draft {
 function encode(key: keyof Draft, value: unknown): SqlValue {
   if (value === undefined || value === null) return null
   if (BOOLEANS.has(key)) return value ? 1 : 0
+  if (key === 'attachments') return (value as string[]).length > 0 ? JSON.stringify(value) : null
   return value as SqlValue
 }
 
@@ -126,7 +148,9 @@ export class TelegramState {
       if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
     }
     if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')
-    for (const column of ['not_before', 'edit_job']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER`)
+    for (const column of ['not_before', 'edit_job', 'repeat_daily', 'after_job', 'max_minutes']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER`)
+    if (!have.has('at_reset')) db.exec('ALTER TABLE tg_drafts ADD COLUMN at_reset INTEGER NOT NULL DEFAULT 0')
+    for (const column of ['work_effort', 'three_ways', 'attachments']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} TEXT`)
   }
 
   addDraft(
@@ -135,8 +159,8 @@ export class TelegramState {
   ): Draft {
     const row = this.db
       .query<Row, SqlValue[]>(
-        `INSERT INTO tg_drafts (prompt, folder, plan, review, exec_mode, model, work_model, effort, isolate, new_chat, session_id, takeover, follow_job, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO tg_drafts (prompt, folder, plan, review, exec_mode, model, work_model, effort, work_effort, isolate, new_chat, session_id, takeover, follow_job, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
       .get(
         fields.prompt,
@@ -147,6 +171,7 @@ export class TelegramState {
         fields.model,
         fields.workModel ?? null,
         fields.effort,
+        fields.workEffort ?? null,
         fields.isolate ? 1 : 0,
         fields.newChat ? 1 : 0,
         fields.sessionId ?? null,
@@ -156,6 +181,12 @@ export class TelegramState {
       )
     if (!row) throw new Error('failed to save draft')
     return toDraft(row)
+  }
+
+  /** The newest card still waiting for ▶️ Queue, for a photo or file sent after it. */
+  latestOpenDraft(since: number): Draft | null {
+    const row = this.db.query<Row, [number]>(`SELECT * FROM tg_drafts WHERE status = 'open' AND edit_job IS NULL AND created_at >= ? ORDER BY id DESC LIMIT 1`).get(since)
+    return row ? toDraft(row) : null
   }
 
   getDraft(id: number): Draft | null {
