@@ -10,7 +10,7 @@ import { testRelay, type TestRelay } from '../relay/test/target'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import { runCommand } from '../src/daemon/commands'
 import { FolderMap } from '../src/daemon/folders'
-import { MacControl } from '../src/daemon/mac'
+import { PowerControl } from '../src/daemon/power'
 import type { Notice } from '../src/daemon/notify'
 import { Remote } from '../src/daemon/remote'
 import { RemoteDb } from '../src/daemon/remote/db'
@@ -19,7 +19,7 @@ import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { git } from '../src/daemon/system'
 import { codeRoots, DEFAULT_CONFIG, type Config } from '../src/shared/config'
-import { FakeMac, FakeTmux } from './fakes'
+import { FakePower, FakeTmux } from './fakes'
 
 let relay: TestRelay
 let dir: string
@@ -67,7 +67,7 @@ const chats: ChatSource = {
   },
 }
 
-function machine(o: { remote?: Partial<Config['remote']>; mac?: FakeMac } = {}) {
+function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -106,7 +106,7 @@ function machine(o: { remote?: Partial<Config['remote']>; mac?: FakeMac } = {}) 
     sleep: async () => {},
   })
   const mac = o.mac
-    ? new MacControl({ system: o.mac, store, runner, notify: n => remote?.notice(n.type, n), now: Date.now, log: () => {}, sleep: async () => {}, later: () => {} })
+    ? new PowerControl({ system: o.mac, store, runner, config: () => config, saveConfig: c => (config = c), notify: n => remote?.notice(n.type, n), now: Date.now, log: () => {}, later: () => {} })
     : null
   remote = new Remote({
     mac,
@@ -193,26 +193,26 @@ describe('remote access', () => {
     expect(m.remote.status().relay).toBe('wss://mac.example.ts.net/v1')
   })
 
-  test('owners quit apps and put the Mac to sleep, when the machine lets them; nobody else may', async () => {
-    const sys = new FakeMac()
+  test('owners keep the computer awake and put it to sleep from their phone; nobody else may; apps are not quit', async () => {
+    const sys = new FakePower()
     const m = machine({ mac: sys })
     const owner = await pairedApp(m)
     expect(owner.snapshots[0]!.features).toContain('mac')
     expect(owner.snapshots[0]!.policy.allowMac).toBe(true)
     const status = await owner.conn.request({ type: 'mac', action: 'status' })
-    expect((status.data as MacInfo).quitFirst).toEqual([83628])
-    expect(await owner.conn.request({ type: 'mac', action: 'quit', pid: 9002 })).toMatchObject({ ok: true, text: 'Quit Monosnap.' })
-    sys.stubborn.add(19268)
-    expect(await owner.conn.request({ type: 'mac', action: 'quit', pid: 19268 })).toMatchObject({ ok: false, code: 'failed', data: { open: true } })
-    expect((await owner.conn.request({ type: 'mac', action: 'sleep', quit: [83628] })).ok).toBe(true)
+    expect(status.data as MacInfo).toMatchObject({ kind: 'mac', apps: [], quitFirst: [], keepAwake: true })
+    expect(await owner.conn.request({ type: 'mac', action: 'quit', pid: 9002 })).toMatchObject({ ok: false, code: 'unsupported' })
+    expect(await owner.conn.request({ type: 'mac', action: 'keepAwake', on: false })).toMatchObject({ ok: true })
+    expect(m.config().keepAwake).toBe(false)
+    expect((await owner.conn.request({ type: 'mac', action: 'sleep' })).ok).toBe(true)
     await until(() => owner.events.some(e => e.notice.type === 'sleeping'))
-    expect(owner.events.find(e => e.notice.type === 'sleeping')!.notice).toEqual({ type: 'sleeping', by: 'Test phone', quit: ['Vorssaint'] })
-    // Looking changes nothing and isn't audited; quitting and sleeping are.
-    expect(m.remote.auditLog(20).filter(e => e.action === 'mac').map(e => `${e.detail}${e.ok ? '' : ' (refused)'}`)).toEqual(['sleep', 'quit 19268 (refused)', 'quit 9002'])
+    expect(owner.events.find(e => e.notice.type === 'sleeping')!.notice).toEqual({ type: 'sleeping', by: 'Test phone', quit: [] })
+    // Looking changes nothing and isn't audited; the rest is.
+    expect(m.remote.auditLog(20).filter(e => e.action === 'mac').map(e => `${e.detail}${e.ok ? '' : ' (refused)'}`)).toEqual(['sleep', 'keepAwake off', 'quit 9002 (refused)'])
 
     const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
     expect(await operator.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: false, code: 'forbidden' })
-    // The switch limits other devices; the owner's own phone keeps the Mac.
+    // The switch limits other devices; the owner's own phone keeps the controls.
     m.setRemote({ allowMac: false })
     expect(await owner.conn.request({ type: 'mac', action: 'status' })).toMatchObject({ ok: true })
     expect(owner.snapshots[0]!.policy.other?.allowMac).toBe(true)

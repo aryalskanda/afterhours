@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
 import type { BranchGit } from '../src/daemon/branches'
 import { FolderMap } from '../src/daemon/folders'
-import { MacControl } from '../src/daemon/mac'
+import { PowerControl } from '../src/daemon/power'
 import { Runner, windowName } from '../src/daemon/runner'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
@@ -14,7 +14,7 @@ import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type Menu
 import { TelegramBridge } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
-import { FakeMac, FakeTmux, makeTree } from './fakes'
+import { FakePower, FakeTmux, makeTree } from './fakes'
 
 const OWNER = 7001
 const STRANGER = 9009
@@ -108,7 +108,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -160,7 +160,7 @@ function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
   const folders = new FolderMap({ roots: () => [root], store, now: () => now, log: () => {}, watch: false })
   const later: (() => void)[] = []
   const mac = o.mac
-    ? new MacControl({ system: o.mac, store, runner, notify: n => void bridge.notify(n), now: () => now, log: () => {}, sleep: async () => {}, later: run => later.push(run) })
+    ? new PowerControl({ system: o.mac, store, runner, config: () => config, saveConfig: c => (config = c), notify: n => void bridge.notify(n), now: () => now, log: () => {}, later: run => later.push(run) })
     : null
   bridge = new TelegramBridge({
     api,
@@ -216,7 +216,7 @@ function setup(o: { mac?: FakeMac; git?: BranchGit } = {}) {
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakeMac; git?: BranchGit } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1160,64 +1160,57 @@ describe('more than one task at once', () => {
   })
 })
 
-describe('the Mac, from the bot', () => {
-  test("/mac: what keeps it awake, and quitting an app takes a second tap; one that won't offers Force quit", async () => {
-    const sys = new FakeMac()
-    const h = await paired({ mac: sys })
+describe('awake and asleep, from the bot', () => {
+  test('/mac: awake while tasks run and with the lid closed, as switches; no apps', async () => {
+    const h = await paired({ mac: new FakePower() })
     await h.say('/mac')
     const msg = h.api.last()
-    expect(msg.html).toContain('Sleep is turned off while Vorssaint runs')
-    // The apps are listed in full in the message, and their buttons are only their numbers.
-    expect(msg.html).toContain('<b>1.</b> Vorssaint ☰ ☕')
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '1', '2', '3', '4', '💡 Awake with the lid closed', '🔄 Refresh'])
-    const monosnap = choice(h.api.view(msg.id), 'Monosnap')
-    await h.tap(monosnap, msg.id)
-    expect(h.api.answers.at(-1)!.text).toBe('Tap again to quit Monosnap.')
-    expect(sys.asked).toEqual([])
-    await h.tap(monosnap, msg.id)
-    expect(h.api.answers.at(-1)!.text).toBe('Quit Monosnap.')
-    expect(h.api.view(msg.id).html).not.toContain('Monosnap')
-
-    sys.stubborn.add(19268)
-    const mail = choice(h.api.view(msg.id), 'Mail')
-    await h.tap(mail, msg.id)
-    await h.tap(mail, msg.id)
-    const warning = h.api.last()
-    expect(warning.html).toContain('Mail is still open')
-    const force = button(h.api.view(warning.id).keyboard, 'Force quit Mail')
-    await h.tap(force, warning.id)
-    await h.tap(force, warning.id)
-    expect(h.api.answers.at(-1)!.text).toBe('Force quit Mail.')
+    expect(msg.html).toContain('This Mac')
+    expect(msg.html).toContain('Stays awake while tasks run')
+    expect(msg.html).not.toMatch(/quit|☰/i)
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '☕ Awake while tasks run ✓', '💡 Awake with the lid closed', '🔄 Refresh'])
+    await h.tap(button(h.api.view(msg.id).keyboard, '☕ Awake while tasks run'), msg.id)
+    expect(h.config().keepAwake).toBe(false)
+    expect(h.api.view(msg.id).html).toContain('May sleep while tasks run')
   })
 
-  test('/sleep: quits Vorssaint, says the Mac is going to sleep, then it sleeps', async () => {
-    const sys = new FakeMac()
+  test('/mac on Windows: no lid switch, and it says where Windows decides', async () => {
+    const h = await paired({ mac: new FakePower('wsl') })
+    await h.say('/mac')
+    const msg = h.api.last()
+    expect(msg.html).toContain('This PC')
+    expect(msg.html).toContain('When I close the lid: Do nothing')
+    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).not.toContain('💡 Awake with the lid closed')
+  })
+
+  test('/sleep: says it is going to sleep, then it sleeps', async () => {
+    const sys = new FakePower('linux')
     const h = await paired({ mac: sys })
     await h.say('sleep')
     const card = h.api.last()
-    expect(card.html).toContain('It quits Vorssaint first')
+    expect(card.html).toContain('Put the computer to sleep?')
     await h.tap(button(h.api.view(card.id).keyboard, '😴 Sleep now'), card.id)
     expect(h.api.answers.at(-1)!.text).toBe('Going to sleep.')
-    expect(h.api.sent.some(m => m.html.includes('The Mac is going to sleep</b> (asked from Telegram), after quitting Vorssaint'))).toBe(true)
+    expect(h.api.sent.some(m => m.html.includes('Going to sleep</b> (asked from Telegram)'))).toBe(true)
     expect(sys.slept).toBe(0)
     h.later.forEach(run => run())
     await Bun.sleep(0)
     expect(sys.slept).toBe(1)
   })
 
-  test('🌙 Sleep when done, on and off; without a Mac, a plain no', async () => {
-    const h = await paired({ mac: new FakeMac() })
+  test('🌙 Sleep when done, on and off; with nothing to sleep, a plain no', async () => {
+    const h = await paired({ mac: new FakePower() })
     await h.say('/mac')
     const msg = h.api.last()
     await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done'), msg.id)
-    expect(h.api.sent.some(m => m.html.includes('The Mac sleeps once the queue is done, after quitting Vorssaint.'))).toBe(true)
+    expect(h.api.sent.some(m => m.html.includes('The Mac sleeps once the queue is done.'))).toBe(true)
     expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done ✓')
     await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done ✓'), msg.id)
     expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done')
 
     const plain = await paired()
     await plain.say('/mac')
-    expect(plain.api.last().html).toContain('Only a Mac can do that.')
+    expect(plain.api.last().html).toContain('nothing here to keep awake or sleep')
   })
 })
 
@@ -1508,8 +1501,7 @@ describe('everything the app has, in the bot', () => {
   })
 
   test('the Mac screen can keep it awake with the lid closed', async () => {
-    const mac = new FakeMac()
-    const h = await paired({ mac })
+    const h = await paired({ mac: new FakePower() })
     await h.say('/mac')
     const view = h.api.last()
     expect(h.api.view(view.id).keyboard.flat().map(b => b.text)).toContain('💡 Awake with the lid closed')

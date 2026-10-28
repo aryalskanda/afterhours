@@ -10,7 +10,7 @@ import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../
 import { modeLabel } from '../daemon/format'
 import { formatClock } from '../daemon/limits'
 import { settleBranch, type BranchGit } from '../daemon/branches'
-import type { MacControl } from '../daemon/mac'
+import type { PowerControl } from '../daemon/power'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
 import { MAX_UPLOAD_BYTES, saveUpload } from '../daemon/uploads'
@@ -33,7 +33,7 @@ export interface TelegramOptions {
   /** For reusing the text commands' status output. */
   commandContext: () => CommandContext
   /** Quitting apps and sleeping the Mac; null or missing on other systems. */
-  mac?: MacControl | null
+  mac?: PowerControl | null
   /** For 🌿 Merge and 🗑 Discard on a task that ran on its own branch. */
   git?: BranchGit
   /** Where photos and files you send are kept for a task to read (the apps' uploads folder). */
@@ -81,8 +81,8 @@ const COMMANDS = [
   { command: 'status', description: 'Current job and usage limits' },
   { command: 'peek', description: "The running job's screen" },
   { command: 'kill', description: 'End the running task now, and what it started' },
-  { command: 'mac', description: "What's open on the Mac: quit an app, or sleep" },
-  { command: 'sleep', description: 'Put the Mac to sleep' },
+  { command: 'mac', description: 'Stay awake while tasks run, or sleep' },
+  { command: 'sleep', description: 'Put this computer to sleep' },
   { command: 'pause', description: 'Stop starting new jobs' },
   { command: 'resume', description: 'Resume the queue or a paused job' },
   { command: 'settings', description: 'Notifications and the folder map' },
@@ -108,6 +108,8 @@ const WORDS: Record<string, string> = {
 
 const PENDING_TTL = 30 * 60_000
 const KILL_CONFIRM_MS = 15_000
+/** /mac and /sleep where there's nothing to sleep. */
+const NO_POWER = 'There is nothing here to keep awake or sleep (a container).'
 const MAX_PAIR_ATTEMPTS = 5
 
 function errorText(err: unknown): string {
@@ -636,7 +638,7 @@ export class TelegramBridge {
         return this.showMac(chat)
       case 'sleep': {
         const mac = this.o.mac
-        if (!mac) return void (await this.sendText(chat, 'Only a Mac can do that.'))
+        if (!mac) return void (await this.sendText(chat, NO_POWER))
         await this.send(chat, ui.sleepView(await mac.status()))
         return
       }
@@ -832,20 +834,20 @@ export class TelegramBridge {
   /** 🖥 /mac: what's open and what keeps the Mac awake, with buttons to quit an app or sleep. */
   private async showMac(chat: number, messageId?: number): Promise<void> {
     const mac = this.o.mac
-    if (!mac) return void (await this.sendText(chat, 'Only a Mac can do that.'))
+    if (!mac) return void (await this.sendText(chat, NO_POWER))
     const view = ui.macView(await mac.status())
     if (messageId) await this.edit(chat, messageId, view)
     else await this.send(chat, view)
   }
 
   /**
-   * m:q:<pid> quit an app · m:f:<pid> force quit it · m:s sleep · m:S sleep (already confirmed) ·
-   * m:d sleep when done on/off · m:D sleep when done · m:r refresh. Quitting and sleeping take a
-   * second tap, as Kill does.
+   * m:k stay awake while tasks run on/off · m:l with the lid closed too on/off · m:s sleep · m:S
+   * sleep (already confirmed) · m:d sleep when done on/off · m:D sleep when done · m:r refresh.
+   * Sleeping takes a second tap, as Kill does.
    */
-  private async onMacButton(chat: number, message: TgMessage | undefined, op: string, pid: number): Promise<string | undefined> {
+  private async onMacButton(chat: number, message: TgMessage | undefined, op: string): Promise<string | undefined> {
     const mac = this.o.mac
-    if (!mac) return 'Only a Mac can do that.'
+    if (!mac) return NO_POWER
     const at = message?.message_id
     const refresh = async () => {
       if (at) await this.showMac(chat, at).catch(() => {})
@@ -856,6 +858,11 @@ export class TelegramBridge {
       return again
     }
     switch (op) {
+      case 'k': {
+        const r = mac.keepAwake(!(await mac.status()).keepAwake)
+        await refresh()
+        return r.text
+      }
       case 'l': {
         const r = await mac.lidClosed(!(await mac.status()).lidClosed.on)
         await refresh()
@@ -864,26 +871,10 @@ export class TelegramBridge {
       case 'r':
         await refresh()
         return 'Up to date.'
-      case 'q':
-      case 'f': {
-        const app = (await mac.apps()).find(a => a.pid === pid)
-        if (!app) {
-          await refresh()
-          return "That app isn't open any more."
-        }
-        if (!armed(`${op}:${pid}`)) return `Tap again to ${op === 'f' ? 'force quit' : 'quit'} ${app.name}.`
-        const r = await mac.quit(pid, { force: op === 'f' })
-        if (r.open) {
-          await this.send(chat, { html: `⚠️ ${ui.esc(r.text)}`, keyboard: [[ui.btn(`⚠️ Force quit ${ui.clip(app.name, 30)}`, `m:f:${pid}`)]] })
-        }
-        await refresh()
-        return r.text
-      }
       case 's':
       case 'S': {
-        if (op === 's' && !armed('sleep')) return 'Tap 😴 Sleep now again to put the Mac to sleep.'
-        const s = await mac.status()
-        const r = await mac.sleepNow({ quit: s.quitFirst, by: 'Telegram' })
+        if (op === 's' && !armed('sleep')) return `Tap 😴 Sleep now again to put the ${mac.word} to sleep.`
+        const r = await mac.sleepNow({ by: 'Telegram' })
         if (!r.ok) await this.sendText(chat, `😴 ${r.text}`)
         return r.ok ? 'Going to sleep.' : "It didn't sleep."
       }
@@ -978,7 +969,7 @@ export class TelegramBridge {
           toast = await this.onChatsButton(chat, q.message, parts[0]!, parts[1])
           break
         case 'm':
-          toast = await this.onMacButton(chat, q.message, parts[0]!, Number(parts[1]))
+          toast = await this.onMacButton(chat, q.message, parts[0]!)
           break
       }
     } catch (err) {

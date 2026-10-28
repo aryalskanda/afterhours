@@ -41,7 +41,7 @@ import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
 import { listChildren, relativeToRoots, suggestRoots, within as withinFolders, type FolderMap } from '../folders'
 import { settleBranch } from '../branches'
-import type { MacControl } from '../mac'
+import type { PowerControl } from '../power'
 import { taskStart, type Runner } from '../runner'
 import { findSessions } from '../sessions'
 import type { Store } from '../store'
@@ -211,7 +211,7 @@ export interface RouterDeps {
   /** Restarts the engine: its service starts it again. */
   restart: () => void
   /** Quitting apps and sleeping the Mac; null on other systems. */
-  mac?: MacControl | null
+  mac?: PowerControl | null
   now: () => number
   log: (line: string) => void
 }
@@ -620,22 +620,23 @@ export class Router {
       }
       case 'mac': {
         const mac = this.d.mac
-        if (!mac) return { ok: false, code: 'unsupported', error: "This machine isn't a Mac." }
+        if (!mac) return { ok: false, code: 'unsupported', error: 'This machine has nothing to keep awake or sleep (a container).' }
         if (!policy.allowMac) return { ok: false, code: 'policy', error: MAC_OFF }
         switch (r.action) {
           case 'status':
             return { ok: true, data: (await mac.status()) satisfies MacInfo }
-          case 'quit': {
-            if (r.pid === undefined) return { ok: false, code: 'invalid', error: 'Which app? (pid)' }
-            const q = await mac.quit(r.pid, { force: r.force })
-            return q.ok ? { ok: true, text: q.text, data: { open: false } } : { ok: false, code: 'failed', error: q.text, data: { open: q.open } }
+          case 'quit':
+            return { ok: false, code: 'unsupported', error: 'Quitting apps is no longer part of Afterhours; it keeps the computer awake and sleeps it by itself.' }
+          case 'keepAwake': {
+            const s = mac.keepAwake(r.on ?? true)
+            return { ok: true, text: s.text }
           }
           case 'sleep': {
-            const s = await mac.sleepNow({ quit: r.quit ?? [], by: name })
+            const s = await mac.sleepNow({ by: name })
             return s.ok ? { ok: true, text: s.text } : { ok: false, code: 'failed', error: s.text }
           }
           case 'sleepWhenDone': {
-            const s = await mac.sleepWhenDone({ on: r.on ?? true, quit: r.quit, by: name })
+            const s = await mac.sleepWhenDone({ on: r.on ?? true, by: name })
             return { ok: true, text: s.text }
           }
           case 'lidClosed': {

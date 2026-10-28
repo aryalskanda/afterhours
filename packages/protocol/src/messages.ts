@@ -519,15 +519,14 @@ export const Request = z.discriminatedUnion('type', [
    */
   withId({ type: z.literal('link'), job: z.number().int() }),
   /**
-   * Owners, on a Mac that lets them (policy.allowMac): `status` lists the open apps and what keeps
-   * the Mac awake (the result's data: MacInfo); `quit` an app by `pid` (`force` ends it without
-   * asking; the data says whether it's still `open`); `sleep` now, quitting `quit` (pids) first;
-   * `sleepWhenDone` (`on`): sleep once the queue is done, quitting `quit` first; `lidClosed` (`on`):
-   * while tasks run, stay awake with the lid closed too.
+   * This computer's power (the `mac` feature; macOS, Linux and Windows through WSL): `status` (the
+   * result's data: MacInfo); `sleep` now; `sleepWhenDone` (`on`): sleep once the queue is done;
+   * `lidClosed` (`on`): while tasks run, stay awake with the lid closed too; `keepAwake` (`on`):
+   * stay awake while tasks run. `quit` (apps) is no longer done; `pid`, `force` and `quit` are ignored.
    */
   withId({
     type: z.literal('mac'),
-    action: z.enum(['status', 'quit', 'sleep', 'sleepWhenDone', 'lidClosed']),
+    action: z.enum(['status', 'quit', 'sleep', 'sleepWhenDone', 'lidClosed', 'keepAwake']),
     pid: z.number().int().optional(),
     force: z.boolean().optional(),
     on: z.boolean().optional(),
@@ -748,12 +747,17 @@ export type MacAppInfo = z.infer<typeof MacAppInfo>
 
 /** The answer to a `mac` status request. */
 export const MacInfo = z.object({
+  /** Which system: `mac`, `linux` or `wsl` (Windows). Missing from older machines (a Mac). */
+  kind: z.enum(['mac', 'linux', 'wsl']).optional(),
+  /** Always empty now: apps aren't listed or quit. */
   apps: z.array(MacAppInfo),
-  /** Sleep is turned off (pmset disablesleep), which keep-awake apps do: it won't sleep until they quit. */
+  /** Sleep is turned off for the whole machine by something else (macOS: pmset disablesleep). */
   sleepDisabled: z.boolean(),
-  /** What sleeping quits first, by default (pids). */
+  /** Always empty now. */
   quitFirst: z.array(z.number().int()),
-  /** Sleep once the queue is done: the apps it quits first, and what it still waits for. */
+  /** Stays awake while tasks run. Missing from older machines. */
+  keepAwake: z.boolean().optional(),
+  /** Sleep once the queue is done, and what it still waits for (`quit` is always empty now). */
   sleepWhenDone: z.object({ on: z.boolean(), quit: z.array(z.string()), waiting: z.string().nullable() }),
   /** Seconds since someone last used the keyboard or trackpad. */
   idleSeconds: z.number().nullable(),

@@ -1,14 +1,13 @@
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import type { MacApp } from '../platform/mac'
 import { BRAND } from '../shared/brand'
 import { expandHome, type Config } from '../shared/config'
 import type { Approval, Effort, ExecMode, JobSpec, SessionPolicy } from '../shared/types'
 import { chatState, type ChatSource } from './chats'
 import { duration, excerpt, jobLine, oneLine, projectLabel } from './format'
 import { formatClock } from './limits'
-import type { MacControl } from './mac'
+import type { PowerControl } from './power'
 import type { Runner } from './runner'
 import { findSessions, isTrusted } from './sessions'
 import type { Store } from './store'
@@ -27,7 +26,7 @@ export interface CommandContext {
   /** Checks a job before it's queued (remote access applies the machine's rules); a string refuses it. */
   guard?: (spec: JobSpec) => string | null
   /** Quitting apps and sleeping the Mac; null or missing on other systems. */
-  mac?: MacControl | null
+  mac?: PowerControl | null
 }
 
 const EFFORTS: Record<string, Effort> = {
@@ -236,7 +235,7 @@ parallel [1-3] (how many tasks may run at once: another starts beside the runnin
 hold <#> (keeps its place, doesn't start) · release <#> · clear (empties the queue)
 link [#] (a live link: a claude.ai page showing the result) · q … link: <prompt> (ends with one)
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
-apps (what's open on the Mac) · quit <app> · quit! <app> (force) · sleep (the Mac, now) · sleep done (once the queue is) · sleep cancel
+sleep (this computer, now) · sleep done (once the queue is) · sleep cancel
 y <code> · n <code> [note] · a <code> <answer>
 projects · alias <name> <path> · trust <name|path> · default <options> · notify all|important|off`
 
@@ -656,11 +655,6 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       return defaults(rest, ctx)
     case 'notify':
       return notifyLevel(rest, ctx)
-    case 'apps':
-      return apps(ctx)
-    case 'quit':
-    case 'quit!':
-      return quitApp(rest, word === 'quit!', ctx)
     case 'sleep':
       return sleep(rest, ctx)
     case 'help':
@@ -671,52 +665,19 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
   }
 }
 
-const NOT_A_MAC = 'Only a Mac can do that.'
+const NO_POWER = 'There is nothing here to sleep (a container).'
 
 function whoAsked(ctx: CommandContext): string {
-  return ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this Mac'
-}
-
-/** apps: what's open, and what keeps the Mac awake. */
-async function apps(ctx: CommandContext): Promise<string> {
-  if (!ctx.mac) return NOT_A_MAC
-  const s = await ctx.mac.status()
-  const label = (a: MacApp) => `${a.name}${a.keepsAwake ? ' (keeps the Mac awake)' : ''}`
-  const open = s.apps.filter(a => a.kind === 'app').map(label)
-  const menu = s.apps.filter(a => a.kind === 'menu').map(label)
-  return [
-    `Open: ${open.join(', ') || 'nothing'}`,
-    menu.length ? `In the menu bar: ${menu.join(', ')}` : '',
-    s.sleepDisabled ? `Sleep is turned off${s.quitFirst.length ? `; sleep quits ${s.apps.filter(a => s.quitFirst.includes(a.pid)).map(a => a.name).join(', ')} first` : ''}.` : '',
-    s.sleepWhenDone.on ? `Sleeps once the queue is done${s.sleepWhenDone.waiting ? ` (waiting for ${s.sleepWhenDone.waiting})` : ''}.` : '',
-  ]
-    .filter(Boolean)
-    .join('\n')
-}
-
-/** quit <app>: by name, or the start of one. */
-async function quitApp(name: string, force: boolean, ctx: CommandContext): Promise<string> {
-  if (!ctx.mac) return NOT_A_MAC
-  if (!name) return 'Usage: quit <app>, e.g. quit Vorssaint (quit! forces it)'
-  const q = name.toLowerCase()
-  const all = await ctx.mac.apps()
-  const exact = all.filter(a => a.name.toLowerCase() === q)
-  const found = exact.length > 0 ? exact : all.filter(a => a.name.toLowerCase().startsWith(q))
-  if (found.length === 0) return `Nothing called "${name}" is open. apps lists what is.`
-  if (found.length > 1 && exact.length === 0) return `"${name}" could be ${found.map(a => a.name).join(', ')}. Say which.`
-  const texts: string[] = []
-  for (const app of found) texts.push((await ctx.mac.quit(app.pid, { force })).text)
-  return texts.join('\n')
+  return ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this computer'
 }
 
 /** sleep: now; sleep done: once the queue is done; sleep cancel. */
 async function sleep(rest: string, ctx: CommandContext): Promise<string> {
-  if (!ctx.mac) return NOT_A_MAC
+  if (!ctx.mac) return NO_POWER
   const by = whoAsked(ctx)
   const word = rest.toLowerCase()
   if (word === 'done' || word === 'later' || word === 'after') return (await ctx.mac.sleepWhenDone({ on: true, by })).text
   if (word === 'cancel' || word === 'off' || word === 'no') return (await ctx.mac.sleepWhenDone({ on: false, by })).text
   if (word) return 'Usage: sleep · sleep done · sleep cancel'
-  const s = await ctx.mac.status()
-  return (await ctx.mac.sleepNow({ quit: s.quitFirst, by })).text
+  return (await ctx.mac.sleepNow({ by })).text
 }

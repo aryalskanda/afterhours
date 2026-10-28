@@ -228,9 +228,9 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
     case 'setup_warning':
       return `⚠️ ${n.message}`
     case 'sleeping':
-      if (n.failed) return `😴 The Mac didn't go to sleep: ${n.failed}`
+      if (n.failed) return `😴 It didn't go to sleep: ${n.failed}`
       return (
-        `😴 The Mac is going to sleep${n.by ? ` (asked from ${n.by})` : ''}${n.quit.length ? `, after quitting ${n.quit.join(', ')}` : ''}.\n` +
+        `😴 Going to sleep${n.by ? ` (asked from ${n.by})` : ''}.\n` +
         "It can't be woken from your phone: open its lid or press a key."
       )
     case 'empty':

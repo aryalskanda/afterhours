@@ -1,11 +1,10 @@
-// Awake with the lid closed. While there are tasks, `caffeinate` (platform/desktop.ts) keeps an open
-// Mac from idle sleep, but closing the lid sleeps it through any assertion. With `keepAwakeLidClosed`
-// on, sleep is turned off altogether while there's work (`pmset disablesleep`, what keep-awake apps
-// such as Vorssaint do) and back on when it's done. It needs the sudo rule `cq awake lid on` puts in
+// A Mac awake with the lid closed. While there are tasks, `caffeinate` (platform/desktop.ts) keeps
+// an open Mac from idle sleep, but closing the lid sleeps it through any assertion. With
+// `keepAwakeLidClosed` on, sleep is turned off altogether while there's work (`pmset disablesleep`)
+// and back on when it's done. It needs the sudo rule `cq awake lid on` puts in
 // place. Sleep is only ever turned back on if this turned it off, and a low battery turns it back on.
 
-import { parseBattery } from './health'
-import { sleepDisabled, type MacSystem, type SleepSwitch } from '../platform/mac'
+import type { PowerSystem, SleepSwitch } from '../platform/power'
 import type { Store } from './store'
 
 /** Stored, so the engine started again after a crash still turns sleep back on. */
@@ -16,7 +15,7 @@ export const LOW_BATTERY_PCT = 20
 const RETRY_MS = 60_000
 
 export interface AwakeDeps {
-  system: Pick<MacSystem, 'pmset'>
+  system: Pick<PowerSystem, 'sleepDisabled' | 'battery'>
   sleep: SleepSwitch
   store: Store
   now: () => number
@@ -61,8 +60,8 @@ export class LidAwake {
         return
       }
       this.retryAt = now + RETRY_MS
-      // Already off (a keep-awake app): nothing to do, and nothing to turn back on later.
-      if (sleepDisabled(await this.d.system.pmset(['-g']))) return
+      // Already off (turned off by hand): nothing to do, and nothing to turn back on later.
+      if (await this.d.system.sleepDisabled()) return
       if (await this.low()) return
       if (!(await this.d.sleep.set(true))) {
         if (!this.failed) this.d.log("awake: couldn't turn sleep off for a closed lid; at the Mac, run: cq awake lid on")
@@ -101,7 +100,7 @@ export class LidAwake {
   }
 
   private async low(): Promise<boolean> {
-    const b = parseBattery(await this.d.system.pmset(['-g', 'batt']), null)
+    const b = await this.d.system.battery()
     return b !== null && !b.charging && b.pct < LOW_BATTERY_PCT
   }
 }

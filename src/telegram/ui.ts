@@ -6,7 +6,8 @@ import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration, modeLabel } from '../daemon/format'
 import { formatClock, windowLabel } from '../daemon/limits'
-import type { MacStatus } from '../daemon/mac'
+import type { PowerStatus } from '../daemon/power'
+import { machineWord } from '../platform/power'
 import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { InlineButton, InlineKeyboard, ReplyKeyboard } from './api'
 import { htmlToText, inlineMarkdown, markdownParts, markdownToPlain } from './markdown'
@@ -939,10 +940,10 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
     case 'setup_warning':
       return { html: `⚠️ ${esc(n.message)}` }
     case 'sleeping':
-      if (n.failed) return { html: `😴 <b>The Mac didn't go to sleep.</b> ${esc(n.failed)}` }
+      if (n.failed) return { html: `😴 <b>It didn't go to sleep.</b> ${esc(n.failed)}` }
       return {
         html:
-          `😴 <b>The Mac is going to sleep</b>${n.by ? ` (asked from ${esc(n.by)})` : ''}${n.quit.length ? `, after quitting ${esc(n.quit.join(', '))}` : ''}.\n` +
+          `😴 <b>Going to sleep</b>${n.by ? ` (asked from ${esc(n.by)})` : ''}.\n` +
           "<i>It can't be woken from here: open its lid or press a key.</i>",
       }
     case 'empty':
@@ -1129,44 +1130,33 @@ export function settingsView(o: {
 }
 
 /** 🖥 /mac: what's open, what keeps the Mac awake, and buttons to quit an app or sleep. */
-export function macView(s: MacStatus): View {
-  const names = (pids: number[]) => s.apps.filter(a => pids.includes(a.pid)).map(a => esc(a.name))
-  const keeping = s.apps.filter(a => a.keepsAwake).map(a => esc(a.name))
-  const lines = ['🖥 <b>This Mac</b>']
-  if (s.sleepDisabled) {
-    const first = names(s.quitFirst)
-    lines.push(first.length ? `😴 Sleep is turned off while ${first.join(', ')} runs; 😴 Sleep quits it first.` : '😴 Sleep is turned off on this Mac (pmset disablesleep).')
-  } else if (keeping.length) {
-    lines.push(`☕ ${keeping.join(', ')} ${keeping.length === 1 ? 'keeps' : 'keep'} it from sleeping by itself.`)
+export function macView(s: PowerStatus): View {
+  const word = machineWord(s.kind)
+  const lines = [`🖥 <b>This ${word}</b>`]
+  lines.push(s.keepAwake ? `☕ Stays awake while tasks run, and sleeps as usual once they’re done.` : `💤 May sleep while tasks run (they pause until it wakes).`)
+  if (s.kind !== 'wsl') {
+    if (s.lidClosed.on) lines.push(`💡 Stays awake with the lid closed while tasks run${s.lidClosed.holding ? ' (doing so now)' : ''}${s.lidClosed.ready ? '' : '; it needs <code>cq awake lid on</code> at the Mac once'}.`)
+  } else {
+    lines.push('<i>With the lid closed, Windows decides: set “When I close the lid: Do nothing” in its power settings.</i>')
   }
+  if (s.sleepDisabled) lines.push(`⚠️ Sleep is turned off on this ${word} by something else (pmset disablesleep).`)
   if (s.sleepWhenDone.on) lines.push(`🌙 Sleeps once the queue is done${s.sleepWhenDone.waiting ? ` (waiting for ${esc(s.sleepWhenDone.waiting)})` : ''}.`)
-  if (s.running !== null) lines.push(`▶️ #${s.running} is running: it pauses while the Mac sleeps.`)
-  if (s.lidClosed.on) lines.push(`💡 Stays awake with the lid closed while tasks run${s.lidClosed.holding ? ' (doing so now)' : ''}${s.lidClosed.ready ? '' : '; it needs <code>cq awake lid on</code> at the Mac once'}.`)
-  const apps = [...s.apps].sort((a, b) => Number(b.keepsAwake) - Number(a.keepsAwake))
-  if (apps.length > 0) {
-    lines.push('', ...apps.map((a, i) => numbered(i + 1, `${esc(a.name)}${a.kind === 'menu' ? ' ☰' : ''}${a.keepsAwake ? ' ☕' : ''}`)))
-    lines.push('', '<i>Tap an app’s number to quit it (tap again to confirm). ☰ lives in the menu bar, ☕ keeps the Mac awake.</i>')
-  }
+  if (s.running !== null) lines.push(`▶️ #${s.running} is running: it pauses while the ${word} sleeps.`)
   return {
     html: lines.join('\n'),
     keyboard: [
       [btn('😴 Sleep now', 'm:s'), btn(s.sleepWhenDone.on ? '🌙 Sleep when done ✓' : '🌙 Sleep when done', 'm:d')],
-      ...numberRows(apps.map(a => ({ data: `m:q:${a.pid}` }))),
-      [btn(s.lidClosed.on ? '💡 Awake with the lid closed ✓' : '💡 Awake with the lid closed', 'm:l')],
+      [btn(s.keepAwake ? '☕ Awake while tasks run ✓' : '☕ Awake while tasks run', 'm:k')],
+      ...(s.kind === 'wsl' ? [] : [[btn(s.lidClosed.on ? '💡 Awake with the lid closed ✓' : '💡 Awake with the lid closed', 'm:l')]]),
       [btn('🔄 Refresh', 'm:r')],
     ],
   }
 }
 
 /** 😴 /sleep: what sleeping does, with the button that does it. */
-export function sleepView(s: MacStatus): View {
-  const first = s.apps.filter(a => s.quitFirst.includes(a.pid)).map(a => esc(a.name))
-  const lines = [
-    '😴 <b>Put the Mac to sleep?</b>',
-    first.length ? `It quits ${first.join(', ')} first (sleep is turned off while it runs).` : '',
-    s.running !== null ? `#${s.running} pauses until it wakes.` : '',
-    "<i>It can't be woken from here: open its lid or press a key.</i>",
-  ]
+export function sleepView(s: PowerStatus): View {
+  const word = machineWord(s.kind)
+  const lines = [`😴 <b>Put the ${word} to sleep?</b>`, s.running !== null ? `#${s.running} pauses until it wakes.` : '', "<i>It can't be woken from here: open its lid or press a key.</i>"]
   return {
     html: lines.filter(Boolean).join('\n'),
     keyboard: [[btn('😴 Sleep now', 'm:S'), btn(s.sleepWhenDone.on ? '🌙 Already: when done' : '🌙 When the queue is done', 'm:D')]],
@@ -1182,7 +1172,7 @@ export const HELP_HTML =
   '⌨️ Type and 🔘 Keys (on Peek and Status) type into the running task or press keys in it.\n' +
   '💬 Chat… on a card continues any chat in that folder, including one open in VS Code: 🤝 Take over closes it there and continues it here.\n' +
   '⏰ Later on a card picks when it may start (a time, every day, at the limit reset, after another task); ⋯ More has a time limit and three ways to compare. A photo or file you send is attached. In 📋 Queue, ✏️ changes a waiting task, all of that included. /tasks finds a finished one.\n' +
-  '🖥 /mac: what is open on the Mac, to quit an app (Vorssaint, say), and 😴 sleep it now or once the queue is done. /sleep goes straight there.\n' +
+  '🖥 /mac: keep this computer awake while tasks run (with the lid closed too), and 😴 sleep it now or once the queue is done. /sleep goes straight there.\n' +
   `${KEYS.queue} · ${KEYS.status} · ${KEYS.peek}\n\n` +
   "I'll message you when a plan is ready, when Claude needs permission or has a question (one question at a time, every option in full), when a usage limit pauses work, and when a job finishes. " +
   'News that needs nothing from you arrives silently. ' +

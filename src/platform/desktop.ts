@@ -5,21 +5,34 @@ import { closeSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BRAND } from '../shared/brand'
-import { hasDisplay, isLinux, isMac } from './os'
+import { hasDisplay, isLinux, isMac, isWsl } from './os'
+import { powershell } from './power'
 
 /**
- * Keeps the computer from going to sleep while there's queued or running work: a `caffeinate`
- * assertion on macOS, a systemd-inhibit lock on Linux (laptops; servers don't sleep). Either one
- * ends with the daemon, even if it crashes.
+ * Keeps the computer from going to sleep while there's queued or running work, with the system's own
+ * tools: a `caffeinate` assertion on macOS; a systemd-inhibit lock on Linux, which with `lid` holds
+ * off the lid switch too; on Windows (WSL2), SetThreadExecutionState in a powershell.exe that lives
+ * as long as this does. Each ends with the daemon, even if it crashes.
  */
 export class KeepAwake {
   private proc: Subprocess | null = null
+  private lid = false
 
-  set(on: boolean): void {
+  /** Holding the computer awake right now. */
+  get holding(): boolean {
+    return this.proc !== null
+  }
+
+  set(on: boolean, o: { lid?: boolean } = {}): void {
+    const lid = o.lid ?? false
+    // The lid switch changed while holding: hold again, the new way.
+    if (on && this.proc && lid !== this.lid) this.set(false)
     if (on && !this.proc) {
-      const argv = keepAwakeCommand(process.pid)
+      const argv = keepAwakeCommand(process.pid, { lid })
       try {
-        if (argv) this.proc = Bun.spawn(argv, { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' })
+        // WSL: powershell.exe stops once its input closes, which is when this process ends.
+        if (argv) this.proc = Bun.spawn(argv, { stdin: isWsl() ? 'pipe' : 'ignore', stdout: 'ignore', stderr: 'ignore' })
+        this.lid = lid
       } catch {
         // Staying awake is a nicety; never worth failing over.
       }
@@ -30,13 +43,20 @@ export class KeepAwake {
   }
 }
 
-export function keepAwakeCommand(pid: number): string[] | null {
+/** Windows: system required (continuously) until stdin closes. ES_CONTINUOUS | ES_SYSTEM_REQUIRED. */
+const WINDOWS_AWAKE = `$s = Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);' -Name P -Namespace W -PassThru; [void]$s::SetThreadExecutionState(0x80000001); while ($null -ne [Console]::In.ReadLine()) {}`
+
+export function keepAwakeCommand(pid: number, o: { lid?: boolean } = {}): string[] | null {
   if (isMac) return ['caffeinate', '-i', '-w', String(pid)]
+  if (isWsl()) {
+    const ps = powershell()
+    return ps ? [ps, '-NoProfile', '-NonInteractive', '-Command', WINDOWS_AWAKE] : null
+  }
   const inhibit = isLinux ? Bun.which('systemd-inhibit') : null
   if (!inhibit) return null
   return [
     inhibit,
-    '--what=idle:sleep',
+    `--what=idle:sleep${o.lid ? ':handle-lid-switch' : ''}`,
     `--who=${BRAND.name}`,
     '--why=Claude Code tasks are running',
     '--mode=block',

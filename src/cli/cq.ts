@@ -28,7 +28,7 @@ Setup and service:
   cq remote            remote access settings: relay, name, allowed folders, what apps may do
   cq audit             what apps did on this machine
   cq folders           the project folders the apps and the bot search; cq folders add|remove <path>
-  cq awake             whether the Mac stays awake while tasks run; cq awake lid on: with the lid closed too
+  cq awake             whether this computer stays awake while tasks run (cq awake on|off); cq awake lid on: with the lid closed too
   cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux)
   cq restart           restart it (on macOS, after granting Full Disk Access)
   cq update            update to the latest release

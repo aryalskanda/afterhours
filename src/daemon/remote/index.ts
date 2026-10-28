@@ -27,7 +27,7 @@ import type { ChatSource } from '../chats'
 import type { FolderMap } from '../folders'
 import type { Notice } from '../notify'
 import type { Runner, ToolActivity } from '../runner'
-import type { MacControl } from '../mac'
+import type { PowerControl } from '../power'
 import type { Store } from '../store'
 import { RemoteDb, type AuditEntry } from './db'
 import { Feed } from './feed'
@@ -71,7 +71,7 @@ export interface RemoteDeps {
   /** How long connected apps get to hear about a new relay before the machine moves there. */
   relayMoveMs?: number
   /** Quitting apps and sleeping the Mac; null on other systems. */
-  mac?: MacControl | null
+  mac?: PowerControl | null
 }
 
 const RELAY_MOVE_MS = 3000

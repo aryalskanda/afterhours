@@ -26,7 +26,7 @@ import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
 import { LidAwake } from './awake'
-import { MacControl } from './mac'
+import { PowerControl } from './power'
 import { Notifier } from './notify'
 import { Remote, type RemoteStatus } from './remote'
 import { allowedRoots, isAllowed } from './remote/router'
@@ -37,7 +37,7 @@ import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
-import { macSystem, systemSleepSwitch } from '../platform/mac'
+import { powerSystem, systemSleepSwitch } from '../platform/power'
 import { isMac, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF } from './tmux'
@@ -159,18 +159,23 @@ export async function runDaemon(): Promise<void> {
     now: Date.now,
   })
 
-  // Quitting apps and sleeping the Mac, from the apps, the bot and text commands (macOS only).
-  const macSys = macSystem()
-  const lidAwake = macSys ? new LidAwake({ system: macSys, sleep: systemSleepSwitch, store, now: Date.now, log }) : null
-  const mac = macSys
-    ? new MacControl({
-        system: macSys,
+  // Staying awake and sleeping, with the system's own tools, from the apps, the bot and text commands.
+  const power = powerSystem()
+  const keepAwake = new KeepAwake()
+  const lidAwake = power?.kind === 'mac' ? new LidAwake({ system: power, sleep: systemSleepSwitch, store, now: Date.now, log }) : null
+  const mac = power
+    ? new PowerControl({
+        system: power,
         store,
         runner,
+        config: getConfig,
+        saveConfig: putConfig,
         notify: notice => notifier.send(notice),
         now: Date.now,
         log,
-        lid: lidAwake ? { awake: lidAwake, sleep: systemSleepSwitch, config: getConfig, saveConfig: putConfig } : undefined,
+        lid: lidAwake ? { awake: lidAwake, sleep: systemSleepSwitch } : undefined,
+        canInhibitLid: power.kind === 'linux' && Bun.which('systemd-inhibit') !== null,
+        holdingAwake: () => keepAwake.holding,
       })
     : null
 
@@ -391,7 +396,6 @@ export async function runDaemon(): Promise<void> {
     process.exit(0)
   }
 
-  const keepAwake = new KeepAwake()
   // When an update replaces the installed binary (brew upgrade, cq update), restart into it.
   const startedAs = selfCommand().length === 1 ? binaryStamp() : null
   let ticks = 0
@@ -424,7 +428,8 @@ export async function runDaemon(): Promise<void> {
     void mac?.tick()
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
-    keepAwake.set(config.keepAwake && runner.hasWork())
+    // On Linux the lid switch is held off by the same lock; on a Mac it takes turning sleep off.
+    keepAwake.set(config.keepAwake && runner.hasWork(), { lid: power?.kind === 'linux' && config.keepAwakeLidClosed })
     void lidAwake?.tick(config.keepAwake && config.keepAwakeLidClosed && runner.hasWork())
   }, 2000)
 
