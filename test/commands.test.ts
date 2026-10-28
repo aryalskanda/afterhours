@@ -169,6 +169,17 @@ describe('sleeping, in text', () => {
     expect(await runCommand('sleep', ctx(null).ctx)).toBe('There is nothing here to sleep (a container).')
   })
 
+  test('awake 2h keeps it awake that long, tasks or not; awake stop lets it sleep', async () => {
+    const { ctx: c } = ctx(new FakePower('linux'))
+    expect(await runCommand('awake 2h', c)).toMatch(/^The computer stays awake until .+, tasks or not\.$/)
+    expect(c.mac!.awakeHeld()).toBe(true)
+    expect(await runCommand('awake stop', c)).toBe('The computer sleeps as usual again when nothing runs.')
+    expect(c.mac!.awakeHeld()).toBe(false)
+    expect(await runCommand('awake 30m', c)).toContain('stays awake until')
+    expect(await runCommand('awake soon', c)).toBe('Usage: awake 2h · awake 30m · awake stop')
+    expect(await runCommand('awake 2h', ctx(null).ctx)).toBe('There is nothing here to keep awake (a container).')
+  })
+
   test('apps and quit are not commands any more', async () => {
     const { ctx: c } = ctx(new FakePower())
     expect(await runCommand('apps', c)).toBeNull()
