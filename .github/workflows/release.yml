@@ -1,7 +1,7 @@
 # Push a tag that matches package.json (git tag v0.1.0 && git push origin v0.1.0) to publish a
 # release: the compatibility check runs first, then binaries for macOS (Apple Silicon, Intel) and
 # Linux (arm64, x64) are built, attested, and attached to a GitHub release with their checksums,
-# the install script and the Homebrew formula. With a HOMEBREW_TAP_TOKEN secret (write access to
+# the install scripts (install.sh, install.ps1) and the Homebrew formula. With a HOMEBREW_TAP_TOKEN secret (write access to
 # <owner>/homebrew-tap), the tap is updated too.
 name: Release
 
@@ -50,16 +50,19 @@ jobs:
           (cd dist && shasum -a 256 cq-darwin-arm64 cq-darwin-x64 cq-linux-arm64 cq-linux-x64 > SHA256SUMS && cat SHA256SUMS)
           sed -e "s|{{repo}}|$GITHUB_REPOSITORY|g" install.sh > dist/install.sh
           if grep -n '{{' dist/install.sh; then echo "The install script still has placeholders."; exit 1; fi
+          sed -e "s|{{repo}}|$GITHUB_REPOSITORY|g" install.ps1 > dist/install.ps1
+          if grep -n '{{' dist/install.ps1; then echo "The Windows install script still has placeholders."; exit 1; fi
+          sh -n dist/install.sh
       - name: Attest the binaries
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: 'dist/cq-*'
       - name: Fill in the Homebrew formula
         run: |
-          arm64="$(awk '$2 == "cq-darwin-arm64" {print $1}' dist/SHA256SUMS)"
-          x64="$(awk '$2 == "cq-darwin-x64" {print $1}' dist/SHA256SUMS)"
+          sum() { awk -v f="$1" '$2 == f {print $1}' dist/SHA256SUMS; }
           sed -e "s|{{repo}}|$GITHUB_REPOSITORY|g" -e "s|{{version}}|${GITHUB_REF_NAME#v}|g" \
-              -e "s|{{sha256_arm64}}|$arm64|g" -e "s|{{sha256_x64}}|$x64|g" \
+              -e "s|{{sha256_darwin_arm64}}|$(sum cq-darwin-arm64)|g" -e "s|{{sha256_darwin_x64}}|$(sum cq-darwin-x64)|g" \
+              -e "s|{{sha256_linux_arm64}}|$(sum cq-linux-arm64)|g" -e "s|{{sha256_linux_x64}}|$(sum cq-linux-x64)|g" \
               packaging/homebrew/afterhours.rb > dist/afterhours.rb
           if grep -n '{{' dist/afterhours.rb; then echo "The formula still has placeholders."; exit 1; fi
           { echo '### Homebrew formula'; echo '```ruby'; cat dist/afterhours.rb; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -68,7 +71,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/cq-darwin-arm64 dist/cq-darwin-x64 dist/cq-linux-arm64 dist/cq-linux-x64 \
-            dist/SHA256SUMS dist/install.sh dist/afterhours.rb \
+            dist/SHA256SUMS dist/install.sh dist/install.ps1 dist/afterhours.rb \
             --title "Afterhours $GITHUB_REF_NAME" --generate-notes --verify-tag
       - name: Update the Homebrew tap
         if: env.TAP_TOKEN != ''

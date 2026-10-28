@@ -4,7 +4,8 @@ import { resolve } from 'node:path'
 import { BRAND } from '../shared/brand'
 import { detectCodeFolders, expandHome, findExecutable, loadConfig, saveConfig, type Config } from '../shared/config'
 import type { Effort, ExecMode } from '../shared/types'
-import { installHint, isMac } from '../platform/os'
+import { inContainer, installHint, isMac, isWsl } from '../platform/os'
+import { awakeCommand } from './awake'
 import { claudeStatus, doctor } from './doctor'
 import { install, migrateIfNeeded, type InstallResult } from './install'
 import { telegramCommand, TOKEN_RE } from './telegram'
@@ -89,13 +90,31 @@ async function fullDiskAccess(result: InstallResult): Promise<void> {
   console.log('  Skipping for now. Once it is on, run cq restart and then cq doctor.')
 }
 
+/** While tasks run the computer stays awake (the default); a laptop can also work with its lid closed. */
+async function awakeStep(): Promise<void> {
+  const where = isMac ? 'Mac' : isWsl() ? 'PC' : 'computer'
+  console.log(`  While tasks run, the ${where} stays awake by itself, and sleeps as usual once they're done.`)
+  if (isWsl()) {
+    console.log('  With the lid closed, Windows decides: set "When I close the lid: Do nothing" in Control Panel → Power Options.')
+    return
+  }
+  if (!confirmYes('  Is this a laptop you want to keep working with its lid closed?')) {
+    console.log('  Skipped. Turn it on later with: cq awake lid on')
+    return
+  }
+  if (!(await awakeCommand(['lid', 'on']))) console.log('  Skipped. Try it again later with: cq awake lid on')
+}
+
 async function telegramStep(): Promise<void> {
   const config = loadConfig()
   if (config.telegram.enabled && config.telegram.ownerId) {
     console.log(`  ✔ Already connected${config.telegram.ownerName ? ` and paired with ${config.telegram.ownerName}` : ''}.`)
     return
   }
-  console.log('  In Telegram, message @BotFather, send /newbot, pick a name and a username ending in "bot", and copy the token it gives you.')
+  console.log('  You talk to Afterhours through a Telegram bot that only you can use. Making one takes a minute:')
+  console.log('    1. In Telegram, search for @BotFather (the one with the blue check) and open it.')
+  console.log('    2. Send it /newbot, then pick a name and a username that ends in "bot".')
+  console.log('    3. It replies with a token, a long code like 123456789:AAH4… Copy it.')
   for (;;) {
     const token = ask('  Paste the token (or press Enter to skip)')
     if (!token) {
@@ -127,29 +146,58 @@ function askDefaults(config: Config): void {
 
 export async function setup(): Promise<void> {
   stepNo = 0
-  console.log(`${BRAND.name} setup: queue Claude Code tasks from your phone; they run on this ${isMac ? 'Mac' : 'computer'} while you're away.`)
+  console.log(`${BRAND.name} setup: queue Claude Code tasks from Telegram; they run on this ${isMac ? 'Mac' : isWsl() ? 'PC' : 'computer'} while you're away.`)
+  console.log('It takes about five minutes. You can press Ctrl+C at any time and run cq setup again.')
   if (!migrateIfNeeded()) return
 
   step('Claude Code')
-  const claude = claudeStatus()
+  let claude = claudeStatus()
   if (!claude.path) {
-    console.log('  ✖ Claude Code isn’t installed. Install it (https://claude.com/claude-code), sign in, then run cq setup again.')
-    return
+    console.log('  Afterhours runs Claude Code, Anthropic’s coding assistant, with your own Claude account.')
+    if (!confirmYes('  Install it now (its official installer, from claude.ai)?')) {
+      console.log('  ✖ Install Claude Code (https://claude.com/claude-code), then run cq setup again.')
+      return
+    }
+    if (Bun.spawnSync(['sh', '-c', 'curl -fsSL https://claude.ai/install.sh | bash'], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
+      console.log('  ✖ The Claude Code installer did not finish. See https://claude.com/claude-code, then run cq setup again.')
+      return
+    }
+    claude = claudeStatus()
+    if (!claude.path) {
+      console.log('  ✖ Claude Code installed, but cq cannot find it. Open a new terminal and run cq setup again.')
+      return
+    }
   }
   if (!claude.loggedIn) {
-    console.log(`  ✖ Claude Code ${claude.version} isn’t signed in. Run \`claude\`, sign in, then run cq setup again.`)
-    return
+    console.log(`  Claude Code ${claude.version} needs you to sign in with your Claude account (a Pro or Max plan, or an API key).`)
+    console.log('  It opens now: sign in (it shows a link to open in a browser), then type /exit to come back here.')
+    if (confirmYes('  Sign in now?')) {
+      Bun.spawnSync([claude.path, '/login'], { stdio: ['inherit', 'inherit', 'inherit'] })
+      claude = claudeStatus()
+    }
+    if (!claude.loggedIn) {
+      console.log('  ✖ Not signed in yet. Run `claude`, sign in, then run cq setup again.')
+      return
+    }
   }
   console.log(`  ✔ ${claude.version}, signed in${claude.authMethod ? ` (${claude.authMethod})` : ''}. ${BRAND.name} uses it as you would, with your own plan.`)
 
   step('tmux (runs Claude in the background)')
   if (!findExecutable('tmux')) {
-    const brew = isMac ? findExecutable('brew') : null
-    if (!brew || !confirmYes('  tmux is missing. Install it with Homebrew now?')) {
-      console.log(`  ✖ Install tmux (${installHint('tmux')}), then run cq setup again.`)
+    const hint = installHint('tmux')
+    // Only a command we know how to run (a package manager was found): never guess one.
+    if (/^install /.test(hint) || !confirmYes(`  tmux is missing. Install it now (${hint})?`)) {
+      console.log(`  ✖ Install tmux (${hint}), then run cq setup again.`)
       return
     }
-    if (Bun.spawnSync([brew, 'install', 'tmux'], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) return
+    if (Bun.spawnSync(['sh', '-c', hint], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
+      console.log(`  ✖ That did not work${isMac ? ' (Homebrew is from https://brew.sh)' : ''}. Install tmux yourself, then run cq setup again.`)
+      return
+    }
+    if (!findExecutable('tmux')) {
+      console.log('  ✖ tmux did not install. Install it yourself, then run cq setup again.')
+      return
+    }
   }
   console.log(`  ✔ ${run([findExecutable('tmux')!, '-V']).out}`)
 
@@ -181,7 +229,12 @@ export async function setup(): Promise<void> {
     await fullDiskAccess(result)
   }
 
-  step('Your phone')
+  if (!inContainer()) {
+    step('Staying awake')
+    await awakeStep()
+  }
+
+  step('Your phone (Telegram)')
   await telegramStep()
 
   console.log(`\nAll set. Send your bot a prompt; ${BRAND.name} takes it from there.\n`)

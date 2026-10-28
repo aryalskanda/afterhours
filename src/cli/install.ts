@@ -98,7 +98,7 @@ function placeBinary(): void {
 
 function linkOntoPath(): void {
   const link = join(homedir(), '.local', 'bin', 'cq')
-  if (!existsSync(dirname(link))) return
+  mkdirSync(dirname(link), { recursive: true })
   try {
     const st = lstatSync(link)
     if (st.isSymbolicLink() && readlinkSync(link) === paths.binary) return

@@ -69,7 +69,6 @@ export async function checks(): Promise<Check[]> {
     const answers = relayAnswers?.ok ? `, which answers in ${relayAnswers.ms} ms` : ''
     if (r?.enabled && r.connected) ok(`Remote access: connected to ${r.relay}${answers} · ${r.devices} device(s) paired`)
     else if (r?.enabled) bad(`Remote access: not connected to ${r.relay}${r.error ? ` (${r.error})` : ''}${relayAnswers && !relayAnswers.ok ? `; it doesn't answer (${relayAnswers.error})` : answers}`)
-    else info('Remote access: off (cq pair sets it up)')
     const tg = health.telegram
     if ('bot' in tg && tg.ok && tg.paired) ok(`Telegram: ${tg.bot} · paired with ${tg.owner ?? 'you'}`)
     else if ('bot' in tg && tg.ok) bad(`Telegram: ${tg.bot} is running but not paired yet (cq telegram shows the code)`)

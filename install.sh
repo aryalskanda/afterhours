@@ -1,31 +1,49 @@
 #!/bin/sh
-# Installs Afterhours on macOS or Linux. On Windows, run it inside WSL2.
+# Installs Afterhours on macOS or Linux. On Windows, install.ps1 runs this inside WSL.
 #
 #   curl -fsSL https://github.com/{{repo}}/releases/latest/download/install.sh | sh
 #
+# What it does, asking before anything that needs your password:
+#   1. installs what Afterhours needs and doesn't find (tmux, git, curl) with your package manager;
+#   2. installs Claude Code if it isn't there;
+#   3. downloads Afterhours for this machine and checks it against the release's checksums;
+#   4. runs `cq install` (cq in ~/.afterhours/bin, linked into ~/.local/bin, started in the
+#      background: a LaunchAgent on macOS, a systemd user service on Linux);
+#   5. runs `cq setup`, which signs Claude Code in and connects your Telegram bot.
+#
 # Settings, as environment variables:
-#   AFTERHOURS_VERSION=v0.2.0   install that release instead of the latest
+#   AFTERHOURS_VERSION=v0.6.0   install that release instead of the latest
 #   AFTERHOURS_BINARY=./cq      install this binary instead of downloading one
 #   AFTERHOURS_REPO=owner/repo  where releases come from
-#
-# It checks the download against the release's SHA256SUMS, then runs `cq install`: that puts cq
-# in ~/.afterhours/bin, links it into ~/.local/bin, and starts it in the background (a
-# LaunchAgent on macOS, a systemd user service on Linux).
+#   AFTERHOURS_YES=1            answer yes to every question (for scripts and cloud-init)
+#   AFTERHOURS_NO_SETUP=1       stop after installing; run `cq setup` yourself later
 set -eu
 
 repo="${AFTERHOURS_REPO:-{{repo}}}"
 
 say() { printf '%s\n' "$*"; }
+step() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fail() {
-  printf 'Error: %s\n' "$*" >&2
+  printf '\nError: %s\n' "$*" >&2
   exit 1
 }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# Questions go to the terminal even when this script arrives through a pipe (curl … | sh).
+tty_ok() { [ -r /dev/tty ] && [ -w /dev/tty ] && (: </dev/tty) 2>/dev/null; }
+yes_to() {
+  [ "${AFTERHOURS_YES:-}" = 1 ] && return 0
+  tty_ok || return 1
+  printf '%s [Y/n] ' "$1" >/dev/tty
+  read -r answer </dev/tty || answer=n
+  case "$answer" in '' | y | Y | yes | YES | Yes) return 0 ;; *) return 1 ;; esac
+}
+
 case "$(uname -s)" in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
-  *) fail "Afterhours runs on macOS and Linux. On Windows, run this inside WSL2." ;;
+  *) fail "Afterhours runs on macOS and Linux. On Windows, run this in PowerShell instead:
+  irm https://github.com/$repo/releases/latest/download/install.ps1 | iex" ;;
 esac
 case "$(uname -m)" in
   arm64 | aarch64) arch=arm64 ;;
@@ -33,32 +51,59 @@ case "$(uname -m)" in
   *) fail "There's no Afterhours build for $(uname -m)." ;;
 esac
 
-# The tools it works with. Starting it without them would only fail again and again.
-hint() {
-  if [ "$os" = darwin ]; then echo "brew install $*"
-  elif have apt-get; then echo "sudo apt-get install -y $*"
-  elif have dnf; then echo "sudo dnf install -y $*"
-  elif have yum; then echo "sudo yum install -y $*"
-  elif have pacman; then echo "sudo pacman -S --noconfirm $*"
-  elif have zypper; then echo "sudo zypper install -y $*"
-  elif have apk; then echo "sudo apk add $*"
-  else echo "install $* with your package manager"
+say "Afterhours: line up Claude Code tasks from Telegram; they run on this computer while you're away."
+
+# --- 1. tmux, git, curl -----------------------------------------------------------------------
+sudo_cmd() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+install_packages() {
+  if [ "$os" = darwin ]; then
+    if ! have brew; then
+      fail "Afterhours needs $* and installs them with Homebrew, which isn't here. Install Homebrew first (one line, from https://brew.sh):
+  /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"
+then run this again."
+    fi
+    brew install "$@"
+  elif have apt-get; then sudo_cmd apt-get update -qq && sudo_cmd apt-get install -y "$@"
+  elif have dnf; then sudo_cmd dnf install -y "$@"
+  elif have yum; then sudo_cmd yum install -y "$@"
+  elif have pacman; then sudo_cmd pacman -S --needed --noconfirm "$@"
+  elif have zypper; then sudo_cmd zypper install -y "$@"
+  elif have apk; then sudo_cmd apk add "$@"
+  else fail "Install $* with your package manager, then run this again."
   fi
 }
 missing=""
 for tool in tmux git curl; do have "$tool" || missing="$missing $tool"; done
 if [ -n "$missing" ]; then
-  fail "Afterhours needs$missing. Install them first:
-  $(hint $missing)
-then run this again."
-fi
-if ! have claude && [ ! -x "$HOME/.local/bin/claude" ]; then
-  fail "Afterhours runs Claude Code, which isn't installed. Install it and sign in first:
-  curl -fsSL https://claude.ai/install.sh | bash
-  claude          (sign in; on a server without a browser: claude setup-token, see the Linux guide)
-then run this again."
+  step "1. Tools Afterhours uses:$missing"
+  if yes_to "Install$missing now?"; then
+    # shellcheck disable=SC2086 # the list is meant to split into words
+    install_packages $missing
+  else
+    fail "Afterhours needs$missing. Install what is missing, then run this again."
+  fi
 fi
 
+# --- 2. Claude Code ---------------------------------------------------------------------------
+claude_path() {
+  if have claude; then command -v claude
+  elif [ -x "$HOME/.local/bin/claude" ]; then echo "$HOME/.local/bin/claude"
+  else return 1
+  fi
+}
+if ! claude_path >/dev/null; then
+  step "2. Claude Code"
+  say "Afterhours runs Claude Code, Anthropic's coding assistant, with your own Claude account."
+  if yes_to "Install Claude Code now (its official installer, from claude.ai)?"; then
+    curl -fsSL https://claude.ai/install.sh | bash
+    claude_path >/dev/null || fail "Claude Code didn't install. See https://claude.com/claude-code, then run this again."
+  else
+    fail "Install Claude Code (https://claude.com/claude-code), then run this again."
+  fi
+fi
+
+# --- 3. Afterhours ----------------------------------------------------------------------------
+step "3. Afterhours"
 asset="cq-$os-$arch"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -85,4 +130,36 @@ fi
 chmod 755 "$tmp/cq"
 "$tmp/cq" version >/dev/null 2>&1 || fail "That build doesn't run on this system ($os $arch)."
 say "Installing Afterhours $("$tmp/cq" version)…"
+mkdir -p "$HOME/.local/bin"
 "$tmp/cq" install
+
+# `cq` in new terminals: ~/.local/bin on the PATH, added to your shell's startup file if it isn't.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *)
+    case "${SHELL:-}" in
+      */zsh) rc="$HOME/.zshrc" ;;
+      */bash) if [ "$os" = darwin ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+      */fish) rc="" ;;
+      *) rc="$HOME/.profile" ;;
+    esac
+    if [ -n "$rc" ] && ! grep -qs '.local/bin' "$rc"; then
+      printf '\n# Afterhours (cq)\nexport PATH="$HOME/.local/bin:$PATH"\n' >>"$rc"
+      say "Added ~/.local/bin to your PATH in ${rc#"$HOME"/} (new terminals get it)."
+    elif [ -z "$rc" ]; then
+      say "Add ~/.local/bin to your PATH: fish_add_path ~/.local/bin"
+    fi
+    ;;
+esac
+
+# --- 4. Setup ---------------------------------------------------------------------------------
+cq="$HOME/.afterhours/bin/cq"
+[ -x "$cq" ] || cq="$tmp/cq"
+if [ "${AFTERHOURS_NO_SETUP:-}" = 1 ] || ! tty_ok; then
+  say ""
+  say "Installed. Finish setting up (sign Claude in, connect your Telegram bot) with:"
+  say "  cq setup"
+  exit 0
+fi
+step "4. Setting up (Claude Code, your folders, your Telegram bot)"
+"$cq" setup </dev/tty
