@@ -61,6 +61,14 @@ class FakeApi implements BotApi {
   async editMessageText(chat: number, id: number, html: string, keyboard?: InlineKeyboard): Promise<void> {
     this.edits.push({ chat, id, html, keyboard })
   }
+  async editMessageReplyMarkup(chat: number, id: number, keyboard: InlineKeyboard): Promise<void> {
+    this.edits.push({ chat, id, html: this.view(id).html, keyboard })
+  }
+  /** Messages the bot took away (an old card that moved down, one you discarded). */
+  deleted: number[] = []
+  async deleteMessage(_chat: number, id: number): Promise<void> {
+    this.deleted.push(id)
+  }
   async answerCallbackQuery(id: string, text?: string): Promise<void> {
     this.answers.push({ id, text })
   }
@@ -178,6 +186,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
     uploadsDir: join(home, 'uploads'),
     now: () => now,
     log: () => {},
+    pause: async () => {},
   })
   let updateId = 1
   const from = (id: number) => ({ id, is_bot: false, first_name: id === OWNER ? 'Skanda' : 'Mallory', username: id === OWNER ? 'skanda' : 'mallory' })
@@ -223,23 +232,50 @@ async function paired(o: { mac?: FakePower; git?: BranchGit } = {}): Promise<Har
   return h
 }
 
+const kb = (h: Harness, id: number) => h.api.view(id).keyboard
+const labels = (h: Harness, id: number) => kb(h, id).flat().map(b => b.text)
+/** Taps the button labelled `label` (a tab may be marked • when open, a choice ✓ when chosen). */
+const press = (h: Harness, id: number, label: string) => h.tap(button(kb(h, id), new RegExp(`^([✓•] )?${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)), id)
+
+/** Picks a folder on the card: from the recent ones, else from the browser. */
+async function pickFolder(h: Harness, card: number, name: string) {
+  await press(h, card, 'Folder')
+  let view = h.api.view(card)
+  if (view.html.includes('Recent folders')) {
+    try {
+      return await h.tap(choice(view, new RegExp(`^${name}$`)), card)
+    } catch {
+      await press(h, card, 'Browse')
+      view = h.api.view(card)
+    }
+  }
+  for (const part of name.split('/')) await h.tap(choice(h.api.view(card), new RegExp(`^${part}( \\(git\\))?( ›)?$`)), card)
+  if (labels(h, card).some(l => l.endsWith('Use this folder'))) await press(h, card, 'Use this folder')
+}
+
 /** Queues a task in beta from a card and plays the hooks of it starting. */
 async function running(h: Harness) {
   await h.say('Do the thing')
   const card = h.api.last().id
-  await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-  await h.tap(choice(h.api.view(card), 'beta'), card)
-  await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
-  await h.tap(button(h.api.view(card).keyboard, '🗺 Mode'), card)
-  await h.tap(button(h.api.view(card).keyboard, 'no plan'), card)
-  await h.tap(button(h.api.view(card).keyboard, /^(✓ )?auto$/), card)
-  await h.tap(button(h.api.view(card).keyboard, '↩️ Back'), card)
-  await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+  await pickFolder(h, card, 'beta')
+  await press(h, card, 'How')
+  await press(h, card, 'Just do it')
+  await press(h, card, 'Auto')
+  await press(h, card, 'Queue')
   await h.runner.tick()
   const job = h.store.active()!
   await h.runner.onHook('SessionStart', job.id, { session_id: job.sessionId!, transcript_path: '/t.jsonl' })
   await h.runner.onHook('UserPromptSubmit', job.id, { permission_mode: 'auto' })
   return job
+}
+
+/** A card in beta, ready to queue. */
+async function card(h: Harness, prompt = 'Do the thing') {
+  await h.say(prompt)
+  const id = h.api.last().id
+  // The next card starts in the folder used last.
+  if (h.api.view(id).html.includes('<i>pick one</i>')) await pickFolder(h, id, 'beta')
+  return id
 }
 
 describe('pairing', () => {
@@ -263,44 +299,111 @@ describe('pairing', () => {
   })
 })
 
+describe('the look', () => {
+  /** Every button on a message, as its words. */
+  const words = (h: Harness, id: number) => labels(h, id).join(' | ')
+  const EMOJI = /\p{Extended_Pictographic}/u
+
+  test('the keys under the text box are plain words; inside a chat only the first one changes', async () => {
+    const h = await paired({ mac: new FakePower() })
+    expect(h.api.last().markup).toMatchObject({
+      keyboard: [[{ text: 'New task' }, { text: 'Status' }, { text: 'Queue' }], [{ text: 'Tasks' }, { text: 'Chats' }, { text: 'Mac' }], [{ text: 'Settings' }, { text: 'Help' }]],
+      input_field_placeholder: 'Type a task for Claude',
+    })
+    await h.say('Mac')
+    expect(h.api.last().html).toContain('<b>This Mac</b>')
+    await h.say('Help')
+    expect(h.api.last().html).toContain('Plan high, work low.')
+  })
+
+  test('no button has an icon, anywhere', async () => {
+    const h = await paired({ mac: new FakePower() })
+    const job = await running(h)
+    const id = await card(h, 'Look at everything')
+    for (const tab of ['Folder', 'Chat', 'How', 'Model', 'When', 'More']) {
+      await press(h, id, tab)
+      expect(words(h, id)).not.toMatch(EMOJI)
+    }
+    for (const text of ['/status', '/queue', '/tasks', '/chats', '/mac', '/settings', '/sleep', '/peek']) {
+      await h.say(text)
+      expect(words(h, h.api.last().id)).not.toMatch(EMOJI)
+    }
+    void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
+    await Bun.sleep(0)
+    expect(words(h, h.api.last().id)).not.toMatch(EMOJI)
+    expect(h.api.last().html).not.toMatch(EMOJI)
+  })
+
+  test('buttons keep their places: a choice changes its mark, never where anything is', async () => {
+    const h = await paired()
+    const id = await card(h)
+    const shape = () => kb(h, id).map(row => row.map(b => b.callback_data))
+    await press(h, id, 'Model')
+    const before = shape()
+    // The tabs and Queue are at the bottom, where they were before the tab opened.
+    expect(kb(h, id).slice(-3).map(r => r.map(b => b.text))).toEqual([['Folder', 'Chat', 'How'], ['• Model', 'When', 'More'], ['Queue', 'Discard']])
+    await press(h, id, 'Low')
+    await press(h, id, 'Opus')
+    await press(h, id, 'Max')
+    expect(shape()).toEqual(before)
+    expect(labels(h, id)).toEqual(expect.arrayContaining(['✓ Opus', '✓ Max']))
+    // Tapping an open tab closes it; nothing opens on a screen of its own, and there's no Back.
+    await press(h, id, 'Model')
+    expect(kb(h, id).map(r => r.map(b => b.text))).toEqual([['Folder', 'Chat', 'How'], ['Model', 'When', 'More'], ['Queue', 'Discard']])
+    expect(labels(h, id).some(l => /back/i.test(l))).toBe(false)
+  })
+
+  test('after an update, the new keys go out once; the old ones still work until then', async () => {
+    const h = setup()
+    // Paired before the new look.
+    h.config().telegram.ownerId = OWNER
+    await h.bridge.start()
+    expect(h.api.last().html).toContain('The bot has a new look.')
+    expect(h.api.last().silent).toBe(true)
+    expect(h.api.last().markup).toMatchObject({ keyboard: [[{ text: 'New task' }, { text: 'Status' }, { text: 'Queue' }], [{ text: 'Tasks' }, { text: 'Chats' }, { text: 'Computer' }], [{ text: 'Settings' }, { text: 'Help' }]] })
+    expect(h.store.kvGet<number>('telegram.look')).toBe(2)
+    await h.say('📊 Status')
+    expect(h.api.last().html).toContain('<b>Status</b>')
+    await h.say('👀 Peek')
+    expect(h.api.last().html).toContain('Nothing is running.')
+  })
+})
+
 describe('queueing with buttons', () => {
-  test('type a prompt, pick folder, model, effort and mode, then queue', async () => {
+  test('type a prompt, pick folder, model, effort and how, then queue', async () => {
     const h = await paired()
     await h.say('Add a dark mode toggle')
     const card = h.api.last()
     let view = h.api.view(card.id)
     expect(view.html).toContain('Add a dark mode toggle')
-    expect(view.html).toContain('no folder yet')
-    expect(button(view.keyboard, 'Pick a folder first')).toBe(button(view.keyboard, '📁 Folder'))
+    expect(view.html).toContain('Folder: <i>pick one</i>')
+    // Each line of the card has a button under it, and Queue.
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['Folder', 'Chat', 'How'], ['Model', 'When', 'More'], ['Queue', 'Discard']])
 
-    await h.tap(button(view.keyboard, '📁 Folder'), card.id)
+    await press(h, card.id, 'Folder')
     view = h.api.view(card.id)
+    // No recent folders yet: the browser. Every folder is named in full; the buttons are only its numbers.
     expect(view.html).toContain('3 folders')
-    // Every folder is named in full in the message; the buttons are only its numbers.
-    expect(view.html).toContain('<b>1.</b> 📦 alpha ›')
+    expect(view.html).toContain('<b>1.</b> alpha (git) ›')
     expect(view.html).toContain('<b>3.</b> gamma-web ›')
     expect(view.keyboard.flat().map(b => b.text)).toEqual(expect.arrayContaining(['1', '2', '3']))
     await h.tap(choice(view, 'gamma-web'), card.id)
-    view = h.api.view(card.id)
-    await h.tap(choice(view, /^web/), card.id)
-    view = h.api.view(card.id)
-    expect(view.html).toContain('gamma-web/web')
-    await h.tap(button(view.keyboard, '✅ Use this folder'), card.id)
+    await h.tap(choice(h.api.view(card.id), /^web/), card.id)
+    expect(h.api.view(card.id).html).toContain('<b>gamma-web/web</b>')
+    await press(h, card.id, 'Use this folder')
+    expect(h.api.view(card.id).html).toContain('Folder: <b>gamma-web/web</b>')
 
+    await press(h, card.id, 'How')
+    await press(h, card.id, 'Just do it')
+    await press(h, card.id, 'Auto')
+    await press(h, card.id, 'Model')
+    await press(h, card.id, 'Sonnet')
+    await press(h, card.id, 'Low')
     view = h.api.view(card.id)
-    expect(view.html).toContain('gamma-web/web')
-    await h.tap(button(view.keyboard, '🧠 Model'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, 'sonnet'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, '⚡ Effort'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, /^low$/), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, '🗺 Mode'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, 'no plan'), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, /^(✓ )?auto$/), card.id)
-    await h.tap(button(h.api.view(card.id).keyboard, '↩️ Back'), card.id)
-    view = h.api.view(card.id)
-    expect(view.html).toContain('🗺 auto · 🧠 sonnet · ⚡ low')
+    expect(view.html).toContain('How: <b>No plan</b> · Auto')
+    expect(view.html).toContain('Model: <b>Sonnet · Low</b>')
 
-    await h.tap(button(view.keyboard, '▶️ Queue'), card.id)
+    await press(h, card.id, 'Queue')
     const job = h.store.queued()[0]!
     expect(job).toMatchObject({
       projectDir: join(h.root, 'gamma-web', 'web'),
@@ -313,52 +416,55 @@ describe('queueing with buttons', () => {
       source: 'telegram',
     })
     expect(h.api.view(card.id).html).toContain(`Queued #${job.id}`)
+    expect(h.api.view(card.id).html).toContain('No plan · Auto · Sonnet, Low')
     expect(h.api.answers.at(-1)?.text).toBe(`Queued #${job.id}.`)
     // Tapping the old card again does nothing.
     await h.tap(`d:1:q`, card.id)
     expect(h.store.queued()).toHaveLength(1)
   })
 
-  test('the next prompt starts with your last choices', async () => {
+  test('the next prompt starts with your last choices, and its folder is among the recent ones', async () => {
     const h = await paired()
-    await h.say('first')
-    const first = h.api.last().id
-    await h.tap(button(h.api.view(first).keyboard, '📁 Folder'), first)
-    await h.tap(choice(h.api.view(first), 'beta'), first)
-    await h.tap(button(h.api.view(first).keyboard, '✅ Use this folder'), first)
-    await h.tap(button(h.api.view(first).keyboard, '🧠 Model'), first)
-    await h.tap(button(h.api.view(first).keyboard, 'haiku'), first)
-    await h.tap(button(h.api.view(first).keyboard, '▶️ Queue'), first)
+    const first = await card(h, 'first')
+    await press(h, first, 'Model')
+    await press(h, first, 'Haiku')
+    await press(h, first, 'Queue')
 
     await h.say('second')
-    const view = h.api.view(h.api.last().id)
-    expect(view.html).toContain('beta')
-    expect(view.html).toContain('🧠 haiku')
-    await h.tap(button(view.keyboard, '▶️ Queue'), h.api.last().id)
+    const id = h.api.last().id
+    expect(h.api.view(id).html).toContain('Folder: <b>beta</b>')
+    expect(h.api.view(id).html).toContain('Haiku')
+    await press(h, id, 'Folder')
+    expect(h.api.view(id).html).toContain('Recent folders')
+    expect(labels(h, id)).toContain('✓ 1')
+    await press(h, id, 'Queue')
     expect(h.store.queued().map(j => [j.prompt, j.model])).toEqual([
       ['first', 'haiku'],
       ['second', 'haiku'],
     ])
   })
 
-  test('search picks a deep folder', async () => {
+  test('search picks a deep folder; the card comes down to where you typed', async () => {
     const h = await paired()
     await h.say('Fix the button styles')
     const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, '🔍 Search'), card)
+    await press(h, card, 'Folder')
+    await press(h, card, 'Search')
+    // The text box opens as a reply, with a hint in it.
+    expect(h.api.last().markup).toMatchObject({ force_reply: true, input_field_placeholder: 'Part of a folder name' })
     await h.say('comp')
     const results = h.api.last()
+    expect(h.api.deleted).toContain(card)
     const view = h.api.view(results.id)
-    expect(view.html).toContain('comp')
+    expect(view.html).toContain('Folders matching “comp”')
     await h.tap(choice(view, 'alpha/src/components'), results.id)
-    expect(h.api.view(results.id).html).toContain('alpha/src/components')
+    expect(h.api.view(results.id).html).toContain('Folder: <b>alpha/src/components</b>')
     // The search is over: the next message becomes a new prompt, not another search.
     await h.say('another task')
     expect(h.api.view(h.api.last().id).html).toContain('another task')
   })
 
-  test('➕ New task: folder first, then the prompt', async () => {
+  test('New task: folder first, then the prompt', async () => {
     const h = await paired()
     await h.say(KEYS.newTask)
     const browser = h.api.last().id
@@ -370,7 +476,7 @@ describe('queueing with buttons', () => {
     const card = h.api.view(h.api.last().id)
     expect(card.html).toContain('Write the docs index')
     expect(card.html).toContain('beta/docs')
-    expect(button(card.keyboard, '▶️ Queue')).toMatch(/^d:\d+:q$/)
+    expect(button(card.keyboard, 'Queue')).toMatch(/^d:\d+:q$/)
   })
 
   test('typed shortcut still works and fills in the card', async () => {
@@ -378,13 +484,23 @@ describe('queueing with buttons', () => {
     await h.say(`q ${h.root}/alpha review opus max: Refactor the parser`)
     const view = h.api.view(h.api.last().id)
     expect(view.html).toContain('Refactor the parser')
-    expect(view.html).toContain('🗺 review→auto · 🧠 opus · ⚡ max')
+    expect(view.html).toContain('How: <b>Plan, you approve it</b> · Auto')
+    expect(view.html).toContain('Plan: <b>Opus · Max</b>')
     expect(view.html).toContain('alpha')
+  })
+
+  test('Discard takes the card away', async () => {
+    const h = await paired()
+    const id = await card(h, 'Never mind this')
+    await press(h, id, 'Discard')
+    expect(h.api.deleted).toContain(id)
+    expect(h.store.queued()).toHaveLength(0)
+    await h.tap(button(h.api.view(id).keyboard, 'Queue'), id)
+    expect(h.api.answers.at(-1)!.text).toBe('You discarded this one.')
   })
 })
 
 describe('notifications with buttons', () => {
-
   test('started, then Allow on a permission request', async () => {
     const h = await paired()
     const job = await running(h)
@@ -395,7 +511,7 @@ describe('notifications with buttons', () => {
     const msg = h.api.last()
     expect(msg.html).toContain('wants to use Bash')
     expect(msg.html).toContain('npm test')
-    await h.tap(button(h.api.view(msg.id).keyboard, '✅ Allow'), msg.id)
+    await press(h, msg.id, 'Allow')
     expect(await decision).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
     const after = h.api.view(msg.id)
     expect(after.html).toContain('Approved')
@@ -417,7 +533,7 @@ describe('notifications with buttons', () => {
     expect(h.api.view(msg.id).keyboard).toEqual([])
   })
 
-  test('➕ Follow up continues the same conversation', async () => {
+  test('Follow up continues the same conversation; New task here starts a fresh one in its folder', async () => {
     const h = await paired()
     const job = await running(h)
     await h.runner.onHook('Stop', job.id, { permission_mode: 'auto', last_assistant_message: 'Done.' })
@@ -427,36 +543,41 @@ describe('notifications with buttons', () => {
     await h.runner.tick()
     await Bun.sleep(0)
     const done = h.api.sent.find(m => m.html.includes(`#${job.id} done`))!
-    await h.tap(button(h.api.view(done.id).keyboard, 'Follow up'), done.id)
+    await press(h, done.id, 'Follow up')
+    expect(h.api.last().markup).toMatchObject({ force_reply: true })
     await h.say('Now add tests for it')
-    const card = h.api.view(h.api.last().id)
-    expect(card.html).toContain(`follows up #${job.id}`)
-    await h.tap(button(card.keyboard, '▶️ Queue'), h.api.last().id)
+    const card = h.api.last().id
+    expect(h.api.view(card).html).toContain(`follows up #${job.id}`)
+    await press(h, card, 'Queue')
     const follow = h.store.queued()[0]!
     expect(follow).toMatchObject({ prompt: 'Now add tests for it', projectDir: job.projectDir, sessionPolicy: 'session', sessionId: job.sessionId })
+
+    await press(h, done.id, 'New task here')
+    expect(h.api.view(h.api.last().id).html).toContain('Now send the prompt')
+    await h.say('Write a changelog')
+    const fresh = h.api.last().id
+    expect(h.api.view(fresh).html).toContain('Chat: <b>new</b>')
+    await press(h, fresh, 'Queue')
+    expect(h.store.queued().at(-1)).toMatchObject({ prompt: 'Write a changelog', projectDir: job.projectDir, sessionPolicy: 'new' })
   })
 
-  test('queue view: move up and remove', async () => {
+  test('the queue: tap a number, and that task’s buttons show under the numbers and stay with it', async () => {
     const h = await paired()
-    for (const p of ['one', 'two', 'three']) {
-      await h.say(p)
-      const id = h.api.last().id
-      if (p === 'one') {
-        await h.tap(button(h.api.view(id).keyboard, '📁 Folder'), id)
-        await h.tap(choice(h.api.view(id), 'beta'), id)
-        await h.tap(button(h.api.view(id).keyboard, '✅ Use this folder'), id)
-      }
-      // Later cards already have beta: your last choices carry over.
-      await h.tap(button(h.api.view(id).keyboard, '▶️ Queue'), id)
-    }
+    for (const p of ['one', 'two', 'three']) await press(h, await card(h, p), 'Queue')
     h.runner.setPaused(true)
     await h.say(KEYS.queue)
     const list = h.api.last().id
     const [one, two, three] = h.store.queued()
-    await h.tap(button(h.api.view(list).keyboard, `⬆️ ${three!.id}`), list)
-    await h.tap(button(h.api.view(list).keyboard, `⬆️ ${three!.id}`), list)
+    const line = (id: number) => new RegExp(`^<b>#${id}</b>`)
+    await h.tap(choice(h.api.view(list), line(three!.id)), list)
+    await press(h, list, 'Move up')
+    await press(h, list, 'Move up')
     expect(h.store.queued().map(j => j.id)).toEqual([three!.id, one!.id, two!.id])
-    await h.tap(button(h.api.view(list).keyboard, `🗑 ${one!.id}`), list)
+    expect(labels(h, list).slice(0, 3)).toEqual(['✓ 1', '2', '3'])
+    await h.tap(choice(h.api.view(list), line(one!.id)), list)
+    await press(h, list, 'Remove')
+    expect(h.store.queued()).toHaveLength(3)
+    await press(h, list, 'Yes, remove')
     expect(h.store.queued().map(j => j.id)).toEqual([three!.id, two!.id])
     expect(h.api.view(list).html).not.toContain(`#${one!.id}</b>`)
   })
@@ -480,75 +601,64 @@ describe('your other chats (VS Code, a terminal)', () => {
     ...over,
   })
 
-  async function cardInBeta(h: Harness, prompt: string): Promise<number> {
-    await h.say(prompt)
-    const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(choice(h.api.view(card), 'beta'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
-    return card
-  }
-
   test('long titles are whole in the message, and the buttons are only numbers: nothing is cut off', async () => {
     const h = await paired()
     const title = 'Make the checkout faster by moving the price lookup out of the loop, then cache each customer’s total'
     h.chatList.push(chat(h, { title }), chat(h, { sessionId: 'bbbbbbbb-1111-2222-3333-444444444444', title: `${title} (second)`, where: null }))
-    const card = await cardInBeta(h, 'Keep going')
-    await h.tap(button(h.api.view(card).keyboard, '💬 Chat…'), card)
-    const view = h.api.view(card)
+    const id = await card(h, 'Keep going')
+    await press(h, id, 'Chat')
+    const view = h.api.view(id)
     expect(view.html).toContain(title)
     expect(view.html).toContain(`${title} (second)`)
-    const labels = view.keyboard.flat().map(b => b.text)
-    expect(labels).toEqual(expect.arrayContaining(['1', '2']))
-    expect(labels.some(l => l.includes('…'))).toBe(false)
+    expect(labels(h, id)).toEqual(expect.arrayContaining(['1', '2']))
+    expect(labels(h, id).some(l => l.includes('…'))).toBe(false)
     // Number 2 is the second chat.
-    await h.tap(choice(view, '(second)'), card)
-    expect(h.api.view(card).html).toContain('(second)')
+    await h.tap(choice(view, '(second)'), id)
+    expect(h.api.view(id).html).toContain('(second)')
   })
 
-  test("💬 Chat… lists the folder's chats; one open in VS Code is taken over", async () => {
+  test("the Chat tab lists the folder's chats; one open in VS Code is taken over", async () => {
     const h = await paired()
     h.chatList.push(chat(h), chat(h, { sessionId: 'bbbbbbbb-1111-2222-3333-444444444444', title: 'Older chat', where: null, updatedAt: h.now() - 7_200_000 }))
-    const card = await cardInBeta(h, 'Keep going with the tests')
-    await h.tap(button(h.api.view(card).keyboard, '💬 Chat…'), card)
-    let view = h.api.view(card)
+    const id = await card(h, 'Keep going with the tests')
+    await press(h, id, 'Chat')
+    let view = h.api.view(id)
     expect(view.html).toContain('Chats in beta')
     expect(view.html).toContain('Claude Code prompt queue optimizer</b> · open in VS Code · 1h 00m ago')
     expect(view.html).toContain('“Build the queue”')
     expect(view.html).toContain('Older chat')
     // The message has every title in full; the buttons are only numbers.
-    await h.tap(choice(view, 'Claude Code prompt queue'), card)
-    view = h.api.view(card)
-    expect(view.html).toContain('💬 continues “Claude Code prompt queue optimizer” · 🟢 open in VS Code')
-    expect(view.html).toContain('🤝 takes it over when it starts')
-    await h.tap(button(view.keyboard, '⏳ Wait instead'), card)
-    expect(h.api.view(card).html).toContain('⏳ starts once you close it there')
-    await h.tap(button(h.api.view(card).keyboard, '🤝 Take over'), card)
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    await h.tap(choice(view, 'Claude Code prompt queue'), id)
+    view = h.api.view(id)
+    expect(view.html).toContain('Chat: <b>continues “Claude Code prompt queue optimizer”</b>, open in VS Code: takes it over when it starts')
+    await press(h, id, 'Take over: on')
+    expect(h.api.view(id).html).toContain('starts once you close it there')
+    await press(h, id, 'Take over: off')
+    await press(h, id, 'Queue')
     const job = h.store.queued()[0]!
     expect(job).toMatchObject({ prompt: 'Keep going with the tests', projectDir: join(h.root, 'beta'), sessionPolicy: 'session', sessionId: SID })
     expect(job.takeoverAt).toBe(h.now())
   })
 
-  test('🆕 New chat from the list starts a fresh conversation', async () => {
+  test('New chat from the Chat tab starts a fresh conversation', async () => {
     const h = await paired()
-    const card = await cardInBeta(h, 'Start over')
-    await h.tap(button(h.api.view(card).keyboard, '💬 Chat…'), card)
-    expect(h.api.view(card).html).toContain('No Claude Code chats here yet.')
-    await h.tap(button(h.api.view(card).keyboard, '🆕 New chat'), card)
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    const id = await card(h, 'Start over')
+    await press(h, id, 'Chat')
+    expect(h.api.view(id).html).toContain('No Claude Code chats here yet.')
+    await press(h, id, 'New chat')
+    await press(h, id, 'Queue')
     expect(h.store.queued()[0]).toMatchObject({ sessionPolicy: 'new', sessionId: null, takeoverAt: null })
   })
 
-  test('a chat that hit the usage limit: ▶️ continues it here after the reset', async () => {
+  test('a chat that hit the usage limit: Continue after the reset continues it here', async () => {
     const h = await paired()
     const c = chat(h, { limit: { text: "You've hit your session limit · resets 4:55am (Asia/Katmandu)", at: h.now() - 60_000 } })
     h.chatList.push(c)
     await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: h.now() + 3_600_000, window: 'five_hour' })
     const msg = h.api.last().id
     expect(h.api.view(msg).html).toContain('Your chat in VS Code hit the 5-hour limit')
-    expect(h.api.view(msg).html).toContain('📁 beta · “Claude Code prompt queue optimizer”')
-    await h.tap(button(h.api.view(msg).keyboard, '▶️ Continue after the reset'), msg)
+    expect(h.api.view(msg).html).toContain('beta · “Claude Code prompt queue optimizer”')
+    await press(h, msg, 'Continue after the reset')
     const job = h.store.queued()[0]!
     expect(job).toMatchObject({
       prompt: 'Continue from where you left off.',
@@ -569,22 +679,22 @@ describe('your other chats (VS Code, a terminal)', () => {
     expect(h.api.answers.at(-1)?.text).toBe(`Already queued as #${job.id}.`)
   })
 
-  test('✏️ Follow up… on that notice sends your own prompt into the chat', async () => {
+  test('Follow up… on that notice sends your own prompt into the chat', async () => {
     const h = await paired()
     const c = chat(h)
     h.chatList.push(c)
     await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: null })
-    await h.tap(button(h.api.view(h.api.last().id).keyboard, '✏️ Follow up…'), h.api.last().id)
+    await press(h, h.api.last().id, 'Follow up…')
     expect(h.api.view(h.api.last().id).html).toContain('Now send the prompt')
     await h.say('Also write the docs')
-    const card = h.api.last().id
-    expect(h.api.view(card).html).toContain('💬 continues “Claude Code prompt queue optimizer”')
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    const id = h.api.last().id
+    expect(h.api.view(id).html).toContain('continues “Claude Code prompt queue optimizer”')
+    await press(h, id, 'Queue')
     expect(h.store.queued()[0]).toMatchObject({ prompt: 'Also write the docs', sessionPolicy: 'session', sessionId: SID, projectDir: c.cwd })
     expect(h.store.queued()[0]!.takeoverAt).not.toBeNull()
   })
 
-  test('🤝 Take over on a job waiting for a chat that is open in VS Code', async () => {
+  test('Take over on a job waiting for a chat that is open in VS Code', async () => {
     const h = await paired()
     h.setHolders([{ pid: 4321, sessionId: SID, entrypoint: 'claude-vscode', kind: 'interactive', status: 'idle', startedAt: h.now() - 60_000 }])
     const job = h.runner.enqueue({
@@ -603,7 +713,7 @@ describe('your other chats (VS Code, a terminal)', () => {
     await Bun.sleep(0)
     const msg = h.api.sent.find(m => m.html.includes(`#${job.id} is waiting`))!
     expect(msg.html).toContain('its chat is open in VS Code')
-    await h.tap(button(h.api.view(msg.id).keyboard, '🤝 Take over'), msg.id)
+    await press(h, msg.id, 'Take over')
     expect(h.killed).toEqual([4321])
     expect(h.store.getJob(job.id)!.status).toBe('running')
     expect(h.api.view(msg.id).html).toContain('took the conversation over from VS Code')
@@ -618,7 +728,7 @@ describe('your other chats (VS Code, a terminal)', () => {
     await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: due - 180_000, window: 'five_hour', autoAt: due })
     const msg = h.api.last().id
     expect(h.api.view(msg).html).toContain("I'll tell it to continue, so it carries on in VS Code")
-    await h.tap(button(h.api.view(msg).keyboard, 'Don’t continue'), msg)
+    await press(h, msg, 'Don’t continue')
     expect(h.store.getWatch(SID)!.state).toBe('cancelled')
     expect(h.api.view(msg).html).toContain("OK, it won't be continued.")
   })
@@ -629,49 +739,49 @@ describe('your other chats (VS Code, a terminal)', () => {
     h.chatList.push(c)
     h.store.putWatch({ sessionId: SID, cwd: c.cwd, title: c.title, where: 'VS Code', stopAt: h.now(), dueAt: h.now() + 60_000, state: 'waiting', sentAt: null, jobId: null, updatedAt: h.now() })
     await h.bridge.notify({ type: 'session_limit', chat: c, where: 'VS Code', at: h.now(), autoAt: h.now() + 60_000 })
-    await h.tap(button(h.api.view(h.api.last().id).keyboard, 'Continue here instead'), h.api.last().id)
+    await press(h, h.api.last().id, 'Continue here instead')
     const job = h.store.queued()[0]!
     expect(job).toMatchObject({ sessionId: SID, prompt: 'Continue from where you left off.' })
     expect(job.takeoverAt).not.toBeNull()
     expect(h.store.getWatch(SID)).toMatchObject({ state: 'handed', jobId: job.id })
   })
 
-  test('/settings turns automatic continue off', async () => {
+  test('Settings turns automatic continue off', async () => {
     const h = await paired()
-    await h.say('/settings')
+    await h.say(KEYS.settings)
     const msg = h.api.last().id
     expect(h.api.view(msg).html).toContain('and continue it at the reset')
-    await h.tap(button(h.api.view(msg).keyboard, '▶️ Auto-continue ✓'), msg)
+    await press(h, msg, 'Auto-continue: on')
     expect(h.config().autoContinueChats).toBe(false)
     expect(h.api.view(msg).html).not.toContain('and continue it at the reset')
   })
 
-  test('/settings turns watching your other chats off', async () => {
+  test('Settings turns watching your other chats off', async () => {
     const h = await paired()
     await h.say('/settings')
     const msg = h.api.last().id
-    expect(h.api.view(msg).html).toContain('Other chats: I tell you')
-    await h.tap(button(h.api.view(msg).keyboard, '👀 Watching other chats ✓'), msg)
+    expect(h.api.view(msg).html).toContain('Other chats: <b>watched</b>')
+    await press(h, msg, 'Watch chats: on')
     expect(h.config().watchSessions).toBe(false)
-    expect(h.api.view(msg).html).toContain('Other chats: not watched')
+    expect(h.api.view(msg).html).toContain('Other chats: <b>not watched</b>')
   })
 
-  test('automatic continue follows from watching: not offered without it, and turned off with it', async () => {
+  test('automatic continue follows from watching: off with it, and turning it on watches', async () => {
     const h = await paired()
     await h.say('/settings')
     const msg = h.api.last().id
-    expect(h.api.view(msg).keyboard.flat().map(b => b.text)).toContain('▶️ Auto-continue ✓')
-    await h.tap(button(h.api.view(msg).keyboard, '👀 Watching other chats ✓'), msg)
-    // Nothing is watched, so there is nothing to continue: the button is gone and the setting with it.
-    expect(h.api.view(msg).keyboard.flat().map(b => b.text).some(t => t.includes('Auto-continue'))).toBe(false)
+    expect(labels(h, msg)).toContain('Auto-continue: on')
+    await press(h, msg, 'Watch chats: on')
+    // Nothing is watched, so there is nothing to continue: it's off, and stays where it was.
+    expect(labels(h, msg)).toContain('Auto-continue: off')
     expect(h.config().autoContinueChats).toBe(false)
     // Watching again doesn't turn it back on by itself.
-    await h.tap(button(h.api.view(msg).keyboard, '👀 Watch other chats'), msg)
+    await press(h, msg, 'Watch chats: off')
     expect(h.config().watchSessions).toBe(true)
     expect(h.config().autoContinueChats).toBe(false)
-    expect(h.api.view(msg).keyboard.flat().map(b => b.text)).toContain('▶️ Auto-continue')
+    await press(h, msg, 'Watch chats: on')
     // Turning it on watches (as before).
-    await h.tap(button(h.api.view(msg).keyboard, '▶️ Auto-continue'), msg)
+    await press(h, msg, 'Auto-continue: off')
     expect(h.config()).toMatchObject({ watchSessions: true, autoContinueChats: true })
   })
 })
@@ -694,23 +804,27 @@ describe('every session from your phone', () => {
     ...over,
   })
 
-  test('💬 Chats → open one → ✍️ Write here: what you type goes into that chat, in order, until you leave', async () => {
+  test('Chats → open one → Write here: what you type goes into that chat, in order, until you leave', async () => {
     const h = await paired()
     h.chatList.push(chat(h), chat(h, { sessionId: 'eeeeeeee-1111-2222-3333-444444444444', title: 'Older chat', where: 'VS Code' }))
     await h.say(KEYS.chats)
     const list = h.api.last().id
     expect(h.api.view(list).html).toContain('Dark mode for settings')
-    expect(h.api.view(list).html).toContain('📁 beta')
+    expect(h.api.view(list).html).toContain('beta · ')
     await h.tap(choice(h.api.view(list), 'Dark mode for settings'), list)
     expect(h.api.view(list).html).toContain('<b>Claude:</b>')
     expect(h.api.view(list).html).toContain('Added the toggle to the settings page.')
-    await h.tap(button(h.api.view(list).keyboard, '✍️ Write here'), list)
+    await press(h, list, 'Write here')
     expect(h.api.last().html).toContain('You\'re in “Dark mode for settings”')
-    expect(JSON.stringify(h.api.last().markup)).toContain(KEYS.leave)
+    // Only the first key under the text box changes: it leaves the chat.
+    expect(h.api.last().markup).toMatchObject({
+      keyboard: [[{ text: KEYS.leave }, { text: 'Status' }, { text: 'Queue' }], [{ text: 'Tasks' }, { text: 'Chats' }, { text: 'Computer' }], [{ text: 'Settings' }, { text: 'Help' }]],
+      input_field_placeholder: 'Write to “Dark mode for settings”',
+    })
 
     await h.say('Now add a test for the toggle')
     await h.say('And mention it in the README')
-    expect(h.api.last().html).toContain('➕ Sent to “Dark mode for settings” as #')
+    expect(h.api.last().html).toContain('Sent to “Dark mode for settings” as #')
     expect(h.store.queued().map(j => [j.prompt, j.sessionId, j.sessionPolicy, j.model])).toEqual([
       ['Now add a test for the toggle', SID, 'session', 'sonnet'],
       ['And mention it in the README', SID, 'session', 'sonnet'],
@@ -719,6 +833,7 @@ describe('every session from your phone', () => {
 
     await h.say(KEYS.leave)
     expect(h.api.last().html).toContain('Left “Dark mode for settings”')
+    expect(h.api.last().markup).toMatchObject({ keyboard: [[{ text: KEYS.newTask }, { text: 'Status' }, { text: 'Queue' }], expect.anything(), expect.anything()] })
     await h.say('Something new')
     expect(h.api.last().html).toContain('Something new') // a new task card again
     expect(h.store.queued()).toHaveLength(2)
@@ -729,7 +844,7 @@ describe('every session from your phone', () => {
     h.chatList.push(chat(h, { where: 'VS Code' }))
     await h.say('/chats')
     await h.tap(choice(h.api.view(h.api.last().id), 'Dark mode'), h.api.last().id)
-    await h.tap(button(h.api.view(h.api.last().id).keyboard, '✍️ Write here'), h.api.last().id)
+    await press(h, h.api.last().id, 'Write here')
     expect(h.api.last().html).toContain("It's open in VS Code")
     await h.say('Keep going')
     expect(h.api.last().html).toContain('it closes there first')
@@ -746,19 +861,30 @@ describe('every session from your phone', () => {
     expect(h.api.last().html).toContain(`Typed into “Dark mode for settings” (#${job.id})`)
   })
 
-  test('⌨️ Type and 🔘 Keys reach the running task from Peek', async () => {
+  test('Type and Keys reach the running task from its screen; the keypad opens on the screen itself', async () => {
     const h = await paired()
     const job = await running(h)
-    await h.say(KEYS.peek)
-    const peek = h.api.last().id
-    await h.tap(button(h.api.view(peek).keyboard, '⌨️ Type'), peek)
+    await h.say('/peek')
+    const screen = h.api.last().id
+    expect(kb(h, screen).map(r => r.map(b => b.text))).toEqual([['Refresh', 'Type', 'Keys'], ['Stop', 'Kill']])
+    await press(h, screen, 'Type')
     await h.say('yes, use the second option')
     expect(h.tmux.windows.get(windowName(job.id))!.input).toEqual(['text:yes, use the second option', 'Enter'])
-    await h.tap(button(h.api.view(peek).keyboard, '🔘 Keys'), peek)
-    const keys = h.api.last().id
-    await h.tap(button(h.api.view(keys).keyboard, '⏎ Enter'), keys)
-    await h.tap(button(h.api.view(keys).keyboard, '↓'), keys)
+    await press(h, screen, 'Keys')
+    expect(kb(h, screen).map(r => r.map(b => b.text))).toEqual([
+      ['1', '2', '3'],
+      ['Enter', 'Esc', 'Tab'],
+      ['Up', 'Down', 'Shift-Tab'],
+      ['Refresh', 'Type', '• Keys'],
+      ['Stop', 'Kill'],
+    ])
+    await press(h, screen, 'Enter')
+    h.tmux.windows.get(windowName(job.id))!.screen = 'Picked the second option'
+    await press(h, screen, 'Down')
     expect(h.tmux.windows.get(windowName(job.id))!.input.slice(-2)).toEqual(['Enter', 'Down'])
+    // The screen shows again, with what the key did, and the keypad stays open.
+    expect(h.api.view(screen).html).toContain('Picked the second option')
+    expect(labels(h, screen)).toContain('• Keys')
   })
 
   test("Claude's long final answer arrives in full: a few messages, or a file", async () => {
@@ -767,7 +893,7 @@ describe('every session from your phone', () => {
     const medium = Array.from({ length: 8 }, (_, i) => `Part ${i + 1}: ${para}`).join('\n\n')
     await h.bridge.notify({ type: 'done', job: { id: 9, projectDir: join(h.root, 'beta'), lastMessage: medium, startedAt: h.now(), finishedAt: h.now(), branch: null } as Job, diff: null, next: null })
     const sent = h.api.sent.slice(-3)
-    expect(sent[0]!.html).toStartWith('✅ <b>#9 done</b>')
+    expect(sent[0]!.html).toStartWith('<b>#9 done</b>')
     expect(sent[1]!.html).toContain('Part 1 of 2')
     expect(sent[2]!.html).toContain('Part 2 of 2')
     expect(sent[2]!.html).toContain('Part 8')
@@ -787,7 +913,7 @@ describe('every session from your phone', () => {
     const before = h.api.sent.length
     h.api.down = false
     await h.bridge.flushOutbox()
-    expect(h.api.sent.slice(before).map(m => m.html)).toEqual(['🏁 Queue empty.', '⚠️ Full Disk Access is missing'])
+    expect(h.api.sent.slice(before).map(m => m.html)).toEqual(['Queue empty.', 'Full Disk Access is missing'])
     await h.bridge.flushOutbox()
     expect(h.api.sent.length).toBe(before + 2)
   })
@@ -817,13 +943,13 @@ describe('reading and answering on a phone', () => {
     // The options are numbered in the message, in full; the buttons are only the numbers.
     expect(view.html).toContain('<b>1.</b> <b>Native Windows now</b>')
     expect(view.html).toContain('<b>2.</b> <b>WSL2 first (Recommended)</b>')
-    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['1', '2'], ['✍️ Type an answer']])
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['1', '2'], ['Type an answer']])
 
     await h.tap(choice(view, 'WSL2'), msg.id)
     view = h.api.view(msg.id)
     expect(view.html).toContain('2 of 3')
-    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['☐ 1', '☐ 2', '☐ 3'])
-    expect(view.keyboard[1]![0]!.text).toBe('✅ Done')
+    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['1', '2', '3'])
+    expect(view.keyboard[1]![0]!.text).toBe('Done')
 
     // A tap on the first question's old button changes nothing.
     await h.tap(`o:${h.store.pendingApprovals()[0]!.code}:0.0`, msg.id)
@@ -832,20 +958,21 @@ describe('reading and answering on a phone', () => {
     await h.tap(choice(view, 'iPhone'), msg.id)
     await h.tap(choice(h.api.view(msg.id), 'Desktop'), msg.id)
     view = h.api.view(msg.id)
-    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['☑ 1', '☐ 2', '☑ 3'])
-    expect(view.keyboard[1]![0]!.text).toBe('✅ Done (2 picked)')
+    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['✓ 1', '2', '✓ 3'])
+    expect(view.keyboard[1]![0]!.text).toBe('Done (2 picked)')
 
     // Back and forward again keeps what was picked.
-    await h.tap(button(view.keyboard, '⬅️ Back'), msg.id)
+    await press(h, msg.id, 'Back')
     expect(h.api.view(msg.id).keyboard[0]!.map(b => b.text)).toEqual(['1', '✓ 2'])
     await h.tap(choice(h.api.view(msg.id), 'WSL2'), msg.id)
     await h.tap(choice(h.api.view(msg.id), 'iPhone'), msg.id)
     await h.tap(choice(h.api.view(msg.id), 'Desktop'), msg.id)
-    await h.tap(button(h.api.view(msg.id).keyboard, '✅ Done'), msg.id)
+    await h.tap(button(h.api.view(msg.id).keyboard, /^Done/), msg.id)
     expect(h.api.view(msg.id).html).toContain('3 of 3')
 
-    await h.tap(button(h.api.view(msg.id).keyboard, '✍️ Type an answer'), msg.id)
+    await press(h, msg.id, 'Type an answer')
     expect(h.api.last().html).toContain('What should the relay be called?')
+    expect(h.api.last().markup).toMatchObject({ force_reply: true, input_field_placeholder: 'Your answer' })
     await h.say('the hub')
     expect(await reply).toMatchObject({
       hookSpecificOutput: {
@@ -855,7 +982,7 @@ describe('reading and answering on a phone', () => {
       },
     })
     view = h.api.view(msg.id)
-    expect(view.html).toContain('✅ answered')
+    expect(view.html).toContain('asked</b> · answered')
     expect(view.html).toContain('<b>Which platforms first?</b>\n→ iPhone, Desktop')
     expect(view.html).toContain('→ “the hub”')
     expect(view.keyboard).toEqual([])
@@ -881,7 +1008,8 @@ describe('reading and answering on a phone', () => {
     // Only the last part has the buttons.
     expect(sent.slice(0, -1).every(m => !m.markup)).toBe(true)
     const last = sent.at(-1)!
-    await h.tap(button(h.api.view(last.id).keyboard, '✅ Approve'), last.id)
+    expect(labels(h, last.id)).toEqual(['Approve', 'Ask for changes', 'Approve, then accept edits', 'Approve, then no prompts'])
+    await press(h, last.id, 'Approve')
     expect(h.store.getApproval('rvwab')!.status).toBe('allowed')
   })
 
@@ -891,26 +1019,27 @@ describe('reading and answering on a phone', () => {
     await Bun.sleep(0)
     const card = h.api.sent.find(m => m.html.includes(`#${job.id} started`))!
     expect(card.silent).toBe(true)
+    expect(card.html).toContain('No plan · Auto · Sonnet, High')
     const before = h.api.sent.length
     h.store.updateJob(job.id, { planText: '1. Do it\n2. Check it' })
     await h.bridge.notify({ type: 'plan_approved', job: h.store.getJob(job.id)!, choice: 'auto mode' })
     // The plan goes on the card instead of a message of its own.
     expect(h.api.sent.length).toBe(before)
     let view = h.api.view(card.id)
-    expect(view.html).toContain('📝 Plan approved (auto mode)')
-    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan', '👀 Peek', '⏹ Stop', '🛑 Kill'])
+    expect(view.html).toContain('Plan approved (auto mode)')
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([['Screen', 'Stop', 'Kill'], ['Full plan']])
 
-    await h.tap(button(view.keyboard, '📄 Full plan'), card.id)
+    await press(h, card.id, 'Full plan')
     expect(h.api.last().html).toContain('1. Do it')
 
     h.store.updateJob(job.id, { status: 'done', finishedAt: h.now() + 60_000, startedAt: h.now() })
     await h.bridge.tick()
     view = h.api.view(card.id)
-    expect(view.html).toContain('✅ <b>Done</b> in 1m')
-    expect(view.keyboard.flat().map(b => b.text)).toEqual(['📄 Full plan'])
+    expect(view.html).toContain('<b>Done</b> in 1m')
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(['Full plan'])
   })
 
-  test("a request answered elsewhere or timed out loses its buttons", async () => {
+  test('a request answered elsewhere or timed out loses its buttons', async () => {
     const h = await paired()
     const job = await running(h)
     void h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
@@ -921,11 +1050,11 @@ describe('reading and answering on a phone', () => {
     h.store.resolveApproval(code, 'expired', null, h.now())
     await h.bridge.tick()
     const view = h.api.view(msg.id)
-    expect(view.html).toContain("⏱ Expired: Claude was told you're away.")
+    expect(view.html).toContain("Expired: Claude was told you're away.")
     expect(view.keyboard).toEqual([])
   })
 
-  test('📊 Status shows what waits on you, with its buttons, and the limits', async () => {
+  test('Status shows what waits on you, with its buttons, and the limits', async () => {
     const h = await paired()
     const job = await running(h)
     const decision = h.runner.onHook('PermissionRequest', job.id, { tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
@@ -935,15 +1064,20 @@ describe('reading and answering on a phone', () => {
     await h.say(KEYS.status)
     const status = h.api.last()
     let view = h.api.view(status.id)
-    expect(view.html).toContain(`▶️ <b>#${job.id}</b>`)
-    expect(view.html).toContain('⏳ <b>Waiting on you</b>')
+    expect(view.html).toContain(`<b>#${job.id}</b> · beta`)
+    expect(view.html).toContain('<b>Waiting on you</b>')
     expect(view.html).toContain('▓▓▓▓▓▓░░░░</code> 62%')
-    await h.tap(button(view.keyboard, '✅ Allow'), status.id)
+    expect(view.keyboard.map(r => r.map(b => b.text))).toEqual([
+      [`Allow #${job.id}`, `Deny #${job.id}`],
+      [`Screen #${job.id}`, `Stop #${job.id}`, `Kill #${job.id}`],
+      ['Refresh', 'Pause'],
+    ])
+    await press(h, status.id, `Allow #${job.id}`)
     expect(await decision).toEqual({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })
     // The status refreshes in place; the request's own message is settled.
     view = h.api.view(status.id)
     expect(view.html).not.toContain('Waiting on you')
-    expect(view.keyboard.flat().some(b => b.text === '🔄 Refresh')).toBe(true)
+    expect(labels(h, status.id)).toContain('Refresh')
     expect(h.api.view(notice.id).keyboard).toEqual([])
     expect(h.api.view(notice.id).html).toContain('Approved')
   })
@@ -957,106 +1091,155 @@ describe('reading and answering on a phone', () => {
     expect(sent.html).not.toContain('<b>')
     expect(sent.html).toContain('#3 hit the')
   })
-
-  test('long folder and chat names get their own rows instead of being cut', async () => {
-    const { layout, labelWidth, ROW_COLUMNS } = await import('../src/telegram/ui')
-    const b = (text: string) => ({ text, callback_data: text })
-    const rows = layout([b('api'), b('web'), b('docs'), b('a-very-long-folder-name-indeed'), b('x')], 2)
-    expect(rows.map(r => r.map(x => x.text))).toEqual([['api', 'web'], ['docs'], ['a-very-long-folder-name-indeed'], ['x']])
-    for (const row of rows) expect(Math.max(...row.map(x => labelWidth(x.text) + 2)) * row.length).toBeLessThanOrEqual(ROW_COLUMNS)
-    expect(labelWidth('😀a')).toBe(3)
-  })
 })
 
-describe('two models from Telegram', () => {
-  test('🧠 Model with a plan: plan with one, work with another; the card says so and the task gets both', async () => {
+describe('plan with one model and effort, work with another', () => {
+  test('plan at max, work at low: in the Model tab, on the card, the task and the next card', async () => {
     const h = await paired()
-    await h.say('Do the thing')
-    const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(choice(h.api.view(card), 'beta'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
-    // New tasks plan first by default: the model has two parts.
-    await h.tap(button(h.api.view(card).keyboard, '🧠 Model'), card)
-    expect(h.api.view(card).html).toContain('Plan with')
-    await h.tap(button(h.api.view(card).keyboard, /^opus$/), card)
-    await h.tap(button(h.api.view(card).keyboard, '🧠 Model'), card)
-    // The second row of choices is the work model's.
-    const work = h.api.view(card).keyboard.flat().find(b => b.callback_data?.endsWith(':w:haiku'))!
-    await h.tap(work.callback_data!, card)
-    expect(h.api.view(card).html).toContain('🧠 opus → haiku')
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
-    expect(h.store.queued().at(-1)).toMatchObject({ model: 'opus', workModel: 'haiku', plan: true })
+    const id = await card(h)
+    await press(h, id, 'How')
+    await press(h, id, 'Plan first')
+    await press(h, id, 'Model')
+    let view = h.api.view(id)
+    expect(view.html).toContain('Plan: <b>Sonnet · High</b>')
+    expect(view.html).toContain('Work: <b>same as the plan</b>')
+    // Plan or Work picks what the model and effort buttons set; the plan first.
+    expect(view.keyboard[0]!.map(b => b.text)).toEqual(['• Plan', 'Work'])
+    await press(h, id, 'Max')
+    await press(h, id, 'Work')
+    expect(h.api.view(id).keyboard[0]!.map(b => b.text)).toEqual(['Plan', '• Work'])
+    await press(h, id, 'Low')
+    view = h.api.view(id)
+    expect(view.html).toContain('Plan: <b>Sonnet · Max</b>')
+    expect(view.html).toContain('Work: <b>Sonnet · Low</b>')
+    // The work's own choice is ticked, and the Work side stays open.
+    expect(labels(h, id)).toEqual(expect.arrayContaining(['✓ Sonnet', '✓ Low', '• Work']))
+    await press(h, id, 'Queue')
+    expect(h.store.queued()[0]).toMatchObject({ plan: true, effort: 'max', workEffort: 'low', workModel: null })
+    expect(h.api.view(id).html).toContain('Plan first · Auto · Sonnet, Max → Sonnet, Low')
+    await h.say('another')
+    expect(h.api.view(h.api.last().id).html).toContain('Work: <b>Sonnet · Low</b>')
+  })
+
+  test('plan with Opus, work with Haiku; the same effort for both', async () => {
+    const h = await paired()
+    const id = await card(h)
+    // New tasks plan first by default: the model has two sides.
+    await press(h, id, 'Model')
+    await press(h, id, 'Opus')
+    await press(h, id, 'Work')
+    await press(h, id, 'Haiku')
+    expect(h.api.view(id).html).toContain('Plan: <b>Opus · High</b>')
+    expect(h.api.view(id).html).toContain('Work: <b>Haiku · High</b>')
+    await press(h, id, 'Queue')
+    expect(h.store.queued().at(-1)).toMatchObject({ model: 'opus', workModel: 'haiku', plan: true, workEffort: null })
+  })
+
+  test('with no plan, Model says how to get one, and has one model and effort', async () => {
+    const h = await paired()
+    const id = await card(h)
+    await press(h, id, 'How')
+    await press(h, id, 'Just do it')
+    await press(h, id, 'Model')
+    expect(h.api.view(id).html).toContain('pick Plan first in How')
+    expect(labels(h, id)).not.toContain('Work')
+  })
+
+  test('typed efforts can split too: max>medium', async () => {
+    const h = await paired()
+    await h.say(`q ${h.root}/alpha plan max>medium: Rework the importer`)
+    const id = h.api.last().id
+    expect(h.api.view(id).html).toContain('Plan: <b>Sonnet · Max</b>')
+    expect(h.api.view(id).html).toContain('Work: <b>Sonnet · Medium</b>')
   })
 })
 
 describe('live links from Telegram', () => {
-  test('🔗 Live link on the card; the link arrives as a button; a finished task offers Get a live link', async () => {
+  test('Live link in More; the link arrives as a button; a finished task offers Get a live link', async () => {
     const h = await paired()
-    await h.say('Make the settings page dark')
-    const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(choice(h.api.view(card), 'beta'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, '🔗 Live link'), card)
-    expect(h.api.view(card).html).toContain('ends with a live link')
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    const id = await card(h, 'Make the settings page dark')
+    await press(h, id, 'More')
+    await press(h, id, 'Live link: off')
+    expect(h.api.view(id).html).toContain('a live link at the end')
+    expect(labels(h, id)).toContain('Live link: on')
+    await press(h, id, 'Queue')
     const job = h.store.queued().at(-1)!
     expect(job.wantLink).toBe(true)
 
     await h.bridge.notify({ type: 'link', job, url: 'https://claude.ai/artifact/abc', title: 'Dark settings', note: null })
     expect(h.api.last().html).toContain('Live link for')
-    const kb = h.api.last().markup && 'inline_keyboard' in h.api.last().markup! ? (h.api.last().markup as { inline_keyboard: InlineKeyboard }).inline_keyboard : []
-    expect(kb.flat()[0]).toEqual({ text: '🔗 Open the live link', url: 'https://claude.ai/artifact/abc' })
+    expect(kb(h, h.api.last().id).flat()[0]).toEqual({ text: 'Open the live link', url: 'https://claude.ai/artifact/abc' })
 
     // A done task without a link: Get a live link queues one, next, in its conversation.
     const done = { ...job, id: job.id, status: 'done' as const, sessionId: 'eeeeeeee-1111-2222-3333-444444444444', links: null, startedAt: h.now(), finishedAt: h.now(), lastMessage: 'Done.' }
     h.store.updateJob(job.id, { status: 'done', sessionId: done.sessionId, finishedAt: h.now() })
     await h.bridge.notify({ type: 'done', job: done, diff: null, next: null })
     const msg = h.api.last().id
-    await h.tap(button(h.api.view(msg).keyboard, '🔗 Get a live link'), msg)
+    await press(h, msg, 'Get a live link')
     expect(h.store.queued()[0]).toMatchObject({ linkFor: job.id, sessionId: done.sessionId })
   })
 })
 
 describe('the queue from Telegram', () => {
-  test('⬆️ ⬇️ move a task, ⏸ holds it in its place, ▶️ lets it go, 🧹 Clear (twice) empties it', async () => {
+  test('pick a task by its number; Move, Hold and Release it; Clear asks on its own button', async () => {
     const h = await paired()
     const ids = ['one', 'two', 'three'].map(prompt => h.runner.enqueue({ projectDir: h.root, prompt, plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' }).id)
     await h.say('/queue')
     const msg = h.api.last().id
-    let kb = h.api.view(msg).keyboard
-    // The first can't go up, the last can't go down.
-    expect(kb[0]!.map(b => b.text)).toEqual([`⬇️ ${ids[0]}`, `⏸ ${ids[0]}`, `✏️ ${ids[0]}`, `🗑 ${ids[0]}`])
-    expect(kb[2]!.map(b => b.text)).toEqual([`⬆️ ${ids[2]}`, `⏸ ${ids[2]}`, `✏️ ${ids[2]}`, `🗑 ${ids[2]}`])
-    await h.tap(button(kb, `⬆️ ${ids[2]}`), msg)
+    const rows = () => kb(h, msg).map(r => r.map(b => b.text))
+    // Numbers only, until one is picked.
+    expect(rows()).toEqual([['1', '2', '3'], ['Refresh', 'Pause', 'Clear']])
+    await h.tap(choice(h.api.view(msg), `#${ids[2]}</b>`), msg)
+    expect(rows()).toEqual([['1', '2', '✓ 3'], ['Move up', 'Move down', 'Run next'], ['Hold', 'Change', 'Remove'], ['Refresh', 'Pause', 'Clear']])
+    await press(h, msg, 'Move up')
     expect(h.store.queued().map(j => j.id)).toEqual([ids[0]!, ids[2]!, ids[1]!])
-    kb = h.api.view(msg).keyboard
-    await h.tap(button(kb, `⏸ ${ids[0]}`), msg)
+    // It stays picked as it moves.
+    expect(rows()[0]).toEqual(['1', '✓ 2', '3'])
+    await h.tap(choice(h.api.view(msg), `#${ids[0]}</b>`), msg)
+    await press(h, msg, 'Hold')
     expect(h.store.getJob(ids[0]!)!.onHold).toBe(true)
     expect(h.api.view(msg).html).toContain('on hold')
-    await h.tap(button(h.api.view(msg).keyboard, `▶️ ${ids[0]}`), msg)
+    await press(h, msg, 'Release')
     expect(h.store.getJob(ids[0]!)!.onHold).toBe(false)
-    await h.tap(button(h.api.view(msg).keyboard, '🧹 Clear'), msg)
+    // Tapping the picked number again puts its buttons away.
+    await h.tap(choice(h.api.view(msg), `#${ids[0]}</b>`), msg)
+    expect(rows()).toEqual([['1', '2', '3'], ['Refresh', 'Pause', 'Clear']])
+    await press(h, msg, 'Clear')
     expect(h.api.answers.at(-1)!.text).toContain('again')
     expect(h.store.queued()).toHaveLength(3)
-    await h.tap(button(h.api.view(msg).keyboard, '🧹 Clear'), msg)
+    expect(rows().at(-1)).toEqual(['Refresh', 'Pause', 'Yes, clear'])
+    await press(h, msg, 'Yes, clear')
     expect(h.store.queued()).toHaveLength(0)
-    expect(h.api.view(msg).html).toContain('Nothing queued')
+    expect(h.api.view(msg).html).toContain('Nothing waiting')
+  })
+
+  test('Next on the card: the task goes before everything waiting', async () => {
+    const h = await paired()
+    h.runner.setPaused(true)
+    await press(h, await card(h, 'first'), 'Queue')
+    const id = await card(h, 'urgent')
+    await press(h, id, 'When')
+    await press(h, id, 'Next')
+    expect(h.api.view(id).html).toContain('Starts: <b>next, before the others</b>')
+    await press(h, id, 'Queue')
+    expect(h.store.queued().map(j => j.prompt)).toEqual(['urgent', 'first'])
   })
 })
 
 describe('killing a stuck task', () => {
-  test('🛑 Kill asks for a second tap, then ends the task and says so on the message', async () => {
+  test('Kill asks on the button itself, then ends the task and says so on the message', async () => {
     const h = await paired()
     const job = await running(h)
     await h.bridge.notify({ type: 'held', job: h.store.getJob(job.id)!, reason: 'no activity for 20m' })
     const msg = h.api.last()
-    const kill = button(h.api.view(msg.id).keyboard, '🛑 Kill')
+    const kill = button(h.api.view(msg.id).keyboard, /^Kill$/)
     await h.tap(kill, msg.id)
-    expect(h.api.answers.at(-1)!.text).toContain('Tap 🛑 Kill again')
+    expect(h.api.answers.at(-1)!.text).toContain('Tap again')
     expect(h.store.getJob(job.id)!.status).toBe('running')
-    await h.tap(kill, msg.id)
+    // The Kill button became its second tap, in the same place.
+    expect(labels(h, msg.id)).toEqual(['Screen', 'Continue', `Yes, kill #${job.id}`])
+    expect(button(h.api.view(msg.id).keyboard, 'Yes, kill')).toBe(`${kill}!`)
+    await press(h, msg.id, `Yes, kill #${job.id}`)
     expect(h.store.getJob(job.id)).toMatchObject({ status: 'cancelled', error: 'Killed by Telegram' })
     expect(h.api.view(msg.id).html).toContain(`Killed #${job.id}`)
     expect(h.api.view(msg.id).keyboard).toEqual([])
@@ -1064,11 +1247,26 @@ describe('killing a stuck task', () => {
     expect(h.api.sent.some(m => m.html.includes(`#${job.id} killed`) && m.silent)).toBe(true)
   })
 
+  test("on a task's card, Stop turns into Continue in place, and Kill closes the card", async () => {
+    const h = await paired()
+    const job = await running(h)
+    await Bun.sleep(0)
+    const card = h.api.sent.find(m => m.html.includes(`#${job.id} started`))!.id
+    await press(h, card, 'Stop')
+    expect(h.store.getJob(job.id)!.status).toBe('held')
+    expect(kb(h, card).map(r => r.map(b => b.text))).toEqual([['Screen', 'Continue', 'Kill']])
+    await press(h, card, 'Kill')
+    await press(h, card, `Yes, kill #${job.id}`)
+    expect(h.store.getJob(job.id)!.status).toBe('cancelled')
+    expect(h.api.view(card).html).toContain('<b>Stopped</b>')
+    expect(kb(h, card)).toEqual([])
+  })
+
   test('/kill ends the running task; /kill <#> a given one; Status has Kill', async () => {
     const h = await paired()
     const job = await running(h)
     await h.say('/status')
-    expect(h.api.view(h.api.last().id).keyboard.flat().map(b => b.text)).toContain(`🛑 Kill #${job.id}`)
+    expect(labels(h, h.api.last().id)).toContain(`Kill #${job.id}`)
     await h.say('/kill 999')
     expect(h.api.last().html).toContain('No task #999.')
     await h.say('/kill')
@@ -1076,6 +1274,16 @@ describe('killing a stuck task', () => {
     expect(h.store.getJob(job.id)!.status).toBe('cancelled')
     await h.say('/kill')
     expect(h.api.last().html).toContain('Nothing is running.')
+  })
+
+  test('with the message’s buttons out of reach, a second tap within a few seconds does it', async () => {
+    const h = await paired()
+    const job = await running(h)
+    // A message from before a restart: its buttons aren't known.
+    await h.tap(`j:${job.id}:kill`, 1)
+    expect(h.store.getJob(job.id)!.status).toBe('running')
+    await h.tap(`j:${job.id}:kill`, 1)
+    expect(h.store.getJob(job.id)!.status).toBe('cancelled')
   })
 })
 
@@ -1092,58 +1300,57 @@ describe('more than one task at once', () => {
     return { h, a, b }
   }
 
-  test('📊 Status lists every running task, each with its own Kill', async () => {
+  test('Status lists every running task, each with its own buttons', async () => {
     const { h, a, b } = await both()
     await h.say('/status')
     const view = h.api.view(h.api.last().id)
     expect(view.html).toContain(`<b>#${a.id}</b>`)
     expect(view.html).toContain(`<b>#${b.id}</b>`)
     expect(view.html).toContain('Up to 2 tasks at once.')
-    const kills = view.keyboard.flat().map(x => x.text).filter(t => t.startsWith('🛑'))
-    expect(kills).toEqual([`🛑 Kill #${a.id}`, `🛑 Kill #${b.id}`])
+    const kills = view.keyboard.flat().map(x => x.text).filter(t => t.startsWith('Kill'))
+    expect(kills).toEqual([`Kill #${a.id}`, `Kill #${b.id}`])
   })
 
-  test('👀 Peek asks which task, with them numbered; a number shows that one', async () => {
+  test('the screen asks which task, with them numbered; a number shows that one', async () => {
     const { h, a, b } = await both()
     await h.say('/peek')
     const picker = h.api.view(h.api.last().id)
-    expect(picker.html).toContain('Peek at <b>which task?</b>')
+    expect(picker.html).toContain('Whose screen?')
     expect(picker.html).toContain(`<b>1.</b> <b>#${a.id}</b>`)
     expect(picker.html).toContain(`<b>2.</b> <b>#${b.id}</b>`)
     expect(picker.keyboard.flat().map(x => x.text)).toEqual(['1', '2'])
     h.tmux.windows.get(windowName(b.id))!.screen = 'Writing the docs…'
     await h.tap(choice(picker, `#${b.id}`), h.api.last().id)
     const shown = h.api.view(h.api.last().id)
-    expect(shown.html).toContain(`<b>#${b.id}</b>`)
+    expect(shown.html).toContain(`<b>#${b.id} screen</b>`)
     expect(shown.html).toContain('Writing the docs')
     // Its buttons are about that task: Stop and Kill name it.
     expect(shown.keyboard.flat().map(x => x.callback_data)).toEqual(expect.arrayContaining([`j:${b.id}:stop`, `j:${b.id}:kill`, `g:peek:${b.id}`]))
   })
 
-  test('/kill with several running asks which, with their numbers; one number then a second tap ends that one only', async () => {
+  test('/kill with several running asks which, with their numbers; a number then its second tap ends that one only', async () => {
     const { h, a, b } = await both()
     await h.say('/kill')
-    const picker = h.api.view(h.api.last().id)
-    expect(picker.html).toContain('Kill which task?')
-    const kill = choice(picker, `#${b.id}`)
-    await h.tap(kill, h.api.last().id)
-    expect(h.api.answers.at(-1)!.text).toContain(`Tap 🛑 Kill again to end #${b.id}`)
-    await h.tap(kill, h.api.last().id)
+    const picker = h.api.last().id
+    expect(h.api.view(picker).html).toContain('Kill which task?')
+    await h.tap(choice(h.api.view(picker), `#${b.id}`), picker)
+    expect(h.api.answers.at(-1)!.text).toContain(`Tap again to end #${b.id}`)
+    await press(h, picker, `Yes, kill #${b.id}`)
     expect([a.id, b.id].map(id => h.store.getJob(id)!.status)).toEqual(['running', 'cancelled'])
     // With one left, /kill needs no number.
     await h.say('/kill')
     expect(h.store.getJob(a.id)!.status).toBe('cancelled')
   })
 
-  test('/settings: Tasks at once, 1 · 2 · 3, from the chat', async () => {
+  test('Settings: Tasks at once, 1 · 2 · 3, from the chat', async () => {
     const h = await paired()
     await h.say('/settings')
     const msg = h.api.last().id
     expect(h.api.view(msg).html).toContain('Tasks at once: <b>1</b>')
-    await h.tap(button(h.api.view(msg).keyboard, '2 at once'), msg)
+    await press(h, msg, '2 at once')
     expect(h.config().parallel).toBe(2)
     expect(h.api.view(msg).html).toContain('Tasks at once: <b>2</b>')
-    expect(h.api.view(msg).keyboard.flat().map(x => x.text)).toContain('✓ 2 at once')
+    expect(labels(h, msg)).toContain('✓ 2 at once')
   })
 
   test('a typed message goes to the task you picked', async () => {
@@ -1161,17 +1368,39 @@ describe('more than one task at once', () => {
 })
 
 describe('awake and asleep, from the bot', () => {
-  test('/mac: awake while tasks run and with the lid closed, as switches; no apps', async () => {
+  test('the Mac key: stay awake while tasks run, with the lid closed, or for a while; sleep; no apps', async () => {
+    const h = await paired({ mac: new FakePower() })
+    await h.say('Mac')
+    const msg = h.api.last()
+    expect(msg.html).toContain('<b>This Mac</b> · sleeps when idle, as usual')
+    expect(msg.html).toContain('While tasks run: <b>on</b>')
+    expect(msg.html).toContain('cq awake lid on')
+    expect(msg.html).not.toMatch(/quit|☰/i)
+    expect(kb(h, msg.id).map(r => r.map(b => b.text))).toEqual([
+      ['While tasks run: on', 'Lid closed: off'],
+      ['Awake 1h', 'Awake 4h', 'Awake 12h'],
+      ['Sleep when done: off', 'Sleep now'],
+      ['Refresh', 'Copy the command'],
+    ])
+    // The setup it needs once at the Mac is a tap away from the clipboard.
+    expect(kb(h, msg.id).flat().at(-1)).toEqual({ text: 'Copy the command', copy_text: { text: 'cq awake lid on' } })
+    await press(h, msg.id, 'While tasks run: on')
+    expect(h.config().keepAwake).toBe(false)
+    expect(h.api.view(msg.id).html).toContain('While tasks run: <b>off</b>')
+  })
+
+  test('Awake 4h keeps it awake that long, tasks or not; tapping it again stops', async () => {
     const h = await paired({ mac: new FakePower() })
     await h.say('/mac')
-    const msg = h.api.last()
-    expect(msg.html).toContain('This Mac')
-    expect(msg.html).toContain('Stays awake while tasks run')
-    expect(msg.html).not.toMatch(/quit|☰/i)
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toEqual(['😴 Sleep now', '🌙 Sleep when done', '☕ Awake while tasks run ✓', '💡 Awake with the lid closed', '🔄 Refresh'])
-    await h.tap(button(h.api.view(msg.id).keyboard, '☕ Awake while tasks run'), msg.id)
-    expect(h.config().keepAwake).toBe(false)
-    expect(h.api.view(msg.id).html).toContain('May sleep while tasks run')
+    const msg = h.api.last().id
+    await press(h, msg, 'Awake 4h')
+    expect(h.api.answers.at(-1)!.text).toMatch(/^The Mac stays awake until .+, tasks or not\.$/)
+    expect(h.api.view(msg).html).toMatch(/<b>This Mac<\/b> · awake until /)
+    expect(h.api.view(msg).html).toContain('For a while: <b>until ')
+    expect(kb(h, msg)[1]!.map(b => b.text)).toEqual(['Awake 1h', '✓ Awake 4h', 'Awake 12h'])
+    await press(h, msg, 'Awake 4h')
+    expect(h.api.view(msg).html).toContain('For a while: <b>off</b>')
+    expect(h.api.answers.at(-1)!.text).toBe('The Mac sleeps as usual again when nothing runs.')
   })
 
   test('/mac on Windows: no lid switch, and it says where Windows decides', async () => {
@@ -1180,37 +1409,61 @@ describe('awake and asleep, from the bot', () => {
     const msg = h.api.last()
     expect(msg.html).toContain('This PC')
     expect(msg.html).toContain('When I close the lid: Do nothing')
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).not.toContain('💡 Awake with the lid closed')
+    expect(labels(h, msg.id).some(l => l.startsWith('Lid closed'))).toBe(false)
   })
 
-  test('/sleep: says it is going to sleep, then it sleeps', async () => {
+  test('Sleep now asks on its own button, then sleeps', async () => {
+    const sys = new FakePower('linux')
+    const h = await paired({ mac: sys })
+    await h.say('/mac')
+    const msg = h.api.last().id
+    await press(h, msg, 'Sleep now')
+    expect(h.api.answers.at(-1)!.text).toBe('Tap again to put the computer to sleep.')
+    expect(kb(h, msg)[2]!.map(b => b.text)).toEqual(['Sleep when done: off', 'Yes, sleep now'])
+    expect(h.later).toHaveLength(0)
+    await press(h, msg, 'Yes, sleep now')
+    expect(h.api.answers.at(-1)!.text).toBe('Going to sleep.')
+    expect(h.api.sent.some(m => m.html.includes('Going to sleep</b> (asked from Telegram)'))).toBe(true)
+    h.later.forEach(run => run())
+    await Bun.sleep(0)
+    expect(sys.slept).toBe(1)
+  })
+
+  test('/sleep: says what sleeping does; Sleep now there needs no second tap', async () => {
     const sys = new FakePower('linux')
     const h = await paired({ mac: sys })
     await h.say('sleep')
     const card = h.api.last()
     expect(card.html).toContain('Put the computer to sleep?')
-    await h.tap(button(h.api.view(card.id).keyboard, '😴 Sleep now'), card.id)
+    await press(h, card.id, 'Sleep now')
     expect(h.api.answers.at(-1)!.text).toBe('Going to sleep.')
-    expect(h.api.sent.some(m => m.html.includes('Going to sleep</b> (asked from Telegram)'))).toBe(true)
     expect(sys.slept).toBe(0)
     h.later.forEach(run => run())
     await Bun.sleep(0)
     expect(sys.slept).toBe(1)
   })
 
-  test('🌙 Sleep when done, on and off; with nothing to sleep, a plain no', async () => {
+  test('Sleep when done, on and off; with nothing to sleep, a plain no', async () => {
     const h = await paired({ mac: new FakePower() })
     await h.say('/mac')
     const msg = h.api.last()
-    await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done'), msg.id)
-    expect(h.api.sent.some(m => m.html.includes('The Mac sleeps once the queue is done.'))).toBe(true)
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done ✓')
-    await h.tap(button(h.api.view(msg.id).keyboard, '🌙 Sleep when done ✓'), msg.id)
-    expect(h.api.view(msg.id).keyboard.flat().map(b => b.text)).toContain('🌙 Sleep when done')
+    await press(h, msg.id, 'Sleep when done: off')
+    expect(h.api.answers.at(-1)!.text).toBe('The Mac sleeps once the queue is done.')
+    expect(labels(h, msg.id)).toContain('Sleep when done: on')
+    await press(h, msg.id, 'Sleep when done: on')
+    expect(labels(h, msg.id)).toContain('Sleep when done: off')
 
     const plain = await paired()
     await plain.say('/mac')
     expect(plain.api.last().html).toContain('nothing here to keep awake or sleep')
+  })
+
+  test('Lid closed on a Mac that isn’t set up says what to run there, and changes nothing', async () => {
+    const h = await paired({ mac: new FakePower() })
+    await h.say('/mac')
+    await press(h, h.api.last().id, 'Lid closed: off')
+    expect(h.api.answers.at(-1)?.text).toBeTruthy()
+    expect(h.config().keepAwakeLidClosed).toBe(false)
   })
 })
 
@@ -1235,52 +1488,49 @@ describe('the menu button', () => {
 })
 
 describe('what the bot does without the app', () => {
-  test('✏️ Change on a queued task: its choices on a card; 💾 Save puts them on the task', async () => {
+  test('Change on a queued task: its choices on a card; Save puts them on the task', async () => {
     const h = await paired()
     await running(h)
-    await h.say('Write the docs')
-    const card = h.api.last().id
+    const id = await card(h, 'Write the docs')
     // The card starts in the folder used last (beta), so it can be queued as it is.
-    expect(h.api.view(card).html).toContain('beta')
-    await h.tap(button(h.api.view(card).keyboard, '▶️ Queue'), card)
+    expect(h.api.view(id).html).toContain('beta')
+    await press(h, id, 'Queue')
     const queued = h.store.queued()[0]!
     await h.say('/queue')
     const list = h.api.last().id
-    await h.tap(button(h.api.view(list).keyboard, `✏️ ${queued.id}`), list)
+    await h.tap(choice(h.api.view(list), `#${queued.id}</b>`), list)
+    await press(h, list, 'Change')
     const edit = h.api.last().id
     expect(h.api.view(edit).html).toContain(`Changing #${queued.id}`)
-    const labels = h.api.view(edit).keyboard.flat().map(b => b.text)
-    expect(labels).toContain('💾 Save')
-    expect(labels).not.toContain('📁 Folder')
+    expect(kb(h, edit).map(r => r.map(b => b.text))).toEqual([['Prompt', 'How', 'Model'], ['When', 'More'], ['Save', 'Cancel']])
     // A new prompt, another model, and a live link.
-    await h.tap(button(h.api.view(edit).keyboard, '✏️ Prompt'), edit)
+    await press(h, edit, 'Prompt')
     await h.say('Write the docs, with examples')
     const shown = h.api.last().id
-    await h.tap(button(h.api.view(shown).keyboard, '🧠 Model'), shown)
-    await h.tap(button(h.api.view(shown).keyboard, /^haiku$/), shown)
-    await h.tap(button(h.api.view(shown).keyboard, '🔗 Live link'), shown)
-    await h.tap(button(h.api.view(shown).keyboard, '💾 Save'), shown)
+    expect(h.api.deleted).toContain(edit)
+    await press(h, shown, 'Model')
+    await press(h, shown, 'Haiku')
+    await press(h, shown, 'More')
+    await press(h, shown, 'Live link: off')
+    await press(h, shown, 'Save')
     expect(h.store.getJob(queued.id)).toMatchObject({ status: 'queued', prompt: 'Write the docs, with examples', model: 'haiku', wantLink: true })
     expect(h.api.view(shown).html).toContain(`Changed #${queued.id}`)
     expect(h.store.queued()).toHaveLength(1)
   })
 
-  test('⏰ Later: a preset or a typed time, shown on the card and kept on the task', async () => {
+  test('When: a typed time, shown on the card and kept on the task', async () => {
     const h = await paired()
-    await h.say('Run the nightly report')
-    const card = h.api.last().id
-    await h.tap(button(h.api.view(card).keyboard, '📁 Folder'), card)
-    await h.tap(choice(h.api.view(card), 'beta'), card)
-    await h.tap(button(h.api.view(card).keyboard, '✅ Use this folder'), card)
-    await h.tap(button(h.api.view(card).keyboard, '⏰ Later'), card)
-    expect(h.api.view(card).html).toContain('When may it start?')
-    await h.tap(button(h.api.view(card).keyboard, '✍️ Type a time'), card)
+    const id = await card(h, 'Run the nightly report')
+    await press(h, id, 'When')
+    expect(h.api.view(id).html).toContain('When it starts')
+    await press(h, id, 'Type a time')
+    expect(h.api.last().markup).toMatchObject({ force_reply: true })
     await h.say('soonish')
     expect(h.api.last().html).toContain('isn’t a time I can read')
     await h.say('in 2h')
     const shown = h.api.last().id
-    expect(h.api.view(shown).html).toContain('⏰ starts at')
-    await h.tap(button(h.api.view(shown).keyboard, '▶️ Queue'), shown)
+    expect(h.api.view(shown).html).toContain('Starts: <b>at ')
+    await press(h, shown, 'Queue')
     const job = h.store.queued()[0]!
     expect(job.notBefore).toBe(h.now() + 2 * 3600_000)
     expect(h.api.view(shown).html).toContain('Not before')
@@ -1289,7 +1539,7 @@ describe('what the bot does without the app', () => {
     expect(h.store.active()).toBeNull()
   })
 
-  test('🌿 Merge, and 🗑 Discard on the second tap, for a task that ran on its own branch', async () => {
+  test('Merge, and Discard on its second tap, for a task that ran on its own branch', async () => {
     const merged: string[] = []
     const h = await paired({
       git: {
@@ -1302,11 +1552,11 @@ describe('what the bot does without the app', () => {
     h.store.updateJob(job.id, { status: 'done', branch: 'afterhours/1-do-the-thing', finishedAt: h.now() })
     await h.bridge.notify({ type: 'done', job: h.store.getJob(job.id)!, diff: null, next: null })
     const done = h.api.sent.findLast(m => m.html.includes(`#${job.id} done`))!
-    const discard = button(h.api.view(done.id).keyboard, '🗑 Discard branch')
-    await h.tap(discard, done.id)
+    await press(h, done.id, 'Discard branch')
     expect(h.api.answers.at(-1)!.text).toContain('Tap again')
+    expect(labels(h, done.id)).toContain('Yes, discard')
     expect(merged).toEqual([])
-    await h.tap(button(h.api.view(done.id).keyboard, '🌿 Merge'), done.id)
+    await press(h, done.id, 'Merge')
     expect(merged).toEqual(['afterhours/1-do-the-thing'])
     expect(h.api.last().html).toContain('Merged afterhours/1-do-the-thing into main.')
     expect(h.store.getJob(job.id)!.branchNote).toBe('Merged afterhours/1-do-the-thing into main.')
@@ -1314,94 +1564,63 @@ describe('what the bot does without the app', () => {
 })
 
 describe('everything the app has, in the bot', () => {
-  /** A card in beta, ready to queue. */
-  async function card(h: Harness, prompt = 'Do the thing') {
-    await h.say(prompt)
-    const id = h.api.last().id
-    // The next card starts in the folder used last.
-    if (h.api.view(id).html.includes('no folder yet')) {
-      await h.tap(button(h.api.view(id).keyboard, '📁 Folder'), id)
-      await h.tap(choice(h.api.view(id), 'beta'), id)
-      await h.tap(button(h.api.view(id).keyboard, '✅ Use this folder'), id)
-    }
-    return id
-  }
-  const kb = (h: Harness, id: number) => h.api.view(id).keyboard
-
-  test('plan with one effort, work with another; it is on the card, the task and the next card', async () => {
+  test('how it goes about it and what it may do are chosen apart: plan you approve, then no prompts', async () => {
     const h = await paired()
     const id = await card(h)
-    await h.tap(button(kb(h, id), '🗺 Mode'), id)
-    await h.tap(button(kb(h, id), /plan → work$/), id)
-    await h.tap(button(kb(h, id), '↩️ Back'), id)
-    await h.tap(button(kb(h, id), '⚡ Effort'), id)
-    await h.tap(button(kb(h, id), /^max$/), id)
-    await h.tap(button(kb(h, id), '⚡ Effort'), id)
-    await h.tap(button(kb(h, id), '🛠 Work effort…'), id)
-    await h.tap(button(kb(h, id), /^low$/), id)
-    expect(h.api.view(id).html).toContain('⚡ max → low')
-    await h.tap(button(kb(h, id), '▶️ Queue'), id)
-    expect(h.store.queued()[0]).toMatchObject({ plan: true, effort: 'max', workEffort: 'low' })
-    expect(h.api.view(id).html).toContain('/max→low')
-    await h.say('another')
-    expect(h.api.view(h.api.last().id).html).toContain('⚡ max → low')
-  })
-
-  test('how it goes about it and what it may do are chosen apart: plan, then yolo', async () => {
-    const h = await paired()
-    const id = await card(h)
-    await h.tap(button(kb(h, id), '🗺 Mode'), id)
-    await h.tap(button(kb(h, id), /^review the plan$/), id)
-    await h.tap(button(kb(h, id), /yolo/), id)
-    await h.tap(button(kb(h, id), '↩️ Back'), id)
-    expect(h.api.view(id).html).toContain('review→yolo')
-    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    await press(h, id, 'How')
+    await press(h, id, 'Plan, I approve')
+    await press(h, id, 'No prompts')
+    expect(h.api.view(id).html).toContain('How: <b>Plan, you approve it</b> · No prompts')
+    await press(h, id, 'Queue')
     expect(h.store.queued()[0]).toMatchObject({ plan: true, review: true, execMode: 'bypassPermissions' })
-    // Asking only: no permissions to choose.
+    // Only answering: nothing to permit, so no permission is ticked, and tapping one says why.
     const second = await card(h, 'What does it do?')
-    await h.tap(button(kb(h, second), '🗺 Mode'), second)
-    await h.tap(button(kb(h, second), /ask/), second)
-    expect(kb(h, second).flat().map(b => b.text)).not.toContain('⚠️ yolo')
+    await press(h, second, 'How')
+    await press(h, second, 'Only answer')
+    expect(labels(h, second).filter(l => l.startsWith('✓'))).toEqual(['✓ Only answer'])
+    await press(h, second, 'No prompts')
+    expect(h.api.answers.at(-1)!.text).toContain('never asks')
+    expect(h.api.view(second).html).toContain('How: <b>Only answers</b>')
   })
 
   test('Starts: every day, after another task, a time limit, and the card says so', async () => {
     const h = await paired()
     await running(h)
     const id = await card(h, 'Nightly checks')
-    await h.tap(button(kb(h, id), '⏰ Later'), id)
-    await h.tap(button(kb(h, id), '🔁 Every day…'), id)
+    await press(h, id, 'When')
+    await press(h, id, 'Every day at…')
     await h.say('02:30')
     const shown = h.api.last().id
     expect(h.api.view(shown).html).toContain('every day at 02:30')
-    await h.tap(button(kb(h, shown), '⋯ More'), shown)
-    await h.tap(button(kb(h, shown), '⏱ Time limit…'), shown)
-    await h.tap(button(kb(h, shown), /^1 h$/), shown)
-    await h.tap(button(kb(h, shown), '↩️ Back'), shown)
-    await h.tap(button(kb(h, shown), '▶️ Queue'), shown)
+    expect(labels(h, shown)).toContain('✓ Every day 02:30')
+    await press(h, shown, 'More')
+    await press(h, shown, '1h')
+    expect(h.api.view(shown).html).toContain('stops after 1 h of work')
+    await press(h, shown, 'Queue')
     const job = h.store.queued()[0]!
     expect(job).toMatchObject({ repeatDaily: 150, maxMinutes: 60 })
     expect(new Date(job.notBefore!).getHours() * 60 + new Date(job.notBefore!).getMinutes()).toBe(150)
 
     const second = await card(h, 'Then the report')
-    await h.tap(button(kb(h, second), '⏰ Later'), second)
-    await h.tap(button(kb(h, second), '⏭ After a task…'), second)
+    await press(h, second, 'When')
     await h.tap(choice(h.api.view(second), 'Do the thing'), second)
-    expect(h.api.view(second).html).toContain('starts after #')
-    await h.tap(button(kb(h, second), '▶️ Queue'), second)
+    expect(h.api.view(second).html).toContain('after #')
+    await press(h, second, 'Queue')
     expect(h.store.queued().at(-1)!.afterJob).toBe(h.store.active()!.id)
   })
 
   test('Starts: at the limit reset, when it is known', async () => {
     const h = await paired()
     const id = await card(h)
-    await h.tap(button(kb(h, id), '⏰ Later'), id)
-    expect(kb(h, id).flat().map(b => b.text).some(t => t.includes('At the reset'))).toBe(false)
+    await press(h, id, 'When')
+    expect(h.api.view(id).html).toContain('not known right now')
+    await press(h, id, 'At the reset')
+    expect(h.api.answers.at(-1)!.text).toContain('doesn’t know when the limit resets')
     h.store.kvSet('limits', { fiveHour: { usedPct: 80, resetsAt: h.now() + 2 * 3_600_000 } })
-    await h.tap(button(kb(h, id), '↩️ Back'), id)
-    await h.tap(button(kb(h, id), '⏰ Later'), id)
-    await h.tap(button(kb(h, id), 'At the reset'), id)
+    await press(h, id, 'At the reset')
     expect(h.api.view(id).html).toContain('when the 5-hour limit resets')
-    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    expect(labels(h, id)).toContain('✓ At the reset')
+    await press(h, id, 'Queue')
     expect(h.store.queued()[0]!.notBefore).toBe(h.now() + 2 * 3_600_000)
   })
 
@@ -1415,10 +1634,9 @@ describe('everything the app has, in the bot', () => {
       },
     })
     const id = await card(h, 'Redo the parser')
-    await h.tap(button(kb(h, id), '⋯ More'), id)
-    await h.tap(button(kb(h, id), '🔀 Three models'), id)
-    await h.tap(button(kb(h, id), '↩️ Back'), id)
-    await h.tap(button(kb(h, id), '▶️ Queue'), id)
+    await press(h, id, 'More')
+    await press(h, id, '3 models')
+    await press(h, id, 'Queue')
     const jobs = h.store.queued()
     expect(jobs).toHaveLength(3)
     expect(new Set(jobs.map(j => j.group)).size).toBe(1)
@@ -1436,10 +1654,9 @@ describe('everything the app has, in the bot', () => {
     await finish(jobs[2]!)
     const compare = h.api.sent.find(m => m.html.includes('The three ways are done'))!
     expect(compare.html).toContain('did it')
-    const keep = button(h.api.view(compare.id).keyboard, `Keep #${jobs[1]!.id}`)
-    await h.tap(keep, compare.id)
+    await press(h, compare.id, `Keep #${jobs[1]!.id}`)
     expect(merged).toEqual([])
-    await h.tap(keep, compare.id)
+    await press(h, compare.id, `Yes, keep #${jobs[1]!.id}`)
     expect(merged).toEqual([`-afterhours/${jobs[0]!.id}-x`, `+afterhours/${jobs[1]!.id}-x`, `-afterhours/${jobs[2]!.id}-x`])
   })
 
@@ -1448,15 +1665,14 @@ describe('everything the app has, in the bot', () => {
     await h.sendFile('f1', 'notes.txt', 'remember this', 'Summarise the notes')
     const id = h.api.last().id
     expect(h.api.view(id).html).toContain('Summarise the notes')
-    expect(h.api.view(id).html).toContain('📎 1 file')
-    // A second file lands on the same card.
+    expect(h.api.view(id).html).toContain('1 file for Claude to read')
+    // A second file lands on the same card, which comes down to where you are.
     await h.sendFile('f2', 'more.txt', 'and this')
     const again = h.api.last().id
-    expect(h.api.view(again).html).toContain('📎 2 files')
-    await h.tap(button(h.api.view(again).keyboard, '📁 Folder'), again)
-    await h.tap(choice(h.api.view(again), 'beta'), again)
-    await h.tap(button(h.api.view(again).keyboard, '✅ Use this folder'), again)
-    await h.tap(button(h.api.view(again).keyboard, '▶️ Queue'), again)
+    expect(h.api.deleted).toContain(id)
+    expect(h.api.view(again).html).toContain('2 files for Claude to read')
+    await pickFolder(h, again, 'beta')
+    await press(h, again, 'Queue')
     const job = h.store.queued()[0]!
     expect(job.attachments).toHaveLength(2)
     expect(readFileSync(job.attachments![0]!, 'utf8')).toBe('remember this')
@@ -1465,54 +1681,36 @@ describe('everything the app has, in the bot', () => {
     expect(h.api.last().html).toContain('bigger than 5 MB')
   })
 
-  test('a permission request offers Claude Code’s own “stop asking” rules; a plan can be approved then yolo', async () => {
+  test('a permission request offers Claude Code’s own “stop asking” rules; a plan can be approved then no prompts', async () => {
     const h = await paired()
     const job = await running(h)
     await h.bridge.notify({ type: 'permission', job: h.store.getJob(job.id)!, code: 'permrl', tool: 'Bash', detail: 'npm test', minutes: 15, suggestions: ['Always allow commands starting with npm test in this project'] })
     const msg = h.api.last()
     expect(msg.html).toContain('Or allow it and stop asking')
     expect(msg.html).toContain('npm test in this project')
-    expect(h.api.view(msg.id).keyboard.flat().some(b => b.callback_data === 'a:permrl:r0')).toBe(true)
+    expect(kb(h, msg.id).flat().some(b => b.callback_data === 'a:permrl:r0')).toBe(true)
     await h.bridge.notify({ type: 'plan_review', job: h.store.getJob(job.id)!, code: 'rvwmd' })
-    const review = h.api.last()
-    const labels = h.api.view(review.id).keyboard.flat().map(b => b.text)
-    expect(labels).toEqual(expect.arrayContaining(['✅ Approve, then accept edits', '✅ Approve, then ⚠️ yolo']))
+    expect(button(kb(h, h.api.last().id), 'Approve, then no prompts')).toBe('a:rvwmd:my')
   })
 
-  test('/tasks lists the finished ones; words find one; a number opens it', async () => {
+  test('Tasks lists the finished ones; words find one; a number opens it', async () => {
     const h = await paired()
     const spec = (prompt: string) => ({ projectDir: join(h.root, 'beta'), prompt, plan: false, review: false, execMode: 'auto' as const, model: 'opus', effort: 'high' as const, sessionPolicy: 'new' as const, source: 'cli' })
     const a = h.store.addJob(spec('Fix the flaky test'), h.now())
     const b = h.store.addJob(spec('Write the changelog'), h.now())
     h.store.updateJob(a.id, { status: 'done', lastMessage: 'Fixed.', finishedAt: h.now() })
     h.store.updateJob(b.id, { status: 'failed', error: 'It broke.', finishedAt: h.now() })
-    await h.say('/tasks')
+    await h.say(KEYS.tasks)
     const list = h.api.last()
-    expect(list.html).toContain('Tasks')
+    expect(list.html).toContain('<b>Tasks</b>')
     expect(list.html).toContain('Fix the flaky test')
     expect(list.html).toContain('Write the changelog')
-    await h.tap('g:tsearch', list.id)
+    await press(h, list.id, 'Search')
     await h.say('flaky')
     const found = h.api.last()
     expect(found.html).toContain('matching “flaky”')
     expect(found.html).not.toContain('changelog')
-    await h.tap(button(h.api.view(found.id).keyboard, /^1$/), found.id)
+    await h.tap(button(kb(h, found.id), /^1$/), found.id)
     expect(h.api.last().html).toContain(`#${a.id} done`)
-  })
-
-  test('the Mac screen can keep it awake with the lid closed', async () => {
-    const h = await paired({ mac: new FakePower() })
-    await h.say('/mac')
-    const view = h.api.last()
-    expect(h.api.view(view.id).keyboard.flat().map(b => b.text)).toContain('💡 Awake with the lid closed')
-    await h.tap('m:l', view.id)
-    expect(h.api.answers.at(-1)?.text).toBeTruthy()
-  })
-
-  test('typed efforts can split too: max>medium', async () => {
-    const h = await paired()
-    await h.say(`q ${h.root}/alpha plan max>medium: Rework the importer`)
-    const id = h.api.last().id
-    expect(h.api.view(id).html).toContain('⚡ max → medium')
   })
 })

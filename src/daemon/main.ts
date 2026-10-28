@@ -428,9 +428,11 @@ export async function runDaemon(): Promise<void> {
     void mac?.tick()
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
-    // On Linux the lid switch is held off by the same lock; on a Mac it takes turning sleep off.
-    keepAwake.set(config.keepAwake && runner.hasWork(), { lid: power?.kind === 'linux' && config.keepAwakeLidClosed })
-    void lidAwake?.tick(config.keepAwake && config.keepAwakeLidClosed && runner.hasWork())
+    // Awake while tasks run, or for a while you asked for with nothing running. On Linux the lid
+    // switch is held off by the same lock; on a Mac it takes turning sleep off.
+    const awake = (config.keepAwake && runner.hasWork()) || (mac?.awakeHeld() ?? false)
+    keepAwake.set(awake, { lid: power?.kind === 'linux' && config.keepAwakeLidClosed })
+    void lidAwake?.tick(config.keepAwakeLidClosed && awake)
   }, 2000)
 
   function shutdown(code = 0): void {

@@ -1,13 +1,10 @@
 import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import type { Hello } from '@afterhours/protocol'
-import { BRAND } from '../shared/brand'
 import { codeRoots, type Config } from '../shared/config'
-import type { Approval, Job, JobSpec } from '../shared/types'
-import { continueSpec, type Chat, type ChatSource } from '../daemon/chats'
+import type { Approval, Effort, Job, JobSpec } from '../shared/types'
+import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
-import { modeLabel } from '../daemon/format'
 import { formatClock } from '../daemon/limits'
 import { settleBranch, type BranchGit } from '../daemon/branches'
 import type { PowerControl } from '../daemon/power'
@@ -15,7 +12,7 @@ import { describeAnswers, type Notice, type Question, type QuestionAnswer } from
 import type { Runner } from '../daemon/runner'
 import { MAX_UPLOAD_BYTES, saveUpload } from '../daemon/uploads'
 import type { Store } from '../daemon/store'
-import { refusedFormatting, type BotApi, type InlineKeyboard, type Markup, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
+import { refusedFormatting, type BotApi, type InlineKeyboard, type Markup, type ReplyKeyboard, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
 import { htmlToText, telegramHtmlProblem } from './markdown'
 import { LATER, nextClock, parseWhen } from './when'
 import { TelegramState, type Choices, type Draft } from './state'
@@ -26,29 +23,31 @@ export interface TelegramOptions {
   store: Store
   runner: Runner
   folders: FolderMap
-  /** Your Claude Code conversations, for 💬 Chat… and the usage-limit hand-off. */
+  /** Your Claude Code conversations, for the card's Chat tab and the usage-limit hand-off. */
   chats: ChatSource
   config: () => Config
   saveConfig: (config: Config) => void
   /** For reusing the text commands' status output. */
   commandContext: () => CommandContext
-  /** Quitting apps and sleeping the Mac; null or missing on other systems. */
+  /** Staying awake and sleeping; null or missing where there's nothing to sleep (a container). */
   mac?: PowerControl | null
-  /** For 🌿 Merge and 🗑 Discard on a task that ran on its own branch. */
+  /** For Merge and Discard on a task that ran on its own branch. */
   git?: BranchGit
   /** Where photos and files you send are kept for a task to read (the apps' uploads folder). */
   uploadsDir?: string
   now: () => number
   log: (line: string) => void
+  /** Waits a moment (a key pressed, before the screen is shown again); tests don't wait. */
+  pause?: (ms: number) => Promise<void>
 }
 
 /** Something the bot asked you to type next. */
 type Pending =
   | { kind: 'prompt'; draftId: number }
-  /** ⏰ Later: a time you type for a card. */
+  /** When: a time you type for a card. */
   | { kind: 'later'; draftId: number; daily?: boolean }
   | { kind: 'search'; draftId: number }
-  /** 📚 Tasks: words to find among the finished ones. */
+  /** Tasks: words to find among the finished ones. */
   | { kind: 'tasksearch' }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
@@ -57,7 +56,7 @@ type Pending =
   /** What you type next goes into this running task (the latest one when no number). */
   | { kind: 'say'; job?: number }
 
-/** The chat you're inside (💬 Chats → ✍️ Write here): what you type goes into it. */
+/** The chat you're inside (Chats → Write here): what you type goes into it. */
 interface Focus {
   sessionId: string
   title: string
@@ -73,19 +72,19 @@ export interface TelegramStatus {
 }
 
 const COMMANDS = [
-  { command: 'new', description: 'Pick a folder, then send the prompt' },
-  { command: 'chats', description: 'Your recent chats, from any project' },
-  { command: 'leave', description: 'Leave the chat you are in' },
-  { command: 'queue', description: 'Waiting and running jobs' },
+  { command: 'new', description: 'A new task: pick the folder, then send the prompt' },
+  { command: 'status', description: "What's running, what waits on you, usage" },
+  { command: 'queue', description: 'Waiting tasks: move, hold, change or remove' },
   { command: 'tasks', description: 'Finished tasks: open one, or search' },
-  { command: 'status', description: 'Current job and usage limits' },
-  { command: 'peek', description: "The running job's screen" },
-  { command: 'kill', description: 'End the running task now, and what it started' },
-  { command: 'mac', description: 'Stay awake while tasks run, or sleep' },
+  { command: 'chats', description: 'Your Claude Code chats, from any project' },
+  { command: 'mac', description: 'Keep this computer awake, or put it to sleep' },
   { command: 'sleep', description: 'Put this computer to sleep' },
-  { command: 'pause', description: 'Stop starting new jobs' },
-  { command: 'resume', description: 'Resume the queue or a paused job' },
-  { command: 'settings', description: 'Notifications and the folder map' },
+  { command: 'settings', description: 'Notifications, tasks at once, other chats' },
+  { command: 'kill', description: 'End the running task now, and what it started' },
+  { command: 'peek', description: "The running task's screen" },
+  { command: 'pause', description: 'Stop starting new tasks' },
+  { command: 'resume', description: 'Resume the queue or a paused task' },
+  { command: 'leave', description: 'Leave the chat you are in' },
   { command: 'cancel', description: 'Never mind what you asked me to type' },
   { command: 'help', description: 'How this works' },
 ]
@@ -96,21 +95,29 @@ const WORDS: Record<string, string> = {
   st: 'status',
   queue: 'queue',
   ls: 'queue',
+  tasks: 'tasks',
+  chats: 'chats',
   peek: 'peek',
   pause: 'pause',
   resume: 'resume',
   go: 'resume',
   help: 'help',
+  settings: 'settings',
   mac: 'mac',
+  pc: 'mac',
+  computer: 'mac',
   apps: 'mac',
   sleep: 'sleep',
 }
 
 const PENDING_TTL = 30 * 60_000
-const KILL_CONFIRM_MS = 15_000
+/** Without a message's buttons at hand, the second tap of something that asks twice comes within this. */
+const CONFIRM_MS = 15_000
 /** /mac and /sleep where there's nothing to sleep. */
 const NO_POWER = 'There is nothing here to keep awake or sleep (a container).'
 const MAX_PAIR_ATTEMPTS = 5
+/** The bot's look: when it changes, the keys under the text box are sent again, once. */
+const LOOK = 2
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -125,13 +132,13 @@ function plain(html: string): string {
 function settledLine(a: Approval | null): string {
   switch (a?.status) {
     case 'allowed':
-      return '✅ Allowed elsewhere.'
+      return 'Allowed elsewhere.'
     case 'denied':
-      return '❌ Declined elsewhere.'
+      return 'Declined elsewhere.'
     case 'answered':
-      return '✅ Answered elsewhere.'
+      return 'Answered elsewhere.'
     case 'expired':
-      return "⏱ Expired: Claude was told you're away."
+      return "Expired: Claude was told you're away."
     default:
       return 'No longer waiting.'
   }
@@ -141,6 +148,8 @@ function questionsOf(a: Approval): Question[] {
   return ((a.payload as { questions?: Question[] } | null)?.questions ?? []) as Question[]
 }
 
+const isEffort = (e: string | undefined): e is Effort => ui.EFFORTS.includes(e as Effort)
+
 export class TelegramBridge {
   private state: TelegramState
   private running = false
@@ -148,29 +157,25 @@ export class TelegramBridge {
   private botName: string | null = null
   private error: string | null = null
   private pending: (Pending & { at: number }) | null = null
-  /** HTML of recent messages with buttons, so a tap can update them in place. */
-  private sent = new Map<number, string>()
-  /** Messages showing the queue, refreshed after ⬆️/🗑 taps. */
-  private queueMessages = new Set<number>()
+  /** Recent messages with buttons, so a tap can update them in place. */
+  private sent = new Map<number, { html: string; keyboard?: InlineKeyboard }>()
+  /** Messages showing the queue, refreshed after a tap, with the task picked in each. */
+  private queueMessages = new Map<number, number | null>()
   /** Where you are in answering each set of Claude's questions, by request code. */
   private questions = new Map<string, ui.QuestionState & { messageId: number }>()
   /** Each running task's card (its "started" message), edited as the task goes on. */
   private cards = new Map<number, { messageId: number; card: ui.Card }>()
   /** The message holding each request's buttons, by code, to tidy up once it's settled anywhere. */
   private requests = new Map<string, number>()
-  /** Messages showing 📊 Status or 👀 Peek, refreshed in place. */
+  /** Messages showing Status, a screen, or this computer, refreshed in place. */
   private statusMessages = new Set<number>()
-  private peekMessages = new Set<number>()
+  private peekMessages = new Map<number, boolean>()
   private ticking = false
   private pairAttempts = new Map<number, number>()
-  /** 🛑 Kill tapped once, by task: a second tap within KILL_CONFIRM_MS kills it. */
-  private killArmed = new Map<number, number>()
-  /** 🧹 Clear tapped once: when. */
-  private clearArmed = 0
-  /** A Mac button tapped once (quit an app, sleep): the second tap within KILL_CONFIRM_MS does it. */
-  private macArmed: { what: string; at: number } | null = null
-  /** Other buttons that take a second tap (🗑 a branch), by what they do. */
+  /** Something that asks twice, tapped once where its button couldn't change: what, and when. */
   private armed = new Map<string, number>()
+  /** The tap being handled: its data (without the "!" of a second tap), and whether it is one. */
+  private tapping: { data: string; confirmed: boolean } | null = null
   private username: string | null = null
   /** The menu button last set, and when setting it last failed (tried again after a while). */
   private menuFailedAt = 0
@@ -181,6 +186,16 @@ export class TelegramBridge {
 
   private get owner(): number | null {
     return this.o.config().telegram.ownerId
+  }
+
+  /** "Mac", "computer" or "PC". */
+  private get word(): string {
+    return this.o.mac?.word ?? 'computer'
+  }
+
+  /** The keys under the text box: inside a chat, the first one leaves it. */
+  private keys(): ReplyKeyboard {
+    return ui.mainKeyboard(this.word, this.focus()?.title ?? null)
   }
 
   async start(): Promise<void> {
@@ -197,8 +212,30 @@ export class TelegramBridge {
     if (this.owner === null) this.pairCode()
     this.o.api.setMyCommands(COMMANDS).catch(err => this.o.log(`telegram: setMyCommands failed: ${errorText(err)}`))
     await this.resetMenu()
+    await this.newLook()
     void this.loop()
     this.o.log(`telegram: ${this.botName ?? 'bot'} ${this.owner === null ? 'waiting to pair' : 'ready'}`)
+  }
+
+  /** The keys under the text box changed: the new ones go out once, with a word on what's new. */
+  private async newLook(): Promise<void> {
+    const chat = this.owner
+    if (chat === null || this.o.store.kvGet<number>('telegram.look') === LOOK) return
+    try {
+      await this.send(
+        chat,
+        {
+          html:
+            '<b>The bot has a new look.</b> Plain buttons that stay where they are, and a task card that shows every choice with a button for each. ' +
+            `In Model you can plan at one effort and work at another. ${ui.machineKey(this.word)} keeps the ${this.word} awake or puts it to sleep. Help says where everything is.`,
+          silent: true,
+        },
+        this.keys(),
+      )
+      this.o.store.kvSet('telegram.look', LOOK)
+    } catch (err) {
+      this.o.log(`telegram: couldn't send the new keys: ${errorText(err)}`)
+    }
   }
 
   stop(): void {
@@ -259,8 +296,8 @@ export class TelegramBridge {
 
   // --- sending -------------------------------------------------------------------
 
-  private remember(messageId: number, html: string): void {
-    this.sent.set(messageId, html)
+  private remember(messageId: number, html: string, keyboard?: InlineKeyboard): void {
+    this.sent.set(messageId, { html, keyboard })
     if (this.sent.size > 300) this.sent.delete(this.sent.keys().next().value!)
   }
 
@@ -285,7 +322,7 @@ export class TelegramBridge {
    * refuses its app buttons, again without them.
    */
   private async sendOne(chat: number, view: ui.View, markup?: Markup): Promise<TgMessage> {
-    let reply = view.keyboard ? { inline_keyboard: view.keyboard } : markup
+    const reply = view.keyboard ? { inline_keyboard: view.keyboard } : markup
     let html = this.checked(view.html)
     let msg: TgMessage
     try {
@@ -297,7 +334,7 @@ export class TelegramBridge {
       } else throw err
       msg = await this.o.api.sendMessage(chat, html, reply, { silent: view.silent })
     }
-    if (view.keyboard) this.remember(msg.message_id, html)
+    if (view.keyboard) this.remember(msg.message_id, html, view.keyboard)
     return msg
   }
 
@@ -310,11 +347,26 @@ export class TelegramBridge {
       html = plain(html)
       await this.o.api.editMessageText(chat, messageId, html, view.keyboard)
     }
-    this.remember(messageId, html)
+    this.remember(messageId, html, view.keyboard)
   }
 
   private sendText(chat: number, text: string): Promise<TgMessage> {
     return this.send(chat, { html: ui.esc(text) })
+  }
+
+  /** Asks you to type something: the text box opens as a reply, with `placeholder` in it. */
+  private async ask(chat: number, text: string, placeholder: string): Promise<void> {
+    await this.send(chat, { html: ui.esc(text) }, { force_reply: true, input_field_placeholder: ui.clip(placeholder, 64) })
+  }
+
+  /** Takes an old message away; where Telegram won't (it's over two days old), says where it went. */
+  private async drop(chat: number, messageId: number, line = 'Moved further down.'): Promise<void> {
+    this.sent.delete(messageId)
+    try {
+      await this.o.api.deleteMessage(chat, messageId)
+    } catch {
+      await this.o.api.editMessageText(chat, messageId, `<i>${ui.esc(line)}</i>`).catch(() => {})
+    }
   }
 
   /** Adds a closing line to a message and removes its buttons. */
@@ -323,7 +375,7 @@ export class TelegramBridge {
   }
 
   private async settleMessage(chat: number, messageId: number, line: string, text?: string): Promise<void> {
-    const html = this.sent.get(messageId) ?? ui.esc(text ?? '')
+    const html = this.sent.get(messageId)?.html ?? ui.esc(text ?? '')
     this.sent.delete(messageId)
     await this.o.api.editMessageText(chat, messageId, `${html}\n\n<b>${ui.esc(line)}</b>`)
   }
@@ -335,6 +387,33 @@ export class TelegramBridge {
     this.questions.delete(code)
     if (tapped) await this.settle(chat, tapped, line)
     if (sentIn !== undefined && sentIn !== tapped?.message_id) await this.settleMessage(chat, sentIn, line).catch(() => {})
+  }
+
+  /**
+   * Whether something that asks twice (Kill, Sleep now, Clear…) may go ahead. The second tap may.
+   * The first turns the tapped button into the second ("Yes, kill #12") where it is, and says so; it
+   * goes back to how it was when the message is next shown. Where the button can't change, a second
+   * tap within a few seconds does it.
+   */
+  private async secondTap(chat: number, message: TgMessage | undefined, label: string): Promise<boolean> {
+    const t = this.tapping
+    if (!t || t.confirmed) return true
+    const at = message?.message_id
+    const keyboard = (at !== undefined ? this.sent.get(at)?.keyboard : undefined) ?? message?.reply_markup?.inline_keyboard
+    if (at !== undefined && keyboard?.flat().some(b => b.callback_data === t.data)) {
+      const next = keyboard.map(row => row.map(b => (b.callback_data === t.data ? ui.btn(label, `${t.data}!`) : b)))
+      await this.o.api.editMessageReplyMarkup(chat, at, next)
+      const known = this.sent.get(at)
+      if (known) this.sent.set(at, { ...known, keyboard: next })
+      return false
+    }
+    const tapped = this.armed.get(t.data)
+    if (tapped !== undefined && this.o.now() - tapped <= CONFIRM_MS) {
+      this.armed.delete(t.data)
+      return true
+    }
+    this.armed.set(t.data, this.o.now())
+    return false
   }
 
   /** Called by the notifier for every notice. */
@@ -465,6 +544,7 @@ export class TelegramBridge {
       chat: sessionId => this.o.chats.get(sessionId),
       resetsAt: this.resetsAt(),
       ahead: [...this.o.store.running(), ...this.o.store.queued()].map(j => ({ id: j.id, prompt: j.prompt })),
+      machine: this.word,
     }
   }
 
@@ -520,12 +600,46 @@ export class TelegramBridge {
   async devicePaired(device: { name: string; platform: string }, role: string): Promise<void> {
     const chat = this.owner
     if (chat === null || !this.running) return
-    await this.send(chat, { html: `📱 <b>${ui.esc(device.name)}</b> paired with this machine, as ${ui.esc(role)}. Not you? Remove it in the app, or with <code>cq devices remove</code> on the Mac.` }).catch(err =>
+    await this.send(chat, { html: `<b>${ui.esc(device.name)}</b> paired with this machine, as ${ui.esc(role)}. Not you? Remove it in the app, or with <code>cq devices remove</code> on the ${ui.esc(this.word)}.` }).catch(err =>
       this.o.log(`telegram: couldn't say a device paired: ${errorText(err)}`),
     )
   }
 
   // --- messages ---------------------------------------------------------------------
+
+  /** Which key under the text box this is, today's or one from before the new look. */
+  private keyOf(text: string): string | null {
+    for (const [key, label] of Object.entries(ui.KEYS)) if (text === label) return key
+    if (text === 'Mac' || text === 'PC' || text === 'Computer') return 'mac'
+    return ui.OLD_KEYS[text] ?? null
+  }
+
+  private async onKey(chat: number, key: string): Promise<void> {
+    switch (key) {
+      case 'newTask':
+        await this.leaveChat(chat, true)
+        return this.newTask(chat)
+      case 'status':
+        return this.showStatus(chat)
+      case 'queue':
+        return this.showQueue(chat)
+      case 'tasks':
+        return this.showTasks(chat)
+      case 'chats':
+        return this.showChats(chat, 0)
+      case 'mac':
+        return this.showMac(chat)
+      case 'settings':
+        await this.send(chat, this.settingsView())
+        return
+      case 'help':
+        return this.showHelp(chat)
+      case 'leave':
+        return this.leaveChat(chat)
+      case 'peek':
+        return this.showPeek(chat)
+    }
+  }
 
   private async onMessage(m: TgMessage): Promise<void> {
     if (m.chat.type !== 'private' || !m.from) return
@@ -535,15 +649,8 @@ export class TelegramBridge {
     if (m.from.id !== this.owner || !text) return // only you; strangers get no reply
     const chat = m.chat.id
 
-    if (text === ui.KEYS.newTask) {
-      await this.leaveChat(chat, true)
-      return this.newTask(chat)
-    }
-    if (text === ui.KEYS.queue) return this.showQueue(chat)
-    if (text === ui.KEYS.status) return this.showStatus(chat)
-    if (text === ui.KEYS.peek) return this.showPeek(chat)
-    if (text === ui.KEYS.chats) return this.showChats(chat, 0)
-    if (text === ui.KEYS.leave) return this.leaveChat(chat)
+    const key = this.keyOf(text)
+    if (key) return this.onKey(chat, key)
     if (text.startsWith('/')) return this.onCommand(chat, text)
 
     const pending = this.takePending()
@@ -558,10 +665,10 @@ export class TelegramBridge {
     return this.newDraft(chat, text)
   }
 
-  /** A photo or file: kept on the Mac, and added to the card you're on (or a new one, with its caption as the prompt). */
+  /** A photo or file: kept on the computer, and added to the card you're on (or a new one, with its caption as the prompt). */
   private async onFile(chat: number, m: TgMessage): Promise<void> {
     const dir = this.o.uploadsDir
-    if (!dir) return void (await this.sendText(chat, 'Files aren’t kept on this Mac.'))
+    if (!dir) return void (await this.sendText(chat, `Files aren’t kept on this ${this.word}.`))
     const pick = m.document ?? [...(m.photo ?? [])].sort((a, b) => (b.file_size ?? b.width * b.height) - (a.file_size ?? a.width * a.height))[0]
     if (!pick) return
     const name = m.document?.file_name ?? 'photo.jpg'
@@ -584,7 +691,6 @@ export class TelegramBridge {
     }
     if (d.attachments.length >= 10) return void (await this.sendText(chat, 'That card has 10 files already.'))
     d = this.state.updateDraft(d.id, { attachments: [...d.attachments, saved.path] })
-    if (d.messageId) await this.edit(chat, d.messageId, { html: d.folder ? `📁 <b>${ui.esc(this.uiContext().label(d.folder))}</b>` : '📝' }).catch(() => {})
     await this.showDraft(chat, d)
     if (!d.prompt && d.folder) this.setPending({ kind: 'prompt', draftId: d.id })
   }
@@ -595,12 +701,12 @@ export class TelegramBridge {
     if (tries >= MAX_PAIR_ATTEMPTS) return
     const typed = (/^\/start\s+(\d{6})$/.exec(text) ?? /^(\d{6})$/.exec(text))?.[1]
     if (!typed) {
-      if (text.startsWith('/start')) await this.sendText(m.chat.id, 'Send /start followed by the pairing code that `cq telegram` printed on your Mac.')
+      if (text.startsWith('/start')) await this.sendText(m.chat.id, `Send /start followed by the pairing code that \`cq telegram\` printed on your ${this.word}.`)
       return
     }
     if (typed !== this.pairCode()) {
       this.pairAttempts.set(from.id, tries + 1)
-      await this.sendText(m.chat.id, "That code doesn't match. Use the one `cq telegram` printed on your Mac.")
+      await this.sendText(m.chat.id, `That code doesn't match. Use the one \`cq telegram\` printed on your ${this.word}.`)
       return
     }
     const config = this.o.config()
@@ -608,8 +714,13 @@ export class TelegramBridge {
     config.telegram.ownerName = from.username ? `@${from.username}` : from.first_name
     this.o.saveConfig(config)
     this.o.store.kvSet('telegram.pairCode', '')
+    this.o.store.kvSet('telegram.look', LOOK)
     this.o.log(`telegram: paired with ${config.telegram.ownerName} (${from.id})`)
-    await this.send(m.chat.id, { html: `✅ <b>Paired.</b> Only you can use this bot now.\n\n${ui.HELP_HTML}` }, ui.MAIN_KEYBOARD)
+    await this.send(m.chat.id, { html: `<b>Paired.</b> Only you can use this bot now.\n\n${ui.helpHtml(this.word)}` }, this.keys())
+  }
+
+  private async showHelp(chat: number): Promise<void> {
+    await this.send(chat, { html: ui.helpHtml(this.word) }, this.keys())
   }
 
   private async onCommand(chat: number, text: string): Promise<void> {
@@ -617,8 +728,7 @@ export class TelegramBridge {
     switch (name) {
       case 'start':
       case 'help':
-        await this.send(chat, { html: ui.HELP_HTML }, ui.MAIN_KEYBOARD)
-        return
+        return this.showHelp(chat)
       case 'new':
         await this.leaveChat(chat, true)
         return this.newTask(chat)
@@ -653,7 +763,7 @@ export class TelegramBridge {
       }
       case 'pause':
         this.o.runner.setPaused(true)
-        await this.sendText(chat, '⏸ Paused. The current job keeps going; nothing new starts until /resume.')
+        await this.sendText(chat, 'Paused. The running task keeps going; nothing new starts until /resume.')
         return
       case 'resume':
         await this.sendText(chat, await this.o.runner.go())
@@ -675,8 +785,7 @@ export class TelegramBridge {
       case 'prompt': {
         const d = this.state.getDraft(p.draftId)
         if (!d || d.status !== 'open') return this.newDraft(chat, text)
-        if (d.messageId) await this.edit(chat, d.messageId, { html: d.folder ? `📁 <b>${ui.esc(this.uiContext().label(d.folder))}</b>` : '📝' })
-        await this.showDraft(chat, this.state.updateDraft(d.id, { prompt: text }))
+        await this.showDraft(chat, this.state.updateDraft(d.id, { prompt: text, view: null }))
         return
       }
       case 'later': {
@@ -690,7 +799,7 @@ export class TelegramBridge {
         }
         const clock = new Date(at)
         const patch = p.daily ? { repeatDaily: clock.getHours() * 60 + clock.getMinutes(), notBefore: null } : { notBefore: at, repeatDaily: null }
-        await this.showDraft(chat, this.state.updateDraft(d.id, { ...patch, atReset: false, afterJob: null }))
+        await this.showDraft(chat, this.state.updateDraft(d.id, { ...patch, atReset: false, afterJob: null, front: false, view: 'when' }))
         return
       }
       case 'tasksearch':
@@ -698,9 +807,7 @@ export class TelegramBridge {
       case 'search': {
         const d = this.state.getDraft(p.draftId)
         if (!d || d.status !== 'open') return this.newDraft(chat, text)
-        const hits = await this.o.folders.search(text, this.recent(), 8)
-        if (d.messageId) await this.edit(chat, d.messageId, { html: '🔍 Search results below.' })
-        await this.showDraft(chat, d, ui.searchView(d, text, hits, this.uiContext()))
+        await this.showDraft(chat, this.state.updateDraft(d.id, { view: `folder:search:${text}` }))
         this.setPending({ kind: 'search', draftId: d.id }) // typing again refines the search
         return
       }
@@ -714,13 +821,13 @@ export class TelegramBridge {
           return
         }
         const reply = this.o.runner.answer(p.code, 'answer', text)
-        await this.settleRequest(chat, p.code, `✍️ Answered: “${ui.clip(text, 200)}”`)
+        await this.settleRequest(chat, p.code, `Answered: “${ui.clip(text, 200)}”`)
         await this.sendText(chat, reply)
         return
       }
       case 'changes': {
         const reply = this.o.runner.answer(p.code, 'deny', text)
-        await this.settleRequest(chat, p.code, '✏️ You asked for changes.')
+        await this.settleRequest(chat, p.code, 'You asked for changes.')
         await this.sendText(chat, reply)
         return
       }
@@ -741,9 +848,41 @@ export class TelegramBridge {
     }
   }
 
-  private async showDraft(chat: number, draft: Draft, view?: ui.View): Promise<void> {
-    const msg = await this.send(chat, view ?? ui.draftCard(draft, this.uiContext()))
+  // --- the task card ----------------------------------------------------------------
+
+  /** The card as it is now, with what its open tab needs. */
+  private async card(d: Draft): Promise<ui.View> {
+    return ui.draftCard(d, this.uiContext(), await this.cardExtras(d))
+  }
+
+  private async cardExtras(d: Draft): Promise<ui.CardExtras> {
+    const v = ui.parseView(d.view)
+    if (v.tab === 'chat' && d.folder) return { chats: { list: this.o.chats.list(d.folder, 8), hasLast: this.o.store.getThread(d.folder) !== null } }
+    if (v.tab !== 'folder') return {}
+    if (v.folder.mode === 'browse') {
+      const dir = this.browseDir(d)
+      return { browse: { dir, parent: parentWithin(dir, this.roots()), children: listChildren(dir), page: v.folder.page } }
+    }
+    if (v.folder.mode === 'search') return { hits: await this.o.folders.search(v.folder.query, this.recent(), 8) }
+    return { recent: this.recent() }
+  }
+
+  /** The folder the browser shows: the one browsed last, else the card's, else the first of your code folders. */
+  private browseDir(d: Draft): string {
+    return [d.browse, d.folder].find((p): p is string => !!p && existsSync(p) && this.within(p)) ?? this.roots()[0]!
+  }
+
+  /** The Folder tab: your recent folders, or the browser while there are none yet. */
+  private folderTab(d: Draft): Partial<Draft> {
+    return this.recent().length > 0 ? { view: 'folder' } : { view: 'folder:browse:0', browse: this.browseDir(d) }
+  }
+
+  /** Sends the card at the bottom of the chat, where you are; the one it was in goes. */
+  private async showDraft(chat: number, draft: Draft): Promise<void> {
+    const old = draft.messageId
+    const msg = await this.send(chat, await this.card(draft))
     this.state.updateDraft(draft.id, { messageId: msg.message_id })
+    if (old !== null && old !== msg.message_id) await this.drop(chat, old)
   }
 
   private async newDraft(chat: number, text: string): Promise<void> {
@@ -775,208 +914,12 @@ export class TelegramBridge {
     await this.showDraft(chat, this.state.addDraft({ ...choices, prompt, newChat }, this.o.now()))
   }
 
-  /** 📚 Tasks: the finished ones, newest first; `query` narrows them (kept while you page back). */
-  private async showTasks(chat: number, edit?: number, query?: string, before?: number): Promise<void> {
-    if (query !== undefined) this.o.store.kvSet('telegram.tasksQuery', query)
-    const words = (query ?? (before ? this.o.store.kvGet<string>('telegram.tasksQuery') : '') ?? '').trim()
-    const found = this.o.store.searchFinished({ before, query: words, limit: 9 })
-    const view = ui.tasksView(found.slice(0, 8), { query: words, more: found.length > 8 }, this.noticeContext())
-    if (edit !== undefined) await this.edit(chat, edit, view)
-    else await this.send(chat, view)
-  }
-
-  /** ➕ New task: pick the folder first, then send the prompt. */
+  /** New task: the card opens on its Folder tab; then you send the prompt. */
   private async newTask(chat: number): Promise<void> {
-    const draft = this.state.addDraft({ ...this.choices(), prompt: '' }, this.o.now())
-    const start = draft.folder && this.within(draft.folder) ? draft.folder : this.roots()[0]!
-    const msg = await this.send(chat, this.folderPage(draft, start, 0))
-    this.state.updateDraft(draft.id, { messageId: msg.message_id, browse: start })
-  }
-
-  private folderPage(d: Draft, dir: string, page: number): ui.View {
-    return ui.folderView(d, { dir, parent: parentWithin(dir, this.roots()), children: listChildren(dir), page }, this.uiContext())
-  }
-
-  private async showQueue(chat: number, messageId?: number): Promise<void> {
-    const view = ui.queueView(this.o.store.running(), this.o.store.queued(), this.uiContext(), this.o.runner.paused)
-    if (messageId) await this.edit(chat, messageId, view)
-    else messageId = (await this.send(chat, view)).message_id
-    this.queueMessages.add(messageId)
-  }
-
-  private statusInfo(): ui.StatusInfo {
-    return {
-      running: this.o.store.running().map(job => {
-        const info = this.o.runner.runtimeInfo(job.id)
-        return { job, lastTool: info?.lastTool ? { tool: info.lastTool, at: info.lastActivity } : null }
-      }),
-      parallel: this.o.runner.parallel,
-      approvals: this.o.store.pendingApprovals(),
-      queued: this.o.store.queued(),
-      paused: this.o.runner.paused,
-      limits: this.o.runner.limits(),
-    }
-  }
-
-  /** 📊 Status; `messageId` refreshes one already shown. */
-  /** Whether this is the second tap on `what` within KILL_CONFIRM_MS (the first one only arms it). */
-  private tappedTwice(what: string): boolean {
-    const at = this.armed.get(what)
-    const now = this.o.now()
-    if (at !== undefined && now - at <= KILL_CONFIRM_MS) {
-      this.armed.delete(what)
-      return true
-    }
-    this.armed.set(what, now)
-    return false
-  }
-
-  /** 🖥 /mac: what's open and what keeps the Mac awake, with buttons to quit an app or sleep. */
-  private async showMac(chat: number, messageId?: number): Promise<void> {
-    const mac = this.o.mac
-    if (!mac) return void (await this.sendText(chat, NO_POWER))
-    const view = ui.macView(await mac.status())
-    if (messageId) await this.edit(chat, messageId, view)
-    else await this.send(chat, view)
-  }
-
-  /**
-   * m:k stay awake while tasks run on/off · m:l with the lid closed too on/off · m:s sleep · m:S
-   * sleep (already confirmed) · m:d sleep when done on/off · m:D sleep when done · m:r refresh.
-   * Sleeping takes a second tap, as Kill does.
-   */
-  private async onMacButton(chat: number, message: TgMessage | undefined, op: string): Promise<string | undefined> {
-    const mac = this.o.mac
-    if (!mac) return NO_POWER
-    const at = message?.message_id
-    const refresh = async () => {
-      if (at) await this.showMac(chat, at).catch(() => {})
-    }
-    const armed = (what: string) => {
-      const again = this.macArmed?.what === what && this.o.now() - this.macArmed.at <= KILL_CONFIRM_MS
-      this.macArmed = again ? null : { what, at: this.o.now() }
-      return again
-    }
-    switch (op) {
-      case 'k': {
-        const r = mac.keepAwake(!(await mac.status()).keepAwake)
-        await refresh()
-        return r.text
-      }
-      case 'l': {
-        const r = await mac.lidClosed(!(await mac.status()).lidClosed.on)
-        await refresh()
-        return r.text
-      }
-      case 'r':
-        await refresh()
-        return 'Up to date.'
-      case 's':
-      case 'S': {
-        if (op === 's' && !armed('sleep')) return `Tap 😴 Sleep now again to put the ${mac.word} to sleep.`
-        const r = await mac.sleepNow({ by: 'Telegram' })
-        if (!r.ok) await this.sendText(chat, `😴 ${r.text}`)
-        return r.ok ? 'Going to sleep.' : "It didn't sleep."
-      }
-      case 'd':
-      case 'D': {
-        const on = op === 'D' || !(await mac.status()).sleepWhenDone.on
-        const r = await mac.sleepWhenDone({ on, by: 'Telegram' })
-        await this.sendText(chat, `${on ? '🌙' : '☀️'} ${r.text}`)
-        await refresh()
-        return on ? 'Sleeps when the queue is done.' : 'Stays awake.'
-      }
-    }
-    return undefined
-  }
-
-  private async showStatus(chat: number, messageId?: number): Promise<void> {
-    const view = ui.statusView(this.statusInfo(), this.noticeContext())
-    if (messageId) await this.edit(chat, messageId, view)
-    else messageId = (await this.send(chat, view)).message_id
-    this.statusMessages.add(messageId)
-    if (this.statusMessages.size > 50) this.statusMessages.delete(this.statusMessages.values().next().value!)
-  }
-
-  private async showPeek(chat: number, messageId?: number, jobId?: number): Promise<void> {
-    const running = this.o.store.running()
-    // Several running and none chosen: which one?
-    if (jobId === undefined && running.length > 1) {
-      await this.send(chat, ui.runningPickerView(running, 'peek', this.noticeContext()))
-      return
-    }
-    const s = await this.o.runner.screen(30, false, jobId)
-    const view = ui.peekView(s?.jobId ?? null, s?.text ?? '')
-    if (messageId) await this.edit(chat, messageId, view)
-    else messageId = (await this.send(chat, view)).message_id
-    this.peekMessages.add(messageId)
-    if (this.peekMessages.size > 50) this.peekMessages.delete(this.peekMessages.values().next().value!)
-  }
-
-  /** How long a request still waits for you, in minutes. */
-  private minutesLeft(a: Approval): number {
-    const t = this.o.config().timeouts
-    const seconds = a.kind === 'question' ? t.questionSec : a.kind === 'review' ? t.reviewSec : t.approvalSec
-    return Math.max(1, Math.round((a.createdAt + seconds * 1000 - this.o.now()) / 60_000))
-  }
-
-  private settingsView(): ui.View {
-    const config = this.o.config()
-    return ui.settingsView({
-      notify: config.notify,
-      folders: this.o.folders.size,
-      builtAt: this.o.folders.builtAt,
-      roots: this.roots(),
-      models: config.models,
-      watch: config.watchSessions,
-      autoContinue: config.autoContinueChats,
-      parallel: this.o.runner.parallel,
-      now: this.o.now(),
-    })
-  }
-
-  // --- buttons ----------------------------------------------------------------------
-
-  private async onCallback(q: TgCallbackQuery): Promise<void> {
-    if (this.owner === null || q.from.id !== this.owner) {
-      await this.o.api.answerCallbackQuery(q.id).catch(() => {})
-      return
-    }
-    const chat = q.message?.chat.id ?? this.owner
-    const [kind, ...parts] = (q.data ?? '').split(':')
-    let toast: string | undefined
-    try {
-      switch (kind) {
-        case 'd':
-          toast = await this.onDraftButton(chat, q.message, Number(parts[0]), parts.slice(1))
-          break
-        case 'a':
-          toast = await this.onApprovalButton(chat, q.message, parts[0]!, parts[1]!)
-          break
-        case 'o':
-          toast = await this.onQuestionButton(chat, q.message, parts[0]!, parts[1]!)
-          break
-        case 'j':
-          toast = await this.onJobButton(chat, q.message, Number(parts[0]), parts[1]!)
-          break
-        case 'g':
-          toast = await this.onGlobalButton(chat, q.message, parts)
-          break
-        case 'w':
-          toast = await this.onChatButton(chat, q.message, parts[0]!, parts[1]!)
-          break
-        case 'c':
-          toast = await this.onChatsButton(chat, q.message, parts[0]!, parts[1])
-          break
-        case 'm':
-          toast = await this.onMacButton(chat, q.message, parts[0]!)
-          break
-      }
-    } catch (err) {
-      toast = 'Something went wrong.'
-      this.o.log(`telegram: button ${q.data} failed: ${errorText(err)}`)
-    }
-    await this.o.api.answerCallbackQuery(q.id, toast ? toast.slice(0, 190) : undefined).catch(() => {})
+    let draft = this.state.addDraft({ ...this.choices(), prompt: '' }, this.o.now())
+    draft = this.state.updateDraft(draft.id, this.folderTab(draft))
+    await this.showDraft(chat, draft)
+    if (draft.folder) this.setPending({ kind: 'prompt', draftId: draft.id })
   }
 
   private async onDraftButton(chat: number, message: TgMessage | undefined, id: number, args: string[]): Promise<string | undefined> {
@@ -988,220 +931,180 @@ export class TelegramBridge {
     if (at === null || at === undefined) return
     if (d.messageId !== at) d = this.state.updateDraft(d.id, { messageId: at })
     const ctx = this.uiContext()
-    const show = (view: ui.View) => this.edit(chat, at, view)
+    /** Changes the card and shows it again, in place. */
+    const show = async (patch: Partial<Draft> = {}): Promise<void> => {
+      d = this.state.updateDraft(id, patch)
+      await this.edit(chat, at, await this.card(d))
+    }
     const [op, a, b] = args
     // Any other tap ends a search, so your next message isn't taken as more search words.
     if (op !== 's' && this.pending?.kind === 'search' && this.pending.draftId === d.id) this.setPending(null)
 
     switch (op) {
-      case 'k': // back to the card
-        await show(ui.draftCard(d, ctx))
+      case 'v': {
+        // A tab: opens it, or closes it (-). "work" is the Model tab, setting the work.
+        if (a === '-') return void (await show({ view: null }))
+        if (a === 'work') return void (await show({ view: 'model:work' }))
+        if (a === 'folder') return void (await show(this.folderTab(d)))
+        return void (await show({ view: a && ['chat', 'how', 'model', 'when', 'more'].includes(a) ? a : null }))
+      }
+      case 'k': // Back, on cards from before the tabs
+        await show({ view: null })
         if (!d.prompt && d.folder) this.setPending({ kind: 'prompt', draftId: d.id })
         return
-      case 'f': {
-        const dir = [d.browse, d.folder].find((p): p is string => !!p && existsSync(p) && this.within(p)) ?? this.roots()[0]!
-        d = this.state.updateDraft(d.id, { browse: dir })
-        await show(this.folderPage(d, dir, 0))
-        return
-      }
+      case 'f':
+        return void (await show({ view: 'folder:browse:0', browse: this.browseDir(d) }))
+      case 'r':
+        return void (await show({ view: 'folder' }))
       case 'b': {
         const dir = this.state.folderPath(Number(a))
-        if (!dir || !existsSync(dir)) return 'That folder is gone. Tap 🔄 Rescan.'
-        d = this.state.updateDraft(d.id, { browse: dir })
-        await show(this.folderPage(d, dir, Number(b) || 0))
-        return
+        if (!dir || !existsSync(dir)) return 'That folder is gone. Rescan folders in Settings.'
+        return void (await show({ view: `folder:browse:${Number(b) || 0}`, browse: dir }))
       }
       case 'u': {
         const dir = this.state.folderPath(Number(a))
-        if (!dir || !existsSync(dir)) return 'That folder is gone. Tap 🔄 Rescan.'
+        if (!dir || !existsSync(dir)) return 'That folder is gone. Rescan folders in Settings.'
         // A follow-up can only continue its conversation in the folder it ran in.
         const moved = d.sessionId && dir !== d.folder
-        d = this.state.updateDraft(d.id, {
-          folder: dir,
-          browse: dir,
-          ...(moved ? { sessionId: null, followJob: null, takeover: false } : {}),
-        })
-        await show(ui.draftCard(d, ctx))
+        await show({ folder: dir, browse: dir, view: null, ...(moved ? { sessionId: null, followJob: null, takeover: false } : {}) })
         this.setPending(d.prompt ? null : { kind: 'prompt', draftId: d.id })
-        return `📁 ${ctx.label(dir)}`
+        return d.prompt ? undefined : 'Now send the prompt.'
       }
-      case 'r':
-        await show(ui.recentView(d, this.recent(), ctx))
-        return
       case 's':
         this.setPending({ kind: 'search', draftId: d.id })
-        await show(ui.searchPromptView(d))
+        await this.ask(chat, 'Type part of a folder name, e.g. api or shop web.', 'Part of a folder name')
         return
-      case 'rs': {
+      case 'rs':
         await this.o.folders.rebuild()
-        await show(this.folderPage(d, d.browse && existsSync(d.browse) ? d.browse : this.roots()[0]!, 0))
+        await show({ view: 'folder:browse:0', browse: this.browseDir(d) })
         return `Folder map rebuilt: ${this.o.folders.size} folders.`
-      }
       case 'o': {
-        if (!a) return void (await show(ui.modeView(d)))
-        if (a === 'h' || a === 'p') {
-          // How it goes about it, and (separately) what it may do without asking.
-          if (a === 'h') {
-            const how = ui.HOW[b as ui.HowKey]
-            if (!how) return
-            d = this.state.updateDraft(d.id, { plan: how.plan, review: how.review, execMode: b === 'ask' ? 'plan' : d.execMode === 'plan' ? 'auto' : d.execMode })
-          } else {
-            const perm = ui.PERMISSIONS[b as ui.PermissionKey]
-            if (!perm) return
-            d = this.state.updateDraft(d.id, { execMode: perm.execMode, ...(d.execMode === 'plan' ? { plan: false, review: false } : {}) })
-          }
-          await show(ui.modeView(d))
-          return `Mode: ${modeLabel(d)}`
+        if (a === 'h') {
+          const how = ui.HOW[b as ui.HowKey]
+          if (!how) return
+          return void (await show({ plan: how.plan, review: how.review, execMode: b === 'ask' ? 'plan' : d.execMode === 'plan' ? 'auto' : d.execMode, view: 'how' }))
         }
-        const mode = ui.MODES[a as ui.ModeKey]
-        if (!mode) return
-        d = this.state.updateDraft(d.id, { plan: mode.plan, review: mode.review, execMode: mode.execMode })
-        await show(ui.draftCard(d, ctx))
-        return `Mode: ${mode.label}`
+        if (a === 'p') {
+          const perm = ui.PERMISSIONS[b as ui.PermissionKey]
+          if (!perm) return
+          if (ui.howOf(d) === 'ask') return 'An answer changes nothing, so it never asks. Pick another How first.'
+          return void (await show({ execMode: perm.execMode, view: 'how' }))
+        }
+        return void (await show({ view: 'how' }))
       }
-      case 'm': {
-        if (!a) return void (await show(ui.modelView(d, ctx)))
-        // Picking the planning model again leaves the work model as it was, unless it's now the same.
-        d = this.state.updateDraft(d.id, { model: a, ...(d.workModel === a ? { workModel: null } : {}) })
-        await show(ui.draftCard(d, ctx))
-        return d.plan && d.workModel ? `Plans with ${a}` : `Model: ${a}`
-      }
-      case 'w': {
-        if (!a) return
-        d = this.state.updateDraft(d.id, { workModel: a === 'same' || a === d.model ? null : a })
-        await show(ui.draftCard(d, ctx))
-        return d.workModel ? `Works with ${d.workModel}` : `${d.model} does both`
-      }
-      case 'we': {
-        if (!a) return void (await show(ui.workEffortView(d)))
-        if (!ui.EFFORTS.includes(a as (typeof ui.EFFORTS)[number])) return
-        d = this.state.updateDraft(d.id, { workEffort: a === d.effort ? null : (a as (typeof ui.EFFORTS)[number]) })
-        await show(ui.draftCard(d, ctx))
-        return d.workEffort ? `Works at ${d.workEffort}` : `${d.effort} for both`
-      }
-      case 'e': {
-        if (!a) return void (await show(ui.effortView(d)))
-        if (!ui.EFFORTS.includes(a as (typeof ui.EFFORTS)[number])) return
-        d = this.state.updateDraft(d.id, { effort: a as (typeof ui.EFFORTS)[number], ...(d.workEffort === a ? { workEffort: null } : {}) })
-        await show(ui.draftCard(d, ctx))
-        return `Effort: ${a}`
-      }
-      case 'c': // the new-chat toggle on cards from before 💬 Chat…
-        d = d.sessionId
-          ? this.state.updateDraft(d.id, { sessionId: null, followJob: null, takeover: false, newChat: true })
-          : this.state.updateDraft(d.id, { newChat: !d.newChat })
-        await show(ui.draftCard(d, ctx))
-        return
+      case 'm':
+        // The planning model; the work model stays as it was, unless it's now the same.
+        if (!a) return void (await show({ view: 'model' }))
+        return void (await show({ model: a, ...(d.workModel === a ? { workModel: null } : {}), view: 'model' }))
+      case 'w':
+        if (!a) return void (await show({ view: 'model:work' }))
+        return void (await show({ workModel: a === 'same' || a === d.model ? null : a, view: 'model:work' }))
+      case 'e':
+        if (!a) return void (await show({ view: 'model' }))
+        if (!isEffort(a)) return
+        return void (await show({ effort: a, ...(d.workEffort === a ? { workEffort: null } : {}), view: 'model' }))
+      case 'we':
+        if (!a) return void (await show({ view: 'model:work' }))
+        if (!isEffort(a)) return
+        return void (await show({ workEffort: a === d.effort ? null : a, view: 'model:work' }))
+      case 'c': // the new-chat switch on cards from before the Chat tab
+        return void (await show(d.sessionId ? { sessionId: null, followJob: null, takeover: false, newChat: true, view: 'chat' } : { newChat: !d.newChat, view: 'chat' }))
       case 't': {
         if (!d.folder) return 'Pick a folder first.'
-        if (!a) {
-          const hasLast = this.o.store.getThread(d.folder) !== null
-          await show(ui.chatsView(d, ctx.label(d.folder), this.o.chats.list(d.folder, 8), hasLast, this.o.now()))
-          return
-        }
-        let toast: string
+        if (!a) return void (await show({ view: 'chat' }))
         if (a === 'new' || a === 'last') {
-          d = this.state.updateDraft(d.id, { sessionId: null, followJob: null, takeover: false, newChat: a === 'new' })
-          toast = a === 'new' ? 'New chat.' : 'Continues the last chat.'
+          await show({ sessionId: null, followJob: null, takeover: false, newChat: a === 'new', view: 'chat' })
         } else {
           const c = this.o.chats.get(a)
           if (!c) return 'That chat is gone.'
           // Open in VS Code or a terminal: taking it over is what continuing it from here means.
-          d = this.state.updateDraft(d.id, { sessionId: c.sessionId, followJob: null, newChat: false, takeover: c.where !== null })
-          toast = `💬 ${ui.clip(c.title, 60)}`
+          await show({ sessionId: c.sessionId, followJob: null, newChat: false, takeover: c.where !== null, view: 'chat' })
         }
-        await show(ui.draftCard(d, ctx))
         if (!d.prompt) this.setPending({ kind: 'prompt', draftId: d.id })
-        return toast
-      }
-      case 'h':
-        d = this.state.updateDraft(d.id, { takeover: !d.takeover })
-        await show(ui.draftCard(d, ctx))
-        return d.takeover ? 'Takes it over when it starts.' : 'Waits until you close it there.'
-      case 'l':
-        d = this.state.updateDraft(d.id, { wantLink: !d.wantLink })
-        await show(ui.draftCard(d, ctx))
-        return d.wantLink ? 'Ends with a live link.' : 'No live link.'
-      case 'i':
-        d = this.state.updateDraft(d.id, { isolate: !d.isolate })
-        await show(ui.draftCard(d, ctx))
-        return d.isolate ? 'Runs on its own git branch.' : 'Runs in your checkout.'
-      case 'p':
-        this.setPending({ kind: 'prompt', draftId: d.id })
-        await this.sendText(chat, `✍️ Send the new prompt${d.editJob ? ` for #${d.editJob}` : ''}.`)
-        return 'Waiting for the prompt.'
-      case 'a': {
-        const now = this.o.now()
-        const clear = { notBefore: null, repeatDaily: null, atReset: false, afterJob: null }
-        const pick = { h: LATER.hour, n: LATER.tonight, m: LATER.morning }[a as 'h' | 'n' | 'm']
-        if (pick) d = this.state.updateDraft(d.id, { ...clear, notBefore: pick(now) })
-        else if (a === 'c') d = this.state.updateDraft(d.id, clear)
-        else if (a === 't' || a === 'd') {
-          this.setPending({ kind: 'later', draftId: d.id, daily: a === 'd' })
-          return a === 'd' ? 'Send the time of day, e.g. 02:30 or 11pm.' : 'Send the time, e.g. 23:00 or in 2h.'
-        } else if (a === 'r') {
-          if (!ctx.resetsAt) return 'The Mac doesn’t know when the limit resets right now.'
-          d = this.state.updateDraft(d.id, { ...clear, atReset: true })
-        } else if (a === 'af') {
-          await show(ui.afterView(d, ctx))
-          return
-        } else if (a === 'j') {
-          const job = Number(b)
-          if (!ctx.ahead?.some(j => j.id === job)) return `#${job} isn't running or waiting any more.`
-          d = this.state.updateDraft(d.id, { ...clear, afterJob: job })
-        } else {
-          await show(ui.laterView(d, now, ctx))
-          return
-        }
-        await show(ui.draftCard(d, ctx))
-        return d.repeatDaily !== null ? `Every day at ${ui.timeOfDay(d.repeatDaily)}.` : d.atReset ? 'Starts when the limit resets.' : d.afterJob !== null ? `Starts after #${d.afterJob}.` : d.notBefore ? `Starts at ${formatClock(d.notBefore, now)} at the earliest.` : 'Starts as soon as it can.'
-      }
-      case 'mo': {
-        if (a === 't') return void (await show(ui.limitView(d)))
-        await show(ui.moreView(d))
         return
       }
-      case 'tl': {
-        d = this.state.updateDraft(d.id, { maxMinutes: Number(a) > 0 ? Number(a) : null })
-        await show(ui.moreView(d))
-        return d.maxMinutes ? `Stops after ${d.maxMinutes} min of work.` : 'No time limit.'
+      case 'h':
+        await show({ takeover: !d.takeover, view: 'chat' })
+        return d.takeover ? 'It takes the chat over when it starts.' : 'It waits until you close the chat there.'
+      case 'i':
+        await show({ isolate: !d.isolate, view: 'chat' })
+        return d.isolate ? 'It runs on its own git branch.' : 'It runs in your checkout.'
+      case 'l':
+        return void (await show({ wantLink: !d.wantLink, view: 'more' }))
+      case 'p':
+        this.setPending({ kind: 'prompt', draftId: d.id })
+        await this.ask(chat, `Send the new prompt${d.editJob ? ` for #${d.editJob}` : ''}.`, 'The new prompt')
+        return
+      case 'a': {
+        const now = this.o.now()
+        const clear = { notBefore: null, repeatDaily: null, atReset: false, afterJob: null, front: false }
+        const pick = { h: LATER.hour, n: LATER.tonight, m: LATER.morning }[a as 'h' | 'n' | 'm']
+        if (pick) return void (await show({ ...clear, notBefore: pick(now), view: 'when' }))
+        if (a === 'c') return void (await show({ ...clear, view: 'when' }))
+        if (a === 'x') return void (await show({ ...clear, front: true, view: 'when' }))
+        if (a === 't' || a === 'd') {
+          this.setPending({ kind: 'later', draftId: d.id, daily: a === 'd' })
+          await this.ask(
+            chat,
+            a === 'd' ? 'Send the time of day it should start, every day: 02:30 or 11pm.' : 'Send when it may start: 23:00, 11pm, in 2h or tomorrow 9am.',
+            a === 'd' ? 'Time of day, e.g. 02:30' : 'A time, e.g. 23:00 or in 2h',
+          )
+          return
+        }
+        if (a === 'r') {
+          if (!ctx.resetsAt) return `The ${this.word} doesn’t know when the limit resets right now: it learns it while a task runs.`
+          return void (await show({ ...clear, atReset: true, view: 'when' }))
+        }
+        if (a === 'j') {
+          const job = Number(b)
+          if (!ctx.ahead?.some(j => j.id === job)) return `#${job} isn't running or waiting any more.`
+          return void (await show({ ...clear, afterJob: job, view: 'when' }))
+        }
+        return void (await show({ view: 'when' }))
       }
-      case '3': {
+      case 'mo':
+        return void (await show({ view: 'more' }))
+      case 'tl':
+        return void (await show({ maxMinutes: Number(a) > 0 ? Number(a) : null, view: 'more' }))
+      case '3':
         if (d.editJob || d.sessionId) return 'Three ways is for a new conversation.'
-        d = this.state.updateDraft(d.id, { threeWays: a === 'm' ? 'models' : a === 's' ? 'same' : null })
-        await show(ui.moreView(d))
-        return d.threeWays ? 'Three tasks, each on its own branch.' : 'Three ways is off.'
-      }
+        return void (await show({ threeWays: a === 'm' ? 'models' : a === 's' ? 'same' : null, view: 'more' }))
       case 'at':
-        d = this.state.updateDraft(d.id, { attachments: [] })
-        await show(ui.moreView(d))
+        await show({ attachments: [], view: 'more' })
         return 'Files removed.'
       case 'q':
         return d.editJob ? this.saveEdit(chat, at, d) : this.queueDraft(chat, at, d)
       case 'x':
         this.state.updateDraft(d.id, { status: 'discarded' })
         if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
-        if (d.editJob) {
-          await show({ html: `✏️ <i>#${d.editJob} stays as it was.</i>` })
-          return 'Unchanged.'
-        }
-        await show({ html: `✖️ <s>${ui.esc(ui.clip(d.prompt, 200) || 'new task')}</s>` })
-        return 'Discarded.'
+        await this.drop(chat, at, d.editJob ? `#${d.editJob} stays as it was.` : 'Discarded.')
+        return d.editJob ? `#${d.editJob} stays as it was.` : 'Discarded.'
     }
   }
 
+  /** When a card starts: a time, every day at a time, when the limit resets; null for "when it's its turn". */
+  private startOf(d: Draft): { notBefore: number | null } | string {
+    if (d.atReset) {
+      const at = this.resetsAt()
+      return at === null ? `The ${this.word} doesn’t know when the limit resets right now. Pick another start.` : { notBefore: at }
+    }
+    if (d.repeatDaily !== null) return { notBefore: nextClock(this.o.now(), Math.floor(d.repeatDaily / 60), d.repeatDaily % 60) }
+    return { notBefore: d.notBefore }
+  }
+
   private async queueDraft(chat: number, messageId: number, d: Draft): Promise<string> {
-    if (!d.folder) return 'Pick a folder first.'
-    if (!d.prompt) return 'Send the prompt first.'
+    if (!d.folder) {
+      await this.edit(chat, messageId, await this.card(this.state.updateDraft(d.id, this.folderTab(d))))
+      return 'Pick a folder first.'
+    }
+    if (!d.prompt) {
+      this.setPending({ kind: 'prompt', draftId: d.id })
+      return 'Send the prompt first, as your next message.'
+    }
     if (!existsSync(d.folder)) return 'That folder is gone.'
     const now = this.o.now()
-    // When it starts: a time, every day at a time, when the limit resets, or after another task.
-    let notBefore = d.notBefore
-    if (d.atReset) {
-      notBefore = this.resetsAt()
-      if (notBefore === null) return 'The Mac doesn’t know when the limit resets right now. Pick another start.'
-    }
-    if (d.repeatDaily !== null) notBefore = nextClock(now, Math.floor(d.repeatDaily / 60), d.repeatDaily % 60)
+    const start = this.startOf(d)
+    if (typeof start === 'string') return start
     const base: JobSpec = {
       projectDir: d.folder,
       prompt: d.prompt,
@@ -1211,13 +1114,15 @@ export class TelegramBridge {
       model: d.model,
       workModel: d.plan ? d.workModel : null,
       workEffort: d.plan ? d.workEffort : null,
-      wantLink: d.wantLink,
+      // An answer changes nothing, so there's nothing to show on a page.
+      wantLink: d.wantLink && d.execMode !== 'plan',
       effort: d.effort,
       sessionPolicy: d.sessionId ? 'session' : d.newChat ? 'new' : 'continue',
       sessionId: d.sessionId ?? undefined,
       takeover: d.sessionId !== null && d.takeover,
       isolate: d.isolate,
-      notBefore,
+      front: d.front && !ui.startsLater(d),
+      notBefore: start.notBefore,
       afterJob: d.afterJob,
       repeatDaily: d.repeatDaily,
       maxMinutes: d.maxMinutes,
@@ -1262,17 +1167,13 @@ export class TelegramBridge {
     return d.threeWays === 'models' && models.length >= 3 ? models.slice(0, 3) : [d.model, d.model, d.model]
   }
 
-  /** 💾 Save on a ✏️ Change card: the queued task takes what the card shows. */
+  /** Save on a card changing a waiting task: the task takes what the card shows. */
   private async saveEdit(chat: number, messageId: number, d: Draft): Promise<string> {
     const job = d.editJob !== null ? this.o.store.getJob(d.editJob) : null
     if (!job || job.status !== 'queued') return `#${d.editJob} isn't waiting in the queue any more.`
     if (!d.prompt) return 'Send the prompt first.'
-    let notBefore = d.notBefore
-    if (d.atReset) {
-      notBefore = this.resetsAt()
-      if (notBefore === null) return 'The Mac doesn’t know when the limit resets right now. Pick another start.'
-    }
-    if (d.repeatDaily !== null) notBefore = nextClock(this.o.now(), Math.floor(d.repeatDaily / 60), d.repeatDaily % 60)
+    const start = this.startOf(d)
+    if (typeof start === 'string') return start
     this.o.store.updateJob(job.id, {
       prompt: d.prompt,
       plan: d.plan,
@@ -1282,13 +1183,15 @@ export class TelegramBridge {
       workModel: d.plan && d.workModel && d.workModel !== d.model ? d.workModel : null,
       effort: d.effort,
       workEffort: d.plan && d.workEffort && d.workEffort !== d.effort ? d.workEffort : null,
-      wantLink: d.wantLink,
-      notBefore,
+      wantLink: d.wantLink && d.execMode !== 'plan',
+      notBefore: start.notBefore,
       afterJob: d.afterJob,
       repeatDaily: d.repeatDaily,
       maxMinutes: d.maxMinutes,
       ...(job.sessionId ? {} : { isolate: d.isolate }),
     })
+    // Next: it goes to the front, as Run next does.
+    if (d.front && !ui.startsLater(d)) this.o.runner.top(job.id)
     this.state.updateDraft(d.id, { status: 'queued', jobId: job.id })
     if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
     await this.edit(chat, messageId, ui.queuedView(this.o.store.getJob(job.id)!, this.whenText(job), this.uiContext(), { changed: true }))
@@ -1312,9 +1215,207 @@ export class TelegramBridge {
     return active ? `Runs after #${running.map(j => j.id).join(' or #')}${others}.` : `${ahead} ahead of it.`
   }
 
+  // --- lists and screens -----------------------------------------------------------------
+
+  /** Tasks: the finished ones, newest first; `query` narrows them (kept while you page back). */
+  private async showTasks(chat: number, edit?: number, query?: string, before?: number): Promise<void> {
+    if (query !== undefined) this.o.store.kvSet('telegram.tasksQuery', query)
+    const words = (query ?? (before ? this.o.store.kvGet<string>('telegram.tasksQuery') : '') ?? '').trim()
+    const found = this.o.store.searchFinished({ before, query: words, limit: 9 })
+    const view = ui.tasksView(found.slice(0, 8), { query: words, more: found.length > 8 }, this.noticeContext())
+    if (edit !== undefined) await this.edit(chat, edit, view)
+    else await this.send(chat, view)
+  }
+
+  /** Queue; `messageId` shows it again in place, keeping the task picked there unless `selected` says otherwise. */
+  private async showQueue(chat: number, messageId?: number, selected?: number | null): Promise<void> {
+    const queued = this.o.store.queued()
+    const kept = selected !== undefined ? selected : messageId !== undefined ? (this.queueMessages.get(messageId) ?? null) : null
+    const sel = kept !== null && queued.some(j => j.id === kept) ? kept : null
+    const view = ui.queueView(this.o.store.running(), queued, this.uiContext(), this.o.runner.paused, sel)
+    if (messageId) await this.edit(chat, messageId, view)
+    else messageId = (await this.send(chat, view)).message_id
+    this.queueMessages.set(messageId, sel)
+    if (this.queueMessages.size > 50) this.queueMessages.delete(this.queueMessages.keys().next().value!)
+  }
+
+  private statusInfo(): ui.StatusInfo {
+    return {
+      running: this.o.store.running().map(job => {
+        const info = this.o.runner.runtimeInfo(job.id)
+        return { job, lastTool: info?.lastTool ? { tool: info.lastTool, at: info.lastActivity } : null }
+      }),
+      parallel: this.o.runner.parallel,
+      approvals: this.o.store.pendingApprovals(),
+      queued: this.o.store.queued(),
+      paused: this.o.runner.paused,
+      limits: this.o.runner.limits(),
+    }
+  }
+
+  /** Status; `messageId` refreshes one already shown. */
+  private async showStatus(chat: number, messageId?: number): Promise<void> {
+    const view = ui.statusView(this.statusInfo(), this.noticeContext())
+    if (messageId) await this.edit(chat, messageId, view)
+    else messageId = (await this.send(chat, view)).message_id
+    this.statusMessages.add(messageId)
+    if (this.statusMessages.size > 50) this.statusMessages.delete(this.statusMessages.values().next().value!)
+  }
+
+  /** A running task's screen; `keys` with the keypad. With several running and none named, it asks which. */
+  private async showPeek(chat: number, messageId?: number, jobId?: number, keys = false): Promise<void> {
+    const running = this.o.store.running()
+    if (jobId === undefined && running.length > 1) {
+      await this.send(chat, ui.runningPickerView(running, keys ? 'keys' : 'peek', this.noticeContext()))
+      return
+    }
+    const s = await this.o.runner.screen(30, false, jobId)
+    const job = s ? this.o.store.getJob(s.jobId) : null
+    const ctx = this.uiContext()
+    const view = ui.screenView(job, s?.text ?? '', { keys, label: ctx.label })
+    if (messageId) await this.edit(chat, messageId, view)
+    else messageId = (await this.send(chat, view)).message_id
+    this.peekMessages.set(messageId, keys)
+    if (this.peekMessages.size > 50) this.peekMessages.delete(this.peekMessages.keys().next().value!)
+  }
+
+  /** How long a request still waits for you, in minutes. */
+  private minutesLeft(a: Approval): number {
+    const t = this.o.config().timeouts
+    const seconds = a.kind === 'question' ? t.questionSec : a.kind === 'review' ? t.reviewSec : t.approvalSec
+    return Math.max(1, Math.round((a.createdAt + seconds * 1000 - this.o.now()) / 60_000))
+  }
+
+  private settingsView(): ui.View {
+    const config = this.o.config()
+    return ui.settingsView({
+      notify: config.notify,
+      folders: this.o.folders.size,
+      builtAt: this.o.folders.builtAt,
+      roots: this.roots(),
+      models: config.models,
+      watch: config.watchSessions,
+      autoContinue: config.autoContinueChats,
+      parallel: this.o.runner.parallel,
+      now: this.o.now(),
+    })
+  }
+
+  // --- this computer ------------------------------------------------------------------
+
+  /** This computer: staying awake and sleeping. */
+  private async showMac(chat: number, messageId?: number): Promise<void> {
+    const mac = this.o.mac
+    if (!mac) return void (await this.sendText(chat, NO_POWER))
+    const view = ui.macView(await mac.status(), this.o.now())
+    if (messageId) await this.edit(chat, messageId, view)
+    else await this.send(chat, view)
+  }
+
+  /**
+   * m:k awake while tasks run, on/off · m:l with the lid closed too, on/off · m:a:<hours> awake for
+   * that long (0: stop) · m:s sleep now (asks twice; m:S already asked) · m:d sleep when done, on/off
+   * (m:D on) · m:r refresh.
+   */
+  private async onMacButton(chat: number, message: TgMessage | undefined, op: string, arg?: string): Promise<string | undefined> {
+    const mac = this.o.mac
+    if (!mac) return NO_POWER
+    const at = message?.message_id
+    const refresh = async () => {
+      if (at) await this.showMac(chat, at).catch(() => {})
+    }
+    switch (op) {
+      case 'k': {
+        const r = mac.keepAwake(!(await mac.status()).keepAwake)
+        await refresh()
+        return r.text
+      }
+      case 'l': {
+        const r = await mac.lidClosed(!(await mac.status()).lidClosed.on)
+        await refresh()
+        return r.text
+      }
+      case 'a': {
+        const hours = Number(arg)
+        const r = mac.stayAwake({ hours: hours > 0 ? hours : null, by: 'Telegram' })
+        await refresh()
+        return r.text
+      }
+      case 'r':
+        await refresh()
+        return 'Up to date.'
+      case 's':
+      case 'S': {
+        if (op === 's' && !(await this.secondTap(chat, message, 'Yes, sleep now'))) return `Tap again to put the ${mac.word} to sleep.`
+        const r = await mac.sleepNow({ by: 'Telegram' })
+        await refresh()
+        if (!r.ok) await this.sendText(chat, r.text)
+        return r.ok ? 'Going to sleep.' : "It didn't sleep."
+      }
+      case 'd':
+      case 'D': {
+        const on = op === 'D' || !(await mac.status()).sleepWhenDone.on
+        const r = await mac.sleepWhenDone({ on, by: 'Telegram' })
+        await refresh()
+        return r.text
+      }
+    }
+    return undefined
+  }
+
+  // --- buttons ----------------------------------------------------------------------
+
+  private async onCallback(q: TgCallbackQuery): Promise<void> {
+    if (this.owner === null || q.from.id !== this.owner) {
+      await this.o.api.answerCallbackQuery(q.id).catch(() => {})
+      return
+    }
+    const chat = q.message?.chat.id ?? this.owner
+    const raw = q.data ?? ''
+    const confirmed = raw.endsWith('!')
+    const data = confirmed ? raw.slice(0, -1) : raw
+    this.tapping = { data, confirmed }
+    const [kind, ...parts] = data.split(':')
+    let toast: string | undefined
+    try {
+      switch (kind) {
+        case 'd':
+          toast = await this.onDraftButton(chat, q.message, Number(parts[0]), parts.slice(1))
+          break
+        case 'a':
+          toast = await this.onApprovalButton(chat, q.message, parts[0]!, parts[1]!)
+          break
+        case 'o':
+          toast = await this.onQuestionButton(chat, q.message, parts[0]!, parts[1]!)
+          break
+        case 'j':
+          toast = await this.onJobButton(chat, q.message, Number(parts[0]), parts[1]!)
+          break
+        case 'g':
+          toast = await this.onGlobalButton(chat, q.message, parts)
+          break
+        case 'w':
+          toast = await this.onChatButton(chat, q.message, parts[0]!, parts[1]!)
+          break
+        case 'c':
+          toast = await this.onChatsButton(chat, q.message, parts[0]!, parts[1])
+          break
+        case 'm':
+          toast = await this.onMacButton(chat, q.message, parts[0]!, parts[1])
+          break
+      }
+    } catch (err) {
+      toast = 'Something went wrong.'
+      this.o.log(`telegram: button ${q.data} failed: ${errorText(err)}`)
+    } finally {
+      this.tapping = null
+    }
+    await this.o.api.answerCallbackQuery(q.id, toast ? toast.slice(0, 190) : undefined).catch(() => {})
+  }
+
   private async onApprovalButton(chat: number, message: TgMessage | undefined, code: string, op: string): Promise<string> {
     const approval = this.o.store.getApproval(code)
-    // From 📊 Status: the status refreshes rather than losing its buttons.
+    // From Status: the status refreshes rather than losing its buttons.
     const status = message && this.statusMessages.has(message.message_id) ? message.message_id : null
     if (!approval || approval.status !== 'pending') {
       const line = approval ? `Already ${approval.status}.` : 'Already handled.'
@@ -1325,7 +1426,7 @@ export class TelegramBridge {
     if (op === 'show') return this.showRequest(chat, approval)
     if (op === 'c') {
       this.setPending({ kind: 'changes', code })
-      await this.sendText(chat, '✏️ What should Claude change in the plan? Send it as your next message.')
+      await this.ask(chat, 'What should Claude change in the plan? Send it as your next message.', 'What to change in the plan')
       return 'Waiting for your changes.'
     }
     // y/n; r<n>: allow and apply Claude Code's n-th suggested rule; me/my: approve the plan, then accept edits / skip prompts.
@@ -1338,7 +1439,7 @@ export class TelegramBridge {
     return reply
   }
 
-  /** A waiting question or plan, sent again (from 📊 Status); its buttons move to the new message. */
+  /** A waiting question or plan, sent again (from Status); its buttons move to the new message. */
   private async showRequest(chat: number, a: Approval): Promise<string> {
     const job = this.o.store.getJob(a.jobId)
     if (!job) return 'That task is gone.'
@@ -1354,7 +1455,7 @@ export class TelegramBridge {
       return 'Answer it with the buttons on the status.'
     }
     this.requests.set(a.code, msg.message_id)
-    if (before !== undefined) await this.settleMessage(chat, before, '↓ Moved further down.').catch(() => {})
+    if (before !== undefined) await this.settleMessage(chat, before, 'Moved further down.').catch(() => {})
     return 'Sent again below.'
   }
 
@@ -1381,7 +1482,7 @@ export class TelegramBridge {
     switch (op) {
       case 't':
         this.setPending({ kind: 'answer', code, step: state.step })
-        await this.sendText(chat, `✍️ Type your answer to “${ui.clip(q.question, 200)}” as your next message.`)
+        await this.ask(chat, `Type your answer to “${ui.clip(q.question, 200)}” as your next message.`, 'Your answer')
         return 'Waiting for your answer.'
       case 'b': {
         if (state.step > 0) state.step--
@@ -1436,20 +1537,32 @@ export class TelegramBridge {
     await this.edit(chat, state.messageId, ui.questionView(job, approval.code, questionsOf(approval), state, this.minutesLeft(approval)))
   }
 
+  /** After a task's button: the card, list or status it was on shows again; elsewhere, `line` closes the message. */
+  private async afterJobTap(chat: number, message: TgMessage | undefined, line: string | null): Promise<void> {
+    const at = message?.message_id
+    const card = at !== undefined ? [...this.cards].find(([, c]) => c.messageId === at) : undefined
+    const cardJob = card ? this.o.store.getJob(card[0]) : null
+    if (at !== undefined && this.queueMessages.has(at)) await this.showQueue(chat, at)
+    else if (at !== undefined && this.statusMessages.has(at)) await this.showStatus(chat, at)
+    else if (at !== undefined && this.peekMessages.has(at)) await this.showPeek(chat, at, undefined, this.peekMessages.get(at))
+    else if (at !== undefined && card && cardJob) await this.edit(chat, at, ui.taskCard(cardJob, card[1].card, this.uiContext()))
+    else if (line !== null) await this.settle(chat, message, line)
+  }
+
   private async onJobButton(chat: number, message: TgMessage | undefined, id: number, op: string): Promise<string | undefined> {
     const job = this.o.store.getJob(id)
-    if (!job) return `No job #${id}.`
+    if (!job) return `No task #${id}.`
     const active = this.o.store.running().some(j => j.id === id)
     let reply: string
     switch (op) {
       case 'open': {
-        // From 📚 Tasks: what that task did, with its buttons (follow up, link, branch).
+        // From Tasks: what that task did, with its buttons (follow up, link, branch).
         const view =
           job.status === 'done'
             ? ui.noticeView({ type: 'done', job, diff: null, next: null }, this.noticeContext())
             : job.status === 'failed'
               ? ui.noticeView({ type: 'failed', job, reason: job.error ?? 'It failed.' }, this.noticeContext())
-              : { html: `⛔ <b>#${id}</b> was ${ui.esc(job.status)} · ${ui.esc(this.uiContext().label(job.projectDir))}\n${ui.clip(job.prompt, 500) ? `“${ui.esc(ui.clip(job.prompt, 500))}”` : ''}` }
+              : { html: `<b>#${id}</b> was ${ui.esc(job.status)} · ${ui.esc(this.uiContext().label(job.projectDir))}${job.prompt ? `\n“${ui.esc(ui.clip(job.prompt, 500))}”` : ''}` }
         await this.send(chat, view)
         return
       }
@@ -1457,7 +1570,10 @@ export class TelegramBridge {
         await this.showPeek(chat, undefined, id)
         return
       case 'stop':
-        return active ? this.o.runner.stop(id) : `#${id} isn't running.`
+        if (!active) return `#${id} isn't running.`
+        reply = await this.o.runner.stop(id)
+        await this.afterJobTap(chat, message, null)
+        return reply
       case 'link': {
         const asked = this.o.runner.requestLink(id, 'telegram')
         if (asked.ok && message) await this.settle(chat, message, asked.text)
@@ -1465,18 +1581,16 @@ export class TelegramBridge {
       }
       case 'kill': {
         if (job.status !== 'running' && job.status !== 'held' && job.status !== 'queued') return `#${id} has already ended.`
-        const armed = this.killArmed.get(id)
-        if (!armed || this.o.now() - armed > KILL_CONFIRM_MS) {
-          this.killArmed.set(id, this.o.now())
-          return `Tap 🛑 Kill again to end #${id} now: Claude and everything it started stop.`
-        }
-        this.killArmed.delete(id)
+        if (!(await this.secondTap(chat, message, `Yes, kill #${id}`))) return `Tap again to end #${id} now: Claude and everything it started stop.`
         reply = await this.o.runner.kill(id, { by: 'Telegram' })
-        await this.settle(chat, message, reply)
+        await this.afterJobTap(chat, message, reply)
         return reply
       }
       case 'go':
-        return active ? this.o.runner.go(id) : `#${id} isn't running.`
+        if (!active) return `#${id} isn't running.`
+        reply = await this.o.runner.go(id)
+        await this.afterJobTap(chat, message, null)
+        return reply
       case 'now':
         return active ? this.o.runner.continueNow() : `#${id} isn't waiting for a usage limit any more.`
       case 'fork':
@@ -1507,20 +1621,34 @@ export class TelegramBridge {
       case 'rel':
         reply = this.o.runner.holdQueued(id, op === 'hold')
         break
-      case 'rm':
+      case 'rm': {
+        if (job.status !== 'queued') return `#${id} isn't waiting in the queue any more.`
+        if (!(await this.secondTap(chat, message, 'Yes, remove'))) return `Tap again to take #${id} off the queue.`
         reply = await this.o.runner.remove(id)
-        break
+        const at = message?.message_id
+        if (at !== undefined && this.queueMessages.has(at)) await this.showQueue(chat, at, null)
+        else await this.settle(chat, message, reply)
+        return reply
+      }
       case 'plan':
         if (!job.planText) return 'No plan yet.'
         await this.send(chat, ui.planView(job, this.uiContext()))
         return
       case 'fu':
-        if (!job.sessionId) return 'That job has no conversation to continue.'
+        if (!job.sessionId) return 'That task has no conversation to continue.'
         this.setPending({ kind: 'followup', jobId: id })
-        await this.sendText(chat, `➕ What should Claude do next in #${id}'s conversation? Send it as your next message.`)
+        await this.ask(chat, `What should Claude do next in #${id}'s conversation? Send it as your next message.`, `Next, in #${id}'s conversation`)
         return 'Waiting for the follow-up.'
+      case 'new': {
+        // New task here: a fresh conversation in that task's folder.
+        if (!existsSync(job.projectDir)) return 'That folder is gone.'
+        const d = this.state.addDraft({ ...this.choices(), folder: job.projectDir, prompt: '', newChat: true }, this.o.now())
+        await this.showDraft(chat, d)
+        this.setPending({ kind: 'prompt', draftId: d.id })
+        return 'Send what Claude should do there.'
+      }
       case 'edit': {
-        // ✏️ Change: a card with the task's choices; 💾 Save puts them on the task.
+        // Change: a card with the task's choices; Save puts them on the task.
         if (job.status !== 'queued') return `#${id} isn't waiting in the queue any more.`
         const d = this.state.addDraft(
           {
@@ -1547,20 +1675,19 @@ export class TelegramBridge {
       case 'pr':
       case 'discard': {
         const git = this.o.git
-        if (!git) return 'Not here: merge it on the Mac.'
-        if (op === 'discard' && !this.tappedTwice(`discard:${id}`)) return `Tap again to throw away #${id}'s branch.`
-        // A pull request pushes the branch out of this Mac: tap twice.
-        if (op === 'pr' && !this.tappedTwice(`pr:${id}`)) return `Tap again to push #${id}'s branch and open a pull request.`
+        if (!git) return `Not here: settle the branch on the ${this.word}.`
+        // Throwing a branch away, and a pull request (which pushes it out of this computer), ask twice.
+        if (op === 'discard' && !(await this.secondTap(chat, message, 'Yes, discard'))) return `Tap again to throw away #${id}'s branch.`
+        if (op === 'pr' && !(await this.secondTap(chat, message, 'Yes, push it'))) return `Tap again to push #${id}'s branch and open a pull request.`
         const r = await settleBranch(this.o.store, git, id, op)
-        await this.sendText(chat, `🌿 ${r.text}`)
+        await this.sendText(chat, r.text)
         return r.ok ? (op === 'merge' ? 'Merged.' : op === 'pr' ? 'Pull request opened.' : 'Thrown away.') : "It didn't work."
       }
       default:
         return
     }
-    // ⬆️/🗑 from the queue list refresh it; from a "Queued" card, they settle the card.
-    if (message && this.queueMessages.has(message.message_id)) await this.showQueue(chat, message.message_id)
-    else if (op === 'rm') await this.settle(chat, message, reply)
+    // Move, hold, run next: the queue they were tapped on shows again.
+    await this.afterJobTap(chat, message, null)
     return reply
   }
 
@@ -1591,10 +1718,10 @@ export class TelegramBridge {
     if (!f && quiet) return
     this.setFocus(null)
     if (quiet) return
-    await this.send(chat, { html: f ? `⬅️ Left “${ui.esc(ui.clip(f.title, 80))}”. New messages make new tasks again.` : "You're not in a chat." }, ui.MAIN_KEYBOARD)
+    await this.send(chat, { html: f ? `Left “${ui.esc(ui.clip(f.title, 80))}”. New messages make new tasks again.` : "You're not in a chat." }, this.keys())
   }
 
-  /** c:… buttons: 💬 Chats pages, a chat's view, ✍️ Write here, 📜 Full reply, ⬅️ Leave. */
+  /** c:… buttons: Chats pages, a chat's view, Write here, Full reply, Leave. */
   private async onChatsButton(chat: number, message: TgMessage | undefined, op: string, arg?: string): Promise<string | undefined> {
     const at = message?.message_id
     if (op === 'l') {
@@ -1617,12 +1744,12 @@ export class TelegramBridge {
       case 'w':
         this.setFocus({ sessionId: c.sessionId, title: c.title })
         this.setPending(null)
-        await this.send(chat, { html: ui.enteredChatHtml(c, this.noticeContext()) }, ui.CHAT_KEYBOARD)
-        return `💬 ${ui.clip(c.title, 60)}`
+        await this.send(chat, { html: ui.enteredChatHtml(c, this.noticeContext()) }, this.keys())
+        return `In “${ui.clip(c.title, 60)}”`
       case 'r':
         await this.send(
           chat,
-          ui.longView(`📜 <b>${ui.esc(ui.clip(c.title, 120))}</b> · Claude's last reply`, c.lastReply ?? '(no reply yet)', undefined, {
+          ui.longView(`<b>${ui.esc(ui.clip(c.title, 120))}</b> · Claude's last reply`, c.lastReply ?? '(no reply yet)', undefined, {
             name: `reply-${c.sessionId.slice(0, 8)}.md`,
             caption: "Claude's full reply",
           }, { silent: true }),
@@ -1638,13 +1765,13 @@ export class TelegramBridge {
     const c = this.o.chats.get(f.sessionId)
     if (!c?.cwd || !existsSync(c.cwd)) {
       this.setFocus(null)
-      await this.send(chat, { html: "That chat is gone, so you've left it. New messages make new tasks again." }, ui.MAIN_KEYBOARD)
+      await this.send(chat, { html: "That chat is gone, so you've left it. New messages make new tasks again." }, this.keys())
       return
     }
     const name = `“${ui.clip(c.title, 60)}”`
     const typed = await this.o.runner.typeIfFree(c.sessionId, text)
     if (typed !== null) {
-      await this.sendText(chat, `⌨️ Typed into ${name} (#${typed}). Claude reads it when its current step ends.`)
+      await this.sendText(chat, `Typed into ${name} (#${typed}). Claude reads it when its current step ends.`)
       return
     }
     const choices = this.choices()
@@ -1652,7 +1779,7 @@ export class TelegramBridge {
       continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text }),
     )
     const take = c.where && !c.running ? ` It's open in ${c.where}: it closes there first.` : ''
-    await this.sendText(chat, `➕ Sent to ${name} as #${job.id}. ${this.whenText(job)}${take}`)
+    await this.sendText(chat, `Sent to ${name} as #${job.id}. ${this.whenText(job)}${take}`)
   }
 
   /** Buttons on "your chat in VS Code hit a usage limit". */
@@ -1672,10 +1799,7 @@ export class TelegramBridge {
     }
     const choices = this.choices()
     if (op === 'f') {
-      const draft = this.state.addDraft(
-        { ...choices, folder: c.cwd, prompt: '', sessionId, takeover: c.where !== null, isolate: false },
-        this.o.now(),
-      )
+      const draft = this.state.addDraft({ ...choices, folder: c.cwd, prompt: '', sessionId, takeover: c.where !== null, isolate: false }, this.o.now())
       await this.showDraft(chat, draft)
       this.setPending({ kind: 'prompt', draftId: draft.id })
       return 'Send what Claude should do next.'
@@ -1686,7 +1810,7 @@ export class TelegramBridge {
     const job = this.o.runner.enqueue(continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: true, source: 'telegram' }))
     // It continues here now, so the automatic continue at the reset isn't needed.
     if (this.o.store.getWatch(sessionId)) this.o.store.setWatchState(sessionId, 'handed', this.o.now(), { jobId: job.id })
-    await this.settle(chat, message, `✅ Queued #${job.id}. ${this.whenText(job)}`)
+    await this.settle(chat, message, `Queued #${job.id}. ${this.whenText(job)}`)
     return `Queued #${job.id}.`
   }
 
@@ -1699,20 +1823,21 @@ export class TelegramBridge {
     switch (parts[0]) {
       case 'st':
         await this.showStatus(chat, at)
-        return 'Updated.'
+        return 'Up to date.'
       case 'q':
         await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
-        return 'Updated.'
-      case 'peek': {
+        return 'Up to date.'
+      case 'qs': {
+        // A task picked in the queue (0: none): its buttons show under the numbers.
+        const id = Number(parts[1]) || null
+        await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined, id)
+        return
+      }
+      case 'peek':
+      case 'pk': {
         const id = parts[1] ? Number(parts[1]) : undefined
-        const running = this.o.store.running()
-        // Several running and none chosen: which one?
-        if (id === undefined && running.length > 1) {
-          await this.send(chat, ui.runningPickerView(running, 'peek', this.noticeContext()))
-          return
-        }
-        await this.showPeek(chat, at && this.peekMessages.has(at) ? at : undefined, id)
-        return 'Updated.'
+        await this.showPeek(chat, at && this.peekMessages.has(at) ? at : undefined, id, parts[0] === 'pk')
+        return
       }
       case 'pause':
         this.o.runner.setPaused(true)
@@ -1733,19 +1858,16 @@ export class TelegramBridge {
         return `Notifications: ${level}`
       }
       case 'clear': {
-        if (this.o.now() - this.clearArmed > KILL_CONFIRM_MS) {
-          this.clearArmed = this.o.now()
-          return 'Tap 🧹 Clear again to take every task off the queue.'
-        }
-        this.clearArmed = 0
+        if (this.o.store.queued().length === 0) return 'The queue is already empty.'
+        if (!(await this.secondTap(chat, message, 'Yes, clear'))) return 'Tap again to take every task off the queue.'
         const removed = this.o.runner.clear()
-        await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined)
+        await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined, null)
         return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} off the queue.`
       }
       case 'ways': {
         const jobs = this.o.store.inGroup(parts[1] ?? '').filter(j => j.status === 'queued')
         for (const j of jobs) await this.o.runner.remove(j.id)
-        if (at) await this.settle(chat, message, `🗑 Removed ${jobs.length} from the queue.`)
+        if (at) await this.settle(chat, message, `Removed ${jobs.length} from the queue.`)
         return `Removed ${jobs.length}.`
       }
       case 'keep': {
@@ -1754,15 +1876,17 @@ export class TelegramBridge {
         const jobs = group ? this.o.store.inGroup(group) : []
         if (jobs.length === 0) return 'Those tasks are gone.'
         const git = this.o.git
-        if (!git) return 'Not here: settle the branches on the Mac.'
-        if (!this.tappedTwice(`keep:${keep}:${group}`)) return keep > 0 ? `Tap again to merge #${keep} and throw the other branches away.` : 'Tap again to throw all three branches away.'
+        if (!git) return `Not here: settle the branches on the ${this.word}.`
+        if (!(await this.secondTap(chat, message, keep > 0 ? `Yes, keep #${keep}` : 'Yes, keep none'))) {
+          return keep > 0 ? `Tap again to merge #${keep} and throw the other branches away.` : 'Tap again to throw all three branches away.'
+        }
         const out: string[] = []
         for (const j of jobs) {
           if (!j.branch || j.branchNote) continue
           const r = await settleBranch(this.o.store, git, j.id, j.id === keep ? 'merge' : 'discard')
           out.push(`#${j.id}: ${r.text}`)
         }
-        await this.settle(chat, message, `🌿 ${out.join(' · ') || 'Nothing to settle.'}`)
+        await this.settle(chat, message, out.join(' · ') || 'Nothing to settle.')
         return keep > 0 ? `Kept #${keep}.` : 'Thrown away.'
       }
       case 'tasks':
@@ -1770,7 +1894,7 @@ export class TelegramBridge {
         return
       case 'tsearch':
         this.setPending({ kind: 'tasksearch' })
-        await this.sendText(chat, '🔍 Type words from the prompt or the answer.')
+        await this.ask(chat, 'Type words from the prompt or the answer.', 'Words to find')
         return 'Waiting for the words.'
       case 'par': {
         const n = Number(parts[1])
@@ -1793,23 +1917,26 @@ export class TelegramBridge {
         const job = id !== undefined ? running.find(j => j.id === id) : running[0]
         if (!job) return 'Nothing is running.'
         this.setPending({ kind: 'say', job: job.id })
-        await this.sendText(chat, `⌨️ Send what to type into #${job.id}. It's typed as you write it, then Enter.`)
+        await this.ask(chat, `Send what to type into #${job.id}. It's typed as you write it, then Enter.`, `Typed into #${job.id}`)
         return 'Waiting for what to type.'
       }
       case 'keys': {
-        const running = this.o.store.running()
+        // The keypad, on a task's screen (from older messages' Keys button).
         const id = parts[1] ? Number(parts[1]) : undefined
-        if (id === undefined && running.length > 1) {
-          await this.send(chat, ui.runningPickerView(running, 'keys', this.noticeContext()))
-          return
-        }
-        const job = id !== undefined ? running.find(j => j.id === id) : running[0]
-        if (!job) return 'Nothing is running.'
-        await this.send(chat, ui.keysView(job.id))
+        await this.showPeek(chat, undefined, id, true)
         return
       }
-      case 'k':
-        return parts[1] ? this.o.runner.keys([parts[1]], parts[2] ? Number(parts[2]) : undefined) : undefined
+      case 'k': {
+        if (!parts[1]) return
+        const id = parts[2] ? Number(parts[2]) : undefined
+        const reply = await this.o.runner.keys([parts[1]], id)
+        // On a screen: it shows again, a moment later, with what the key did.
+        if (at && this.peekMessages.has(at)) {
+          await (this.o.pause ?? Bun.sleep)(400)
+          await this.showPeek(chat, at, id, true)
+        }
+        return reply
+      }
       case 'watch': {
         const config = this.o.config()
         config.watchSessions = !config.watchSessions
@@ -1821,7 +1948,8 @@ export class TelegramBridge {
       }
       case 'auto': {
         const config = this.o.config()
-        config.autoContinueChats = !config.autoContinueChats
+        // Off while chats aren't watched, so a tap turns it on, and watching with it.
+        config.autoContinueChats = !(config.autoContinueChats && config.watchSessions)
         if (config.autoContinueChats) config.watchSessions = true
         this.o.saveConfig(config)
         if (at) await this.edit(chat, at, this.settingsView())

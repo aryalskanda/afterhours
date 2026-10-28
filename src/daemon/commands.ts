@@ -236,6 +236,7 @@ hold <#> (keeps its place, doesn't start) · release <#> · clear (empties the q
 link [#] (a live link: a claude.ai page showing the result) · q … link: <prompt> (ends with one)
 say <text> · keys <keys> (e.g. keys 1, keys Enter) · fork · take
 sleep (this computer, now) · sleep done (once the queue is) · sleep cancel
+awake 2h (stays awake that long, tasks or not; 30m to 24h) · awake stop
 y <code> · n <code> [note] · a <code> <answer>
 projects · alias <name> <path> · trust <name|path> · default <options> · notify all|important|off`
 
@@ -657,6 +658,8 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       return notifyLevel(rest, ctx)
     case 'sleep':
       return sleep(rest, ctx)
+    case 'awake':
+      return awake(rest, ctx)
     case 'help':
     case '?':
       return HELP
@@ -669,6 +672,20 @@ const NO_POWER = 'There is nothing here to sleep (a container).'
 
 function whoAsked(ctx: CommandContext): string {
   return ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this computer'
+}
+
+/** awake 2h: stays awake that long, tasks or not; awake stop: sleeps as usual again. */
+function awake(rest: string, ctx: CommandContext): string {
+  if (!ctx.mac) return 'There is nothing here to keep awake (a container).'
+  const by = whoAsked(ctx)
+  const word = rest.trim().toLowerCase()
+  if (word === 'stop' || word === 'off' || word === 'cancel' || word === 'no') return ctx.mac.stayAwake({ hours: null, by }).text
+  const m = /^(?:for )?(\d+(?:\.\d+)?) ?(h|hr|hrs|hour|hours|m|min|mins|minutes)?$/.exec(word)
+  if (!m) return 'Usage: awake 2h · awake 30m · awake stop'
+  const n = Number(m[1])
+  const hours = m[2]?.startsWith('m') ? n / 60 : n
+  if (!(hours > 0)) return 'Usage: awake 2h · awake 30m · awake stop'
+  return ctx.mac.stayAwake({ hours, by }).text
 }
 
 /** sleep: now; sleep done: once the queue is done; sleep cancel. */

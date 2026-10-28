@@ -22,6 +22,8 @@ export interface TgMessage {
   caption?: string
   photo?: { file_id: string; file_size?: number; width: number; height: number }[]
   document?: { file_id: string; file_name?: string; file_size?: number }
+  /** A message's buttons, as Telegram gives them with a tap on one. */
+  reply_markup?: { inline_keyboard?: InlineKeyboard }
 }
 
 export interface TgCallbackQuery {
@@ -37,8 +39,11 @@ export interface TgUpdate {
   callback_query?: TgCallbackQuery
 }
 
-/** A button that sends `callback_data` to the bot, or opens a link (`url`). */
-export type InlineButton = { text: string; callback_data: string; url?: never } | { text: string; url: string; callback_data?: never }
+/** A button that sends `callback_data` to the bot, opens a link (`url`), or copies text to the clipboard (`copy_text`). */
+export type InlineButton =
+  | { text: string; callback_data: string; url?: never; copy_text?: never }
+  | { text: string; url: string; callback_data?: never; copy_text?: never }
+  | { text: string; copy_text: { text: string }; callback_data?: never; url?: never }
 
 export type InlineKeyboard = InlineButton[][]
 
@@ -46,6 +51,14 @@ export interface ReplyKeyboard {
   keyboard: { text: string }[][]
   is_persistent?: boolean
   resize_keyboard?: boolean
+  /** The hint in the empty text box (up to 64 characters). */
+  input_field_placeholder?: string
+}
+
+/** Opens the text box as a reply to this message, with a hint in it: for "send me X next". */
+export interface ForceReply {
+  force_reply: true
+  input_field_placeholder?: string
 }
 
 /** Takes the buttons under the text box away. */
@@ -53,7 +66,7 @@ export interface RemoveKeyboard {
   remove_keyboard: true
 }
 
-export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard | RemoveKeyboard
+export type Markup = { inline_keyboard: InlineKeyboard } | ReplyKeyboard | RemoveKeyboard | ForceReply
 
 /** The button beside the text box: the bot's commands. */
 export type MenuButton = { type: 'commands' }
@@ -67,6 +80,10 @@ export interface BotApi {
   /** Sends text as a file, for answers too long for messages. */
   sendDocument(chatId: number, filename: string, content: string, caption?: string): Promise<TgMessage>
   editMessageText(chatId: number, messageId: number, html: string, keyboard?: InlineKeyboard): Promise<void>
+  /** Changes only a message's buttons (one asking for its second tap). */
+  editMessageReplyMarkup(chatId: number, messageId: number, keyboard: InlineKeyboard): Promise<void>
+  /** Takes a message away: an old card that moved further down, or one you discarded. */
+  deleteMessage(chatId: number, messageId: number): Promise<void>
   answerCallbackQuery(id: string, text?: string): Promise<void>
   setMyCommands(commands: { command: string; description: string }[]): Promise<void>
   setChatMenuButton(chatId: number, button: MenuButton): Promise<void>
@@ -189,6 +206,19 @@ export class TelegramApi implements BotApi {
       if (err instanceof TelegramError && /message is not modified/i.test(err.message)) return
       throw err
     }
+  }
+
+  async editMessageReplyMarkup(chatId: number, messageId: number, keyboard: InlineKeyboard): Promise<void> {
+    try {
+      await this.call('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: keyboard } })
+    } catch (err) {
+      if (err instanceof TelegramError && /message is not modified/i.test(err.message)) return
+      throw err
+    }
+  }
+
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    await this.call('deleteMessage', { chat_id: chatId, message_id: messageId })
   }
 
   async answerCallbackQuery(id: string, text?: string): Promise<void> {

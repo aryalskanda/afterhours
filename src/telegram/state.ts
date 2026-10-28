@@ -50,7 +50,7 @@ export interface Choices {
   isolate: boolean
 }
 
-/** A prompt waiting for you to tap ▶️ Queue, with everything picked so far. */
+/** A prompt waiting for you to tap Queue, with everything picked so far. */
 export interface Draft extends Choices {
   id: number
   prompt: string
@@ -63,24 +63,28 @@ export interface Draft extends Choices {
   followJob: number | null
   /** End with a live link (a claude.ai artifact). */
   wantLink: boolean
-  /** ⏰ Starts: not before this time (ms). */
+  /** Starts: not before this time (ms). */
   notBefore: number | null
-  /** ⏰ Starts: again every day at this time, in minutes after midnight. */
+  /** Starts: again every day at this time, in minutes after midnight. */
   repeatDaily: number | null
-  /** ⏰ Starts: when the 5-hour limit resets. */
+  /** Starts: when the 5-hour limit resets. */
   atReset: boolean
-  /** ⏰ Starts: only after this task has finished well. */
+  /** Starts: only after this task has finished well. */
   afterJob: number | null
-  /** ⏱ Stop it after this many minutes of work. */
+  /** Starts next, before everything waiting. */
+  front: boolean
+  /** Stop it after this many minutes of work. */
   maxMinutes: number | null
-  /** 🔀 Three ways: three tasks, each on its own branch: one per model, or the chosen model three times. */
+  /** Three ways: three tasks, each on its own branch: one per model, or the chosen model three times. */
   threeWays: 'models' | 'same' | null
-  /** 📎 Files saved on the machine for Claude to read. */
+  /** Files saved on the machine for Claude to read. */
   attachments: string[]
-  /** ✏️ Change: the card edits this queued task instead of queueing a new one. */
+  /** Change: the card edits this queued task instead of queueing a new one. */
   editJob: number | null
   /** Folder the browser is showing. */
   browse: string | null
+  /** What the card has open: a tab, and where in it ("model:work", "folder:browse:1"…); null: none. */
+  view: string | null
   messageId: number | null
   status: 'open' | 'queued' | 'discarded'
   jobId: number | null
@@ -111,17 +115,19 @@ const COLUMNS: Record<keyof Draft, string> = {
   repeatDaily: 'repeat_daily',
   atReset: 'at_reset',
   afterJob: 'after_job',
+  front: 'front',
   maxMinutes: 'max_minutes',
   threeWays: 'three_ways',
   attachments: 'attachments',
   editJob: 'edit_job',
   browse: 'browse',
+  view: 'view',
   messageId: 'message_id',
   status: 'status',
   jobId: 'job_id',
   createdAt: 'created_at',
 }
-const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover', 'wantLink', 'atReset'])
+const BOOLEANS = new Set<keyof Draft>(['plan', 'review', 'newChat', 'isolate', 'takeover', 'wantLink', 'atReset', 'front'])
 
 function toDraft(row: Row): Draft {
   const d = {} as Record<string, unknown>
@@ -149,8 +155,8 @@ export class TelegramState {
     }
     if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')
     for (const column of ['not_before', 'edit_job', 'repeat_daily', 'after_job', 'max_minutes']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER`)
-    if (!have.has('at_reset')) db.exec('ALTER TABLE tg_drafts ADD COLUMN at_reset INTEGER NOT NULL DEFAULT 0')
-    for (const column of ['work_effort', 'three_ways', 'attachments']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} TEXT`)
+    for (const column of ['at_reset', 'front']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
+    for (const column of ['work_effort', 'three_ways', 'attachments', 'view']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} TEXT`)
   }
 
   addDraft(
@@ -183,7 +189,7 @@ export class TelegramState {
     return toDraft(row)
   }
 
-  /** The newest card still waiting for ▶️ Queue, for a photo or file sent after it. */
+  /** The newest card still waiting for Queue, for a photo or file sent after it. */
   latestOpenDraft(since: number): Draft | null {
     const row = this.db.query<Row, [number]>(`SELECT * FROM tg_drafts WHERE status = 'open' AND edit_job IS NULL AND created_at >= ? ORDER BY id DESC LIMIT 1`).get(since)
     return row ? toDraft(row) : null

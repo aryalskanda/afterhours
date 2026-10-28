@@ -14,17 +14,19 @@ Afterhours is a free, open-source task queue for [Claude Code](https://claude.co
 
 ```
 you  Add a dark mode toggle to the settings page
-bot  📝 Add a dark mode toggle to the settings page
-     📁 shop/web · 🗺 plan→auto · 🧠 sonnet · ⚡ high
-     💬 new chat · 🌿 on its own branch
-     [📁 Folder] [🗺 Mode] [🧠 Model] [⚡ Effort] [💬 Chat…] [📂 Work in place] [▶️ Queue] [✖️ Discard]
-you  taps ▶️ Queue
-bot  ✅ Queued #14 · Starting now.
-bot  📝 #14 plan approved (Yes, and use auto mode) …
-bot  ⏸ #14 hit the 5-hour limit · resets 3:30 PM · it continues on its own
-bot  ✅ #14 done in 48m · 6 files changed, 212 insertions(+)
-     🌿 On branch afterhours/14-add-a-dark-mode-toggle · merge with git merge afterhours/14-add-a-dark-mode-toggle
-     [➕ Follow up]
+bot  New task
+     │ Add a dark mode toggle to the settings page
+     Folder: shop/web · Chat: new, on its own branch
+     How: Plan first · Auto · Plan: Opus · Max · Work: Sonnet · Low
+     [Folder] [Chat] [How] [Model] [When] [More]
+     [Queue] [Discard]
+you  taps Queue
+bot  Queued #14 · Starting now.
+bot  #14 started … Plan approved (Yes, and use auto mode)
+bot  #14 hit the 5-hour limit · resets 3:30 PM · it continues on its own
+bot  #14 done in 48m · 6 files changed, 212 insertions(+)
+     On branch afterhours/14-add-a-dark-mode-toggle
+     [Follow up] [New task here] [Merge] [Pull request]
 ```
 
 ## What it adds to Claude Code
@@ -115,64 +117,86 @@ bun src/cli/cq.ts setup
 
 ## Using it from Telegram
 
-**Send a prompt.** The bot answers with a card already set to your last choices. Tap **▶️ Queue**, or change things first:
+The bot is plain words and buttons that stay where they are. Nothing opens a screen of its own that needs a Back.
+
+**Send a prompt.** The bot answers with a task card, already set to your last choices. Each line of the card has a button under it. Tap **Queue**, or change something first: a button opens its choices on the card, above the buttons, and tapping it again closes them. A ✓ marks what's chosen, and • marks what's open.
+
+```
+New task
+│ Add a dark mode toggle to the settings page
+Folder: web
+Chat: new, on its own branch
+How: Plan first · Auto
+Plan: Opus · Max
+Work: Sonnet · Low
+Starts: now
+
+[ Folder ] [ Chat ] [ How  ]
+[ Model  ] [ When ] [ More ]
+[     Queue     ] [ Discard ]
+```
 
 | Button | What it does |
 | --- | --- |
-| **📁 Folder** | Browse your code folders. The folders are listed by number, in full: tap a number to open a folder marked `›`, or to pick one without `›` (or **✅ Use this folder**). **⭐ Recent**, **🔍 Search** (type part of a name, e.g. `api` or `shop web`), **⬆️ Up**, **🔄 Rescan**. 📦 marks git repos. |
-| **🗺 Mode** | Two choices. **How**: `plan → work` (Afterhours approves the plan), `review the plan` (you approve it), `no plan`, `ask` (a question: Claude reads and answers, changes nothing). **Permissions**: `auto`, `accept edits`, `⚠️ yolo` (no permission checks). So "plan, then yolo" is two taps |
-| **🧠 Model** | `opus` · `sonnet` · `haiku`. With a plan, a second row picks the model that carries it out: plan with Opus, work with Sonnet ([more](#plan-with-one-model-work-with-another)) |
-| **⚡ Effort** | `low` · `medium` · `high` · `xhigh` · `max`. With a plan, **🛠 Work effort…** picks the effort that carries the plan out: plan at max, work at medium |
-| **💬 Chat…** | Which conversation to continue: **🆕 New chat**, **🔁 Last Afterhours chat** in that folder, or one of the folder's recent chats from anywhere, VS Code and the terminal included. 🟢 open elsewhere · 🟡 working there · ⏸ stopped at a usage limit |
-| **🤝 Take over** / **⏳ Wait instead** | For a chat that's open in VS Code or a terminal: close it there when the task starts, or wait until you close it ([more](#continue-a-vs-code-chat-from-your-phone)) |
-| **🌿 Own branch** / **📂 Work in place** | For a new conversation: run it on its own branch, or in your checkout |
-| **🔗 Live link** | End with a live link: a claude.ai page showing the result, to open on your phone ([more](#live-links)) |
-| **⏰ Later** | When it may start: in an hour, tonight at 23:00, 07:00, or a time you type (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`); **🔁 Every day…** at a time; **♻️ At the reset** of the 5-hour limit; **⏭ After a task…** has finished well |
-| **⋯ More** | **⏱ Time limit** (stop it after 30 min, 1 h…), **🔀 Three ways** (three tasks, each on its own branch: one per model, or one model three times; when all finish you get one message to compare them and **✅ Keep** one, which is merged while the others are thrown away) |
-| **📎 Files** | Send a photo or file in the chat (with a caption as the prompt, if you like): it's kept on the computer and Claude is told to read it. Up to 10, 5 MB each |
+| **Folder** | Your recent folders by number, or **Browse** your code folders (a number marked `›` opens that folder, one without picks it; **Use this folder** picks the one shown) or **Search** by part of a name (`api`, `shop web`). `(git)` marks git repos. |
+| **Chat** | Which conversation: **New chat**, **Last chat** (the last Afterhours chat in that folder), or one of the folder's recent chats from anywhere, VS Code and the terminal included. **Own branch: on/off** runs a new chat on its own branch or in your checkout. For a chat that's open in VS Code or a terminal, **Take over: on** closes it there when the task starts; off, the task waits until you close it ([more](#continue-a-vs-code-chat-from-your-phone)). |
+| **How** | How it goes about it: **Plan first** (Afterhours approves the plan), **Plan, I approve**, **Just do it** (no plan), **Only answer** (Claude reads and answers, and changes nothing). What it may do without asking: **Auto**, **Accept edits**, **No prompts**. So "plan, then no prompts" is two taps. |
+| **Model** | The model and the effort. With a plan, **Plan** and **Work** pick which side you're setting: plan with Opus at Max, then tap **Work** and set Sonnet at Low. Both show on the card ([more](#plan-with-one-model-work-with-another)). |
+| **When** | **Now**, **Next** (before everything waiting), **At the reset** of the 5-hour limit, **In an hour**, **Tonight** (23:00), **Morning** (07:00), **Type a time** (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`), **Every day at…** a time, or after one of the tasks ahead (by number) has finished well. |
+| **More** | **Live link: on/off** (a claude.ai page showing the result, [more](#live-links)), a **time limit** (30m to 4h), and **three ways** (**3 models**, or **Same ×3**: three tasks, each on its own branch; when all finish you get one message to compare them and **Keep** one, which is merged while the others are thrown away). |
+| **Files** | Send a photo or file in the chat (with a caption as the prompt, if you like): it's kept on the computer and Claude is told to read it. Up to 10, 5 MB each. The card comes down to where you are. |
 
-The buttons under the text box:
+When the bot asks you to type something (a time, a folder name, an answer), the text box opens as a reply with a hint in it. After you type, the card comes down to where you are and the old one goes.
 
-- **➕ New task**: pick the folder first, then send the prompt.
-- **📋 Queue**: every waiting task, with **⬆️** / **⬇️** (move it), **⏸** (hold it in its place; **▶️** lets it go), **✏️** (change anything about it: prompt, mode, models, efforts, when it starts, time limit, live link, branch, then **💾 Save**) and **🗑**, and **🧹 Clear** (tap twice).
-- **📊 Status**: the current task and what it last did, anything waiting on you (with its **✅ Allow** / **❌ Deny** right there), what's next, your 5-hour and weekly usage as bars, and **⏸ Pause** / **▶️ Resume**.
-- **👀 Peek**: the running task's screen, with **⌨️ Type** (type into it) and **🔘 Keys** (press 1, 2, 3, Enter, Esc, arrows) for a screen Afterhours can't answer.
-- **💬 Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **✍️ Write here**: everything you type goes into that chat until you tap **⬅️ Leave chat**.
+The keys under the text box:
+
+```
+[ New task ] [ Status ] [ Queue ]
+[ Tasks    ] [ Chats  ] [ Mac   ]
+[ Settings ] [ Help ]
+```
+
+- **New task**: the card opens on Folder; then send the prompt.
+- **Status**: what's running and what it last did, anything waiting on you (with **Allow** / **Deny** right there), what's next, your 5-hour and weekly usage as bars, and **Pause** / **Resume**. Each running task has **Screen**, **Stop** (or **Continue**) and **Kill**.
+- **Queue**: the waiting tasks by number. Tap a number and that task's buttons show under the numbers: **Move up**, **Move down**, **Run next**, **Hold** / **Release**, **Change** (anything about it: prompt, how, models, efforts, when it starts, time limit, live link, then **Save**) and **Remove**. They stay with the task as it moves. **Clear** empties the queue.
+- **Tasks**: finished tasks, with **Search**. A number opens one: follow up, new task in its folder, live link, merge, pull request, discard.
+- **Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **Write here**: everything you type goes into that chat until you tap **Leave chat** (the first key, while you're in a chat).
+- **Mac** (**PC** or **Computer** elsewhere): stay awake and sleep, [below](#stay-awake-and-sleep).
+- **Settings**: how much the bot messages you (all, important, or off), tasks at once, whether it watches your other chats for usage limits and continues them by itself, and rescanning your folders.
 
 **Messages from the bot come with buttons.** A list (folders, chats, a question's options) is numbered in the message, every line in full, and its buttons are only the numbers, so nothing is cut off:
 
 | Message | Buttons |
 | --- | --- |
-| 🔐 Claude wants permission | **✅ Allow**, **❌ Deny**, and Claude Code's own "stop asking" rules as numbers to tap (allow this and never ask again for that command, say). Denied automatically after 15 minutes. |
-| ❓ Claude asks a question | One question at a time, every option numbered and written out in full. Tap its number; where several apply, tick them and tap **✅ Done**; or **✍️ Type an answer**. **⬅️ Back** goes to the previous question. After 15 minutes Claude decides itself. |
-| 📝 A plan for review | The whole plan, formatted, then **✅ Approve** (or approve and then switch to accept edits or ⚠️ yolo), **✏️ Ask for changes** |
-| ⏸ A task hit a usage limit | **▶️ Continue now** (try before the reset, e.g. after buying extra usage), **👀 Peek**, **🛑 Kill** |
-| ⚠️ / ❌ A task paused or failed | **▶️ Go**, **🛑 Kill**, **👀 Peek**, **⌨️ Type**, **🔘 Keys** |
-| ⚠️ A task's chat is open in VS Code | **🤝 Take over**, **🍴 Continue in a copy**, **🛑 Kill** |
-| ⏸ Your chat in VS Code hit a usage limit | **✖️ Don't continue**, **🤝 Continue here instead**, **✏️ Follow up…** |
-| ✅ A task is done | Claude's final answer, formatted and in full (a few messages, or a file when it's very long), then **➕ Follow up**: the next prompt for the same folder and conversation, and **🔗 Live link** (or **🔗 Get a live link**). On its own branch: **🌿 Merge**, **🔃 Pull request** and **🗑 Discard branch** (tap the last two twice). |
-| 🔗 A live link | **🔗 Open the live link** |
+| Claude wants permission | **Allow**, **Deny**, and Claude Code's own "stop asking" rules as numbers to tap (allow this and never ask again for that command, say). Denied automatically after 15 minutes. |
+| Claude asks a question | One question at a time, every option numbered and written out in full. Tap its number; where several apply, tick them and tap **Done**; or **Type an answer**. **Back** goes to the previous question. After 15 minutes Claude decides itself. |
+| A plan for review | The whole plan, formatted, then **Approve**, **Ask for changes**, **Approve, then accept edits**, **Approve, then no prompts** |
+| A task hit a usage limit | **Screen**, **Continue now** (try before the reset, e.g. after buying extra usage), **Kill** |
+| A task paused or failed | **Screen**, **Continue** (or **Retry**), **Kill** |
+| A task's chat is open in VS Code | **Take over**, **Use a copy**, **Kill** |
+| Your chat in VS Code hit a usage limit | **Don't continue**, **Continue here instead**, **Follow up…** |
+| A task is done | Claude's final answer, formatted and in full (a few messages, or a file when it's very long), then **Follow up** (the next prompt for the same conversation), **New task here** (a fresh one in its folder) and **Open the live link** (or **Get a live link**). On its own branch: **Merge**, **Pull request** and **Discard branch**. |
+
+A task's screen (**Screen**, or `/peek`) has **Type** (type into it) and **Keys**, which opens a keypad on the screen itself (1, 2, 3, Enter, Esc, Tab, arrows) for a screen Afterhours can't answer; the screen shows again after each key.
+
+**Kill**, **Sleep now**, **Clear**, **Remove**, **Discard branch**, **Pull request** and **Keep** ask twice, on the button itself: the first tap turns it into **Yes, kill #12** (or the like), where it was, and the second does it.
 
 Keeping it tidy:
 
-- Each task has one card. It's edited as the task goes on: started, plan approved (**📄 Full plan** shows it all), done. Its buttons go away when the task ends.
+- Each task has one card. It's edited as the task goes on: started, plan approved (**Full plan** shows it all), done. Its buttons go away when the task ends.
 - News that needs nothing from you arrives silently: started, plan approved, resumed, queue empty. Your phone only buzzes when something needs you or a task ends.
 - A request answered somewhere else (the terminal, another device) or timed out loses its buttons, with a line saying what happened.
 - Claude's Markdown shows as formatting (headings, bold, code, lists, tables), not as `##` and `**`.
 
 If Telegram can't be reached, messages wait on the computer and arrive in order once it can.
 
-**🛑 Kill** (tap it twice) ends a stuck task now: Claude and everything it started stop, whatever it waited on from you is settled, and the queue moves on ([more](#kill-a-stuck-task)). It's also on the task's card, **📊 Status** and **👀 Peek**, and `/kill` does it.
-
-**🖥 /mac** keeps the computer awake while tasks run (with its lid closed too), and puts it to sleep, now or once the queue is done; **/sleep** goes straight there ([more](#stay-awake-and-sleep)). **/tasks** lists your finished tasks, with search; a number opens one (follow up, live link, merge, pull request, discard).
-
-Commands in the menu: `/new /chats /leave /queue /tasks /status /peek /kill /mac /sleep /pause /resume /settings /cancel /help`. `/settings` sets how much the bot messages you (all, important, or off), whether it watches your other chats for usage limits, and whether it continues them by itself.
+Commands in the menu: `/new /status /queue /tasks /chats /mac /sleep /settings /kill /peek /pause /resume /leave /cancel /help`. Typing `q myapp plan opus max>low: …` fills in a card too.
 
 ## Continue a VS Code chat from your phone
 
-Your phone sees every chat: **💬 Chats** lists them all, and the same conversation carries on wherever it lives.
+Your phone sees every chat: **Chats** lists them all, and the same conversation carries on wherever it lives.
 
-- **Write into any chat.** Open it in **💬 Chats** and tap **✍️ Write here**. Then everything you type goes into that conversation, in the order you sent it:
+- **Write into any chat.** Open it in **Chats** and tap **Write here**. Then everything you type goes into that conversation, in the order you sent it:
   - The queue is running it → typed straight in, and Claude reads it when its current step ends.
   - It's not open anywhere → the queue resumes it with your message.
   - It's open in VS Code or a terminal → the queue takes it over: closes it there and continues it, so your message counts as yours and permission requests come to your phone. When it's done, the chat opens in VS Code again (if VS Code is running).
@@ -180,13 +204,13 @@ Your phone sees every chat: **💬 Chats** lists them all, and the same conversa
   - If it already runs again (Claude Code continued it, or you did), nothing happens.
   - If it's still open and waiting, Afterhours tells it to continue through Claude Code's messaging between sessions. VS Code stays live, and you see it carry on there. Claude sees the message as coming from another session working on your behalf.
   - If it hasn't started 2 minutes later, or the chat was closed, the queue continues it instead.
-  - **✖️ Don't continue** and **🤝 Continue here instead** are on the message. **▶️ Auto-continue** in `/settings` turns it off.
+  - **Don't continue** and **Continue here instead** are on the message. **Auto-continue** in **Settings** turns it off.
 - **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
 - **Remote Control**, Anthropic's own feature, lets you type into a live VS Code chat from the Claude app. In VS Code, run `/remote-control`, or turn on *Enable Remote Control for all sessions*. Afterhours works alongside it.
 
 ## Run tasks side by side
 
-By default one task runs at a time. To run two or three (Claude Code in two projects, say), set **Tasks at once**: `cq parallel 2` or **/settings** in the bot. The next task starts beside the running ones only when it can't get in their way:
+By default one task runs at a time. To run two or three (Claude Code in two projects, say), set **Tasks at once**: `cq parallel 2` or **Settings** in the bot. The next task starts beside the running ones only when it can't get in their way:
 
 - **never in the same conversation**, and **never changing the same folder** (or one inside the other);
 - another folder, a task on **its own branch** (its own worktree), or a task that **only answers** runs beside anything.
@@ -195,7 +219,7 @@ A task that can't start yet keeps its place; a later one that can goes first. Th
 
 ## Kill a stuck task
 
-A task can get stuck: waiting for a chat that's open in VS Code, at a screen nobody can answer, or silent. **Kill** ends it now, from the bot (**🛑 Kill**, `/kill`) or the terminal (`cq kill [#]`):
+A task can get stuck: waiting for a chat that's open in VS Code, at a screen nobody can answer, or silent. **Kill** ends it now, from the bot (**Kill**, `/kill`) or the terminal (`cq kill [#]`):
 
 - Claude and everything it started stop: the task's window, then every process under it (a dev server, a long command). Whatever ignores the polite signal gets a firm one after 2 seconds.
 - Whatever the task waited on from you is settled, and a chat it took over from VS Code goes back there.
@@ -206,17 +230,17 @@ A task can get stuck: waiting for a chat that's open in VS Code, at a screen nob
 
 ## The queue
 
-In the bot, **📋 Queue** lists every waiting task with buttons: **⬆️** / **⬇️** move it, **⏸** holds it in its place (it doesn't start until you tap **▶️**), **✏️** changes it, **🗑** removes it, and **🧹 Clear** empties the queue (tap twice). From the terminal: `top`, `rm`, `hold`, `release`, `clear`.
+In the bot, **Queue** lists every waiting task by number: tap one, then **Move up** / **Move down** move it, **Run next** puts it first, **Hold** keeps it in its place (it doesn't start until you tap **Release**), **Change** changes it, **Remove** removes it, and **Clear** empties the queue (both ask twice). From the terminal: `top`, `rm`, `hold`, `release`, `clear`.
 
 ## Plan with one model, work with another
 
-A task that plans first can plan with one model and carry the plan out with another: Opus to think it through, Sonnet (or Haiku) to do the work. Once the plan is approved, by Afterhours or by you, the planner's session closes and the same conversation resumes on the work model, in the task's mode, told to carry the plan out. The plan is already in the conversation, so nothing is lost. In the bot, it's the second row of **🧠 Model**, and **🛠 Work effort…** does the same for effort (plan at max, work at medium); in text, `q myapp plan opus>sonnet: …`, or `default opus>sonnet`.
+A task that plans first can plan with one model and carry the plan out with another: Opus to think it through, Sonnet (or Haiku) to do the work. Once the plan is approved, by Afterhours or by you, the planner's session closes and the same conversation resumes on the work model, in the task's mode, told to carry the plan out. The plan is already in the conversation, so nothing is lost. The effort can differ the same way: plan at Max, work at Low. In the bot, pick **Plan first** in **How**, then in **Model** set the plan, tap **Work** and set the work; in text, `q myapp plan opus>sonnet max>low: …`, or `default opus>sonnet`.
 
 ## Live links
 
 When you're away from the Mac and want to see what a task made, ask for a **live link**: at the end of the task, Claude publishes a [claude.ai artifact](https://claude.ai) showing the result (screenshots of a UI running when it can, else a faithful preview, and how to try it), and the link comes to your phone. It opens wherever you're signed in to claude.ai, even with the computer asleep, and you can share it from there.
 
-- Ask when you queue the task (**🔗 Live link**, `q … link: …`), or later: a running task ends with one, and a finished one gets a short task of its own, next, in the same conversation (**Get a live link**, `cq link #14`).
+- Ask when you queue the task (**Live link** in **More**, `q … link: …`), or later: a running task ends with one, and a finished one gets a short task of its own, next, in the same conversation (**Get a live link**, `cq link #14`).
 - The task's answer stays Claude's answer; the link is kept beside it. If Claude can't make one, the task still ends and says why.
 - Only when you ask. The task may use Claude Code's Artifact tool for that, nothing else changes.
 
@@ -225,11 +249,12 @@ When you're away from the Mac and want to see what a task made, ask for a **live
 Nothing extra to install: Afterhours uses what each system already has.
 
 - **While tasks run, the computer stays awake** (on by default; `cq awake off` to turn it off). A Mac uses `caffeinate`, Linux uses a `systemd-inhibit` lock, and Windows uses its own power API. When the work is done, the computer sleeps as usual.
-- **With the lid closed too** (laptops): `cq awake lid on`, or **💡 Awake with the lid closed** in `/mac`.
+- **With the lid closed too** (laptops): `cq awake lid on`, or **Lid closed** under **Mac** in the bot.
   - **Mac:** it turns sleep off while tasks run and back on after (and when the battery drops below 20%). That takes your password **once**, to allow exactly two `pmset` commands and nothing else.
   - **Linux:** the same lock also holds off the lid switch. No password.
   - **Windows:** Windows decides. In Control Panel → Power Options → "Choose what closing the lid does", pick **Do nothing**.
-- **Sleep now, or when the queue is done:** `/sleep` or `/mac` in the bot, or the text commands `sleep`, `sleep done`, `sleep cancel`. Sleeping says so first, then goes a few seconds later so the message reaches you. "When done" waits for nothing to be running, a quiet minute, and nobody at the computer for 5 minutes. Then the switch turns itself off.
+- **Stay awake for a while, tasks or not** (for a task set for later, or to reach the computer): **Awake 1h**, **Awake 4h** or **Awake 12h** under **Mac** in the bot (tap the ticked one again to stop), or the text commands `awake 2h`, `awake 30m`, `awake stop`. At most a day at a time; then it sleeps as usual. With **Lid closed** on, it stays awake with the lid closed too.
+- **Sleep now, or when the queue is done:** **Sleep now** (it asks twice, on the button) and **Sleep when done** under **Mac** in the bot, `/sleep`, or the text commands `sleep`, `sleep done`, `sleep cancel`. Sleeping says so first, then goes a few seconds later so the message reaches you. "When done" waits for nothing to be running, a quiet minute, and nobody at the computer for 5 minutes. Then the switch turns itself off. Sleeping, now or when done, ends staying awake for a while, and staying awake for a while turns sleeping when done off: the last one you asked for wins.
 - A running task pauses while the computer sleeps, and continues when it wakes. The phone can't wake it: open the lid or press a key.
 
 ## What happens to a task
@@ -250,7 +275,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 
 - `cq attach` shows the running task live, read-only. Detach with `Ctrl-b d`.
 - Finished tasks are ordinary Claude Code conversations named `Afterhours: <prompt>`, so you can pick one up in VS Code or the terminal.
-- **Don't** open a conversation elsewhere while Afterhours is running it: two Claude processes writing one conversation will fork it. If the conversation a task needs is already open elsewhere, Afterhours waits until you close it. You can also tap **🤝 Take over** (close it there and continue here) or **🍴 Continue in a copy**.
+- **Don't** open a conversation elsewhere while Afterhours is running it: two Claude processes writing one conversation will fork it. If the conversation a task needs is already open elsewhere, Afterhours waits until you close it. You can also tap **Take over** (close it there and continue here) or **Use a copy**.
 
 ## The `cq` command
 
@@ -303,6 +328,7 @@ The words before the first colon count as options only if every one of them is a
 | `chats [project]` | The folder's recent Claude Code chats from anywhere, with the ids `q @<id>:` takes |
 | `pause` / `go` | Stop starting new tasks / resume. `go` also retries a paused task |
 | `sleep` · `sleep done` · `sleep cancel` | Put the computer to sleep now · once the queue is done · never mind |
+| `awake 2h` · `awake stop` | Stay awake that long (30m to 24h), tasks or not · sleep as usual again |
 | `stop` · `kill [#]` · `rm <#>` · `top <#>` | Interrupt (pauses it) · end a task now, with what it started (`skip` too) · remove one · run one next |
 | `hold <#>` · `release <#>` · `clear` | Keep one in its place without starting it · let it start · take every task off the queue |
 | `link [#]` | A live link for a task: at its end, or now for one that has ended |
@@ -354,7 +380,7 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
 ## Privacy and security
 
 - Afterhours runs entirely on your computer and collects nothing.
-- Your prompts go to Anthropic through Claude Code, as they always would. They also go to Telegram, because bot chats aren't end-to-end encrypted: prompts, plans and Claude's summaries pass through Telegram's servers. The same goes for the titles and last prompts of your other chats when **💬 Chat…** lists them or one hits a usage limit; turn the latter off in `/settings`.
+- Your prompts go to Anthropic through Claude Code, as they always would. They also go to Telegram, because bot chats aren't end-to-end encrypted: prompts, plans and Claude's summaries pass through Telegram's servers. The same goes for the titles and last prompts of your other chats when the card's **Chat** tab or **Chats** lists them, or one hits a usage limit; turn the latter off in **Settings**.
 - The background service listens only on `127.0.0.1` and requires a token.
 - Afterhours writes into your other chats only to continue them after a usage limit (when Auto-continue is on), and closes a chat only when you take it over.
 - See [SECURITY.md](SECURITY.md) for the details and how to report a vulnerability.
@@ -366,7 +392,7 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
   - `cq telegram` shows whether it's paired;
   - only one Afterhours may use a bot token at a time;
   - Telegram must be reachable from the computer.
-- A task is paused on a screen Afterhours doesn't know: use **👀 Peek**, then `cq keys …` or `cq say …`, then **▶️ Go**.
+- A task is paused on a screen Afterhours doesn't know: use **Screen** (its **Keys** and **Type**), or `cq keys …` and `cq say …`, then **Continue**.
 - Still stuck? Open an issue with the file from `cq report` attached.
 
 - `cq: command not found` right after installing: open a **new** terminal (the installer added `~/.local/bin` to your PATH), or run `~/.afterhours/bin/cq doctor`.

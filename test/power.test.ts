@@ -142,6 +142,46 @@ describe('sleeping', () => {
   })
 })
 
+describe('staying awake for a while, tasks or not', () => {
+  test('held for the hours asked, then it sleeps as usual again; a restart keeps it', async () => {
+    const { store, power, advance } = control()
+    expect(power.awakeHeld()).toBe(false)
+    expect((await power.status()).awake).toBeNull()
+    const r = power.stayAwake({ hours: 4, by: 'Telegram' })
+    expect(r.ok).toBe(true)
+    expect(r.text).toMatch(/^The Mac stays awake until .+, tasks or not\.$/)
+    expect(power.awakeHeld()).toBe(true)
+    expect((await power.status()).awake).toEqual({ until: 1_000_000 + 4 * 3_600_000, hours: 4 })
+    const again = new PowerControl({ system: new FakePower(), store, runner: { paused: false } as Runner, config: () => DEFAULT_CONFIG, saveConfig: () => {}, notify: () => {}, now: () => 1_000_000, log: () => {} })
+    expect(again.awakeHeld()).toBe(true)
+    advance(4 * 3_600_000)
+    expect(power.awakeHeld()).toBe(false)
+    expect((await power.status()).awake).toBeNull()
+  })
+
+  test('stopped by hand, by sleeping now, or by sleeping when done; it never holds longer than a day', async () => {
+    const { power } = control()
+    power.stayAwake({ hours: 2, by: 'Telegram' })
+    expect(power.stayAwake({ hours: null, by: 'Telegram' }).text).toBe('The Mac sleeps as usual again when nothing runs.')
+    expect(power.awakeHeld()).toBe(false)
+    expect(power.stayAwake({ hours: null, by: 'Telegram' }).text).toBe('The Mac wasn’t being kept awake.')
+
+    power.stayAwake({ hours: 2, by: 'Telegram' })
+    await power.sleepNow({ by: 'Telegram' })
+    expect(power.awakeHeld()).toBe(false)
+
+    power.stayAwake({ hours: 2, by: 'Telegram' })
+    expect((await power.sleepWhenDone({ on: true, by: 'Telegram' })).text).toContain('It no longer stays awake for a while first.')
+    expect(power.awakeHeld()).toBe(false)
+    // And the other way round: staying awake turns sleeping when done off.
+    expect(power.stayAwake({ hours: 1, by: 'Telegram' }).text).toContain('It no longer sleeps when the queue is done.')
+    expect((await power.status()).sleepWhenDone.on).toBe(false)
+
+    power.stayAwake({ hours: 100, by: 'Telegram' })
+    expect((await power.status()).awake!.hours).toBe(24)
+  })
+})
+
 describe('awake with the lid closed', () => {
   test('Linux: a lock on the lid switch, no password; Windows: its own power settings', async () => {
     const linux = control({ kind: 'linux', canInhibitLid: true })

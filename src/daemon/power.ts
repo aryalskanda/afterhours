@@ -1,10 +1,12 @@
 // Awake and asleep, for the apps, the bot and text commands: staying awake while tasks run (with the
-// lid closed too, where the system allows it), sleeping now, and sleeping once the queue is done.
-// It's done with the system's own tools only (platform/power.ts): no keep-awake app to install.
+// lid closed too, where the system allows it), staying awake for a while with nothing running,
+// sleeping now, and sleeping once the queue is done. It's done with the system's own tools only
+// (platform/power.ts): no keep-awake app to install.
 
 import { machineWord, type PowerKind, type PowerSystem, type SleepSwitch } from '../platform/power'
 import type { Config } from '../shared/config'
 import type { LidAwake } from './awake'
+import { formatClock } from './limits'
 import type { Notice } from './notify'
 import type { Runner } from './runner'
 import type { Store } from './store'
@@ -31,6 +33,8 @@ export interface PowerStatus {
    * a Mac, once the sudo rule is in place), `holding` (held for tasks right now).
    */
   lidClosed: { on: boolean; ready: boolean; holding: boolean }
+  /** Staying awake for a while even with nothing running (stayAwake): until when, and for how many hours it was asked. */
+  awake: { until: number; hours: number } | null
 }
 
 /** Sleep once the queue is done; stored, so a restart keeps it. */
@@ -40,6 +44,18 @@ interface SleepPlan {
 }
 
 const PLAN_KEY = 'mac.sleepWhenDone'
+
+/** Awake until a time, tasks or not; stored, so a restart keeps it. */
+interface AwakeHold {
+  until: number
+  hours: number
+  by: string
+}
+
+const HOLD_KEY = 'power.awakeUntil'
+const HOUR_MS = 3_600_000
+/** The longest it may be held awake in one go: a laptop forgotten in a bag shouldn't run flat for days. */
+export const MAX_AWAKE_HOURS = 24
 /** The reply and the bot's message go out before the computer sleeps. */
 const SLEEP_DELAY_MS = 3000
 /** How long the queue stays done before sleeping (a follow-up often comes right after a task). */
@@ -84,6 +100,17 @@ export class PowerControl {
     return this.d.store.kvGet<SleepPlan | null>(PLAN_KEY) ?? null
   }
 
+  /** The stay-awake hold while it lasts; null once it has run out. */
+  private hold(): AwakeHold | null {
+    const h = this.d.store.kvGet<AwakeHold | null>(HOLD_KEY) ?? null
+    return h && h.until > this.d.now() ? h : null
+  }
+
+  /** Whether it's held awake right now with nothing needing it (stayAwake). The engine checks this every tick. */
+  awakeHeld(): boolean {
+    return this.hold() !== null
+  }
+
   /** Whether "awake with the lid closed" can be done here, set up or not. */
   get lidSupported(): boolean {
     return this.d.system.kind === 'mac' ? Boolean(this.d.lid) : this.d.system.kind === 'linux' ? Boolean(this.d.canInhibitLid) : false
@@ -109,6 +136,31 @@ export class PowerControl {
       running: this.d.store.running().at(-1)?.id ?? null,
       keepAwake: config.keepAwake,
       lidClosed: { on: config.keepAwakeLidClosed && this.lidSupported, ready, holding },
+      awake: (h => (h ? { until: h.until, hours: h.hours } : null))(this.hold()),
+    }
+  }
+
+  /**
+   * Stays awake for `hours` from now, with or without tasks (for a task set for later, or to reach the
+   * computer), then sleeps as usual again; null lets it sleep as usual now. It's the opposite of
+   * sleeping once the queue is done, so it turns that off.
+   */
+  stayAwake(o: { hours: number | null; by: string }): { ok: boolean; text: string } {
+    if (o.hours === null) {
+      const had = this.hold() !== null
+      this.d.store.kvSet(HOLD_KEY, null)
+      return { ok: true, text: had ? `The ${this.word} sleeps as usual again when nothing runs.` : `The ${this.word} wasn’t being kept awake.` }
+    }
+    const hours = Math.min(MAX_AWAKE_HOURS, Math.max(0.25, o.hours))
+    const now = this.d.now()
+    const until = now + hours * HOUR_MS
+    const sleepPlanned = this.plan() !== null
+    this.d.store.kvSet(HOLD_KEY, { until, hours, by: o.by } satisfies AwakeHold)
+    this.d.store.kvSet(PLAN_KEY, null)
+    this.d.log(`power: staying awake until ${new Date(until).toISOString()} (asked from ${o.by})`)
+    return {
+      ok: true,
+      text: `The ${this.word} stays awake until ${formatClock(until, now)}, tasks or not.${sleepPlanned ? ' It no longer sleeps when the queue is done.' : ''}`,
     }
   }
 
@@ -154,6 +206,8 @@ export class PowerControl {
       this.d.log('power: sleep was turned off; turned it back on to sleep')
     }
     this.goingToSleep = true
+    // Asked to sleep: staying awake for a while is over.
+    this.d.store.kvSet(HOLD_KEY, null)
     this.d.notify({ type: 'sleeping', by: o.by, quit: [] })
     this.d.log(`power: going to sleep (asked from ${o.by})`)
     ;(this.d.later ?? setTimeout)(() => {
@@ -184,7 +238,9 @@ export class PowerControl {
       this.d.store.kvSet(PLAN_KEY, null)
       return { ok: true, text: `The ${this.word} stays awake after the queue is done.` }
     }
+    const held = this.hold() !== null
     this.d.store.kvSet(PLAN_KEY, { by: o.by, at: this.d.now() } satisfies SleepPlan)
+    this.d.store.kvSet(HOLD_KEY, null)
     this.doneSince = null
     this.someoneThere = false
     const now = this.d.now()
@@ -193,6 +249,7 @@ export class PowerControl {
       ok: true,
       text:
         `The ${this.word} sleeps once the queue is done.` +
+        `${held ? ' It no longer stays awake for a while first.' : ''}` +
         `${waiting ? ` ${waiting === 1 ? 'A task on hold or set for later waits' : `${waiting} tasks on hold or set for later wait`} until it wakes.` : ''}`,
     }
   }
