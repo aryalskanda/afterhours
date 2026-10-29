@@ -56,13 +56,13 @@ Then paste **one** line into a terminal. It asks before it installs anything, an
 Open **Terminal** (press ⌘Space, type "Terminal", press Enter) and paste:
 
 ```sh
-curl -fsSL https://github.com/jackReacher1234/afterhours/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh
 ```
 
 Or, if you use [Homebrew](https://brew.sh):
 
 ```sh
-brew install jackReacher1234/tap/afterhours
+brew install aryalskanda/tap/afterhours
 cq setup
 ```
 
@@ -71,7 +71,7 @@ cq setup
 Afterhours runs inside **WSL**, Linux built into Windows, which the installer turns on for you. Right-click the Start button, choose **Terminal (Admin)** or **Windows PowerShell (Admin)**, and paste:
 
 ```powershell
-irm https://github.com/jackReacher1234/afterhours/releases/latest/download/install.ps1 | iex
+irm https://github.com/aryalskanda/afterhours/releases/latest/download/install.ps1 | iex
 ```
 
 Windows may ask you to restart once (Ubuntu opens afterwards and asks you to pick a username and password). Run the same line again after that to finish. More in [docs/windows.md](docs/windows.md).
@@ -79,10 +79,10 @@ Windows may ask you to restart once (Ubuntu opens afterwards and asks you to pic
 ### Linux, and servers in the cloud
 
 ```sh
-curl -fsSL https://github.com/jackReacher1234/afterhours/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh
 ```
 
-Or with Homebrew on Linux: `brew install jackReacher1234/tap/afterhours`. Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like (x64 or arm64). For a server with no browser, see [docs/linux.md](docs/linux.md).
+Or with Homebrew on Linux: `brew install aryalskanda/tap/afterhours`. Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like (x64 or arm64). For a server with no browser, see [docs/linux.md](docs/linux.md).
 
 ### What the installer does
 
@@ -105,7 +105,7 @@ Check everything at any time with **`cq doctor`**. Run `cq setup` again whenever
 With [Bun](https://bun.sh):
 
 ```sh
-git clone https://github.com/jackReacher1234/afterhours && cd afterhours
+git clone https://github.com/aryalskanda/afterhours && cd afterhours
 bun install
 bun src/cli/cq.ts setup
 ```

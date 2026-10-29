@@ -7,7 +7,7 @@ Afterhours runs inside **WSL2**, Linux built into Windows 10 (2004 or newer) and
 In PowerShell **as administrator** (right-click Start → Terminal (Admin)):
 
 ```powershell
-irm https://github.com/jackReacher1234/afterhours/releases/latest/download/install.ps1 | iex
+irm https://github.com/aryalskanda/afterhours/releases/latest/download/install.ps1 | iex
 ```
 
 What happens, step by step. It asks before each one:

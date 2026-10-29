@@ -11,7 +11,7 @@ Afterhours runs the same on Linux as on a Mac: the queue, plans, permissions, us
 ## Install
 
 ```sh
-curl -fsSL https://github.com/jackReacher1234/afterhours/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh
 ```
 
 The script:
@@ -67,7 +67,7 @@ runcmd:
   # A user service manager for "ubuntu" that runs without a login, and the tools as that user.
   - loginctl enable-linger ubuntu
   - sudo -iu ubuntu bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
-  - sudo -iu ubuntu env XDG_RUNTIME_DIR=/run/user/1000 bash -lc 'curl -fsSL https://github.com/jackReacher1234/afterhours/releases/latest/download/install.sh | sh'
+  - sudo -iu ubuntu env XDG_RUNTIME_DIR=/run/user/1000 bash -lc 'curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh'
 ```
 
 To skip the SSH sign-in, put the `claude setup-token` token in `/home/ubuntu/.afterhours/env` (mode 600, owned by ubuntu) from a secret store (AWS Secrets Manager, say). Don't put it in the user data, which other processes on the machine can read.
