@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto'
+import { BRAND } from '../shared/brand'
 import { existsSync, statSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
 import { within as inside } from '../shared/paths'
@@ -453,6 +454,14 @@ export class TelegramBridge {
       this.requests.set(notice.code, msg.message_id)
       if (notice.type === 'question') this.questions.set(notice.code, { ...ui.newQuestionState(), messageId: msg.message_id })
     }
+  }
+
+  /** Tells the owner a newer release is out; false when there is nobody to tell yet. */
+  async updateAvailable(latest: string, current: string, command: string): Promise<boolean> {
+    const chat = this.owner
+    if (chat === null || !this.running) return false
+    await this.deliver(chat, ui.updateView(latest, current, command, BRAND.name))
+    return true
   }
 
   /**

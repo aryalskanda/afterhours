@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import launcherSource from '../../bin/cq-launcher.c' with { type: 'text' }
 import { selfCommand, VERSION } from '../daemon/main'
+import { homebrewLink, isNewer, latestRelease } from '../daemon/updates'
 import { BRAND, LEGACY } from '../shared/brand'
 import { CQ_HOME, ensureHome, findExecutable, LAUNCH_AGENT_LABEL, loadConfig, paths, writeFileAtomic } from '../shared/config'
 import { isMac, isWindows, isWsl } from '../platform/os'
@@ -14,13 +15,7 @@ import { run } from './util'
 /** macOS: the small launcher that holds Full Disk Access, so updates don't undo it. */
 export const launcherPath = join(paths.bin, 'cq-launcher')
 
-/** For a binary inside a Homebrew Cellar, the stable link Homebrew keeps pointing at the current version. */
-export function homebrewLink(execPath: string): string | null {
-  const m = /^(.*)\/Cellar\/[^/]+\/[^/]+\/bin\/cq$/.exec(execPath)
-  if (!m) return null
-  const link = join(m[1]!, 'bin', 'cq')
-  return existsSync(link) ? link : null
-}
+export { homebrewLink }
 
 /** Moves a pre-rename install over (macOS only). False if it can't happen yet (a job is running). */
 export function migrateIfNeeded(): boolean {
@@ -227,17 +222,15 @@ export async function update(): Promise<void> {
     console.log('Running from source: pull the latest code, then run  bun src/cli/cq.ts install')
     return
   }
-  const res = await fetch(`https://api.github.com/repos/${BRAND.repo}/releases/latest`, { headers: { accept: 'application/vnd.github+json' } })
-  if (!res.ok) throw new Error(`GitHub answered ${res.status}`)
-  const release = (await res.json()) as { tag_name: string; assets: { name: string; browser_download_url: string }[] }
-  if (release.tag_name.replace(/^v/, '') === VERSION) {
+  const release = await latestRelease()
+  if (!isNewer(release.version, VERSION)) {
     console.log(`Already on the latest version (${VERSION}).`)
     return
   }
   const asset = release.assets.find(a => a.name === releaseAsset())
-  if (!asset) throw new Error(`release ${release.tag_name} has no build for ${process.platform} ${process.arch}`)
+  if (!asset) throw new Error(`release ${release.tag} has no build for ${process.platform} ${process.arch}`)
   const sums = release.assets.find(a => a.name === 'SHA256SUMS')
-  if (!sums) throw new Error(`release ${release.tag_name} has no SHA256SUMS to check the download against`)
+  if (!sums) throw new Error(`release ${release.tag} has no SHA256SUMS to check the download against`)
   const expected = checksumFor(await (await fetch(sums.browser_download_url)).text(), asset.name)
   const bytes = new Uint8Array(await (await fetch(asset.browser_download_url)).arrayBuffer())
   const actual = new Bun.CryptoHasher('sha256').update(bytes).digest('hex')
@@ -246,7 +239,7 @@ export async function update(): Promise<void> {
   const tmp = `${paths.binary}.${process.pid}.download`
   writeFileSync(tmp, bytes, { mode: 0o755 })
   replaceBinary(tmp)
-  console.log(`Updated to ${release.tag_name}. ${BRAND.name} restarts itself with it in a moment.`)
+  console.log(`Updated to ${release.tag}. ${BRAND.name} restarts itself with it in a moment.`)
 }
 
 /** The release file for this computer: cq-darwin-arm64, cq-linux-x64, cq-windows-x64.exe… */

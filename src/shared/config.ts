@@ -13,6 +13,8 @@ export const paths = {
   home: CQ_HOME,
   config: join(CQ_HOME, 'config.json'),
   token: join(CQ_HOME, 'token'),
+  /** The newest release the daemon last saw, for the terminal to mention. */
+  update: join(CQ_HOME, 'update.json'),
   /** This machine's key for remote access (apps and the relay know it by its public half). */
   identity: join(CQ_HOME, 'identity.json'),
   db: join(CQ_HOME, 'state.db'),
