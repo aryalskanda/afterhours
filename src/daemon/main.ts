@@ -4,7 +4,6 @@ import hookScript from '../../bin/cq-hook.sh' with { type: 'text' }
 import statusScript from '../../bin/cq-statusline.sh' with { type: 'text' }
 import { join } from 'node:path'
 import pkg from '../../package.json' with { type: 'json' }
-import { IMessageBridge, type BridgeStatus } from '../imessage/bridge'
 import { BRAND } from '../shared/brand'
 import {
   cleanEnv,
@@ -62,7 +61,6 @@ export interface Health {
   home: string
   claude: string
   tmux: string
-  imessage: BridgeStatus | { ok: false; error: string }
   telegram: TelegramStatus | { ok: false; error: string }
   remote: RemoteStatus
   /** Whether this process may read Full-Disk-Access-protected files (and so ~/Documents without prompts). */
@@ -179,7 +177,7 @@ export async function runDaemon(): Promise<void> {
       })
     : null
 
-  const commandContext = (source: 'cli' | 'imessage' | 'remote', cwd?: string) => ({
+  const commandContext = (source: 'cli' | 'remote', cwd?: string) => ({
     runner,
     store,
     config: getConfig,
@@ -190,7 +188,7 @@ export async function runDaemon(): Promise<void> {
     chats,
     mac,
   })
-  const command = (text: string, source: 'cli' | 'imessage', cwd?: string) => runCommand(text, commandContext(source, cwd))
+  const command = (text: string, source: 'cli', cwd?: string) => runCommand(text, commandContext(source, cwd))
 
   const folders = new FolderMap({
     roots: () => codeRoots(config),
@@ -274,29 +272,6 @@ export async function runDaemon(): Promise<void> {
     })
   }, 20_000)
 
-  let bridge: IMessageBridge | null = null
-  if (config.imessage.enabled) {
-    const b = new IMessageBridge({
-      allowSms: config.imessage.allowSms,
-      getWatermark: () => store.kvGet<number>('imessage.watermark'),
-      setWatermark: rowid => store.kvSet('imessage.watermark', rowid),
-      getReplyChat: () => store.kvGet<string>('imessage.chat'),
-      setReplyChat: chat => store.kvSet('imessage.chat', chat),
-      onCommand: async text => {
-        try {
-          return await command(text, 'imessage')
-        } catch (err) {
-          log(`command failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`)
-          return `Something went wrong: ${err instanceof Error ? err.message : err}`
-        }
-      },
-      now: Date.now,
-      log,
-    })
-    if (b.start()) notifier.addSink(text => b.notify(text))
-    bridge = b
-  }
-
   /** What `cq pair`, `cq devices`, `cq remote` and `cq audit` ask the daemon. */
   async function remoteApi(req: Request, url: URL): Promise<Response> {
     const body = req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {}
@@ -351,7 +326,6 @@ export async function runDaemon(): Promise<void> {
             home: CQ_HOME,
             claude: claudePath,
             tmux: tmuxPath,
-            imessage: bridge?.status() ?? { ok: false, error: 'iMessage is turned off in config.json' },
             telegram: telegram ? { ...telegram.status(), pairCode: null } : { ok: false, error: 'not set up (cq telegram <token>)' },
             remote: remote.status(),
             fullDiskAccess: hasFullDiskAccess(),
@@ -442,7 +416,6 @@ export async function runDaemon(): Promise<void> {
     // Sleep turned off for tasks goes back on; started again with work, it goes off again.
     lidAwake?.releaseNow()
     folders.stopWatching()
-    bridge?.stop()
     telegram?.stop()
     remote.stop()
     server.stop(true)

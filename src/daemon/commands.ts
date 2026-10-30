@@ -20,7 +20,7 @@ export interface CommandContext {
   now: () => number
   /** Working directory of a `cq` CLI call; jobs queued from the CLI default to it. */
   cwd?: string
-  source: 'cli' | 'imessage' | 'remote'
+  source: 'cli' | 'remote'
   /** Your conversations, for `chats`. */
   chats?: ChatSource
   /** Checks a job before it's queued (remote access applies the machine's rules); a string refuses it. */
@@ -526,7 +526,7 @@ function clampInt(text: string, fallback: number, min: number, max: number): num
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback
 }
 
-/** Runs one command. Returns null when the text isn't a command (iMessage ignores those). */
+/** Runs one command. Returns null when the text isn't a command (a chat ignores those). */
 export async function runCommand(text: string, ctx: CommandContext): Promise<string | null> {
   const m = /^(\S+)\s*([\s\S]*)$/.exec(text.trim())
   if (!m) return null
@@ -589,7 +589,7 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       const id = rest ? Number(rest.replace(/^#/, '')) : running[0]?.id
       if (id === undefined) return 'Nothing is running.'
       if (!Number.isInteger(id)) return 'Usage: kill [#id]'
-      return ctx.runner.kill(id, { by: ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this Mac' })
+      return ctx.runner.kill(id, { by: ctx.source === 'remote' ? 'an app' : 'this computer' })
     }
     case 'rm':
     case 'del':
@@ -671,7 +671,7 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
 const NO_POWER = 'There is nothing here to sleep (a container).'
 
 function whoAsked(ctx: CommandContext): string {
-  return ctx.source === 'imessage' ? 'iMessage' : ctx.source === 'remote' ? 'an app' : 'this computer'
+  return ctx.source === 'remote' ? 'an app' : 'this computer'
 }
 
 /** awake 2h: stays awake that long, tasks or not; awake stop: sleeps as usual again. */

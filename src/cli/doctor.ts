@@ -74,9 +74,6 @@ export async function checks(): Promise<Check[]> {
     else if ('bot' in tg && tg.ok) bad(`Telegram: ${tg.bot} is running but not paired yet (cq telegram shows the code)`)
     else if (config.telegram.enabled) bad(`Telegram: ${tg.error ?? 'not running'}`)
     else info('Telegram: not set up (cq telegram <token>)')
-    const im = health.imessage
-    if (im.ok && 'selfChats' in im) ok(`iMessage: reading chat.db · ${im.selfChats} chat(s) with yourself`)
-    else if (config.imessage.enabled) bad(`iMessage: ${im.error}`)
   }
 
   const svc = service()

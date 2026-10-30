@@ -31,7 +31,7 @@ export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths):
     hooks: {
       SessionStart: on('SessionStart'),
       UserPromptSubmit: on('UserPromptSubmit'),
-      // Waits for your iMessage reply, so it needs room beyond the approval timeout.
+      // Waits for your answer, so it needs room beyond the approval timeout.
       PermissionRequest: on('PermissionRequest', config.timeouts.approvalSec + 60),
       PreToolUse: [
         { matcher: 'AskUserQuestion', hooks: [command('PreToolUse', config.timeouts.questionSec + 60)] },

@@ -43,7 +43,6 @@ writeFileSync(
   join(home, 'config.json'),
   JSON.stringify({
     port: PORT,
-    imessage: { enabled: false, allowSms: false },
     telegram: { enabled: false, token: null, ownerId: null, ownerName: null },
     keepAwake: false,
     isolate: false,
