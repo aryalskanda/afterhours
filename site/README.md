@@ -27,4 +27,4 @@ Then open the address it prints, at phone width (390 px) and desktop width, in l
 ## Still to add
 
 - A social preview image (`og.png`, 1200×630), referenced with `<meta property="og:image">`.
-- The demo video (see `docs/demo-script.md`), in place of the phone mock or under it.
+- The demo video, in place of the phone mock or under it.

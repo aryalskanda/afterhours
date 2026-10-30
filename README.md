@@ -359,12 +359,10 @@ The words before the first colon count as options only if every one of them is a
 | `reopenInVsCode` | `true` | When a task that took a chat from VS Code ends, open the chat there again |
 | `telegram` | set by `cq telegram` | The bot token and your paired account |
 | `aliases`, `trustedDirs` | | Project names for text commands, and folders whose trust prompt Afterhours may accept |
-| `imessage.enabled` | `false` | Text commands over iMessage instead of Telegram (see below) |
 | `port`, `claudePath`, `tmuxPath` | 7787, from `PATH` | |
 
 Next to it: `state.db` (queue and history), the folder map (in `state.db`), `logs/cqd.log`, `jobs/` (per-task session settings) and `token` (how `cq` and the hooks talk to the background service).
 
-**iMessage** (optional): text the commands to yourself at your **Apple ID email**. SMS is ignored on purpose, because SMS senders can be faked.
 
 ## How it works
 
