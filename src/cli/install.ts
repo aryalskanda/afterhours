@@ -5,7 +5,8 @@ import launcherSource from '../../bin/cq-launcher.c' with { type: 'text' }
 import { selfCommand, VERSION } from '../daemon/main'
 import { BRAND, LEGACY } from '../shared/brand'
 import { CQ_HOME, ensureHome, findExecutable, LAUNCH_AGENT_LABEL, loadConfig, paths, writeFileAtomic } from '../shared/config'
-import { isMac, isWsl } from '../platform/os'
+import { isMac, isWindows, isWsl } from '../platform/os'
+import { samePath } from '../shared/paths'
 import { launchAgentsDir, launchDomain, service, type Service } from '../platform/service'
 import { migrateLegacy } from './migrate'
 import { run } from './util'
@@ -65,6 +66,16 @@ export function buildLauncher(): { path: string; built: boolean } | null {
   return { path: launcherPath, built: true }
 }
 
+/**
+ * Moves `next` into place as the cq binary. Windows won't overwrite a program that's running (the
+ * terminal host runs cq.exe), but it lets it be renamed: the old one goes aside, and the daemon
+ * deletes it once nothing runs it any more.
+ */
+export function replaceBinary(next: string, binary = paths.binary): void {
+  if (isWindows && existsSync(binary)) renameSync(binary, `${binary}.old-${Date.now()}`)
+  renameSync(next, binary)
+}
+
 /** Puts the cq binary at paths.binary: built from source, copied, or linked to Homebrew's. */
 function placeBinary(): void {
   const binary = paths.binary
@@ -72,8 +83,11 @@ function placeBinary(): void {
   if (self.length > 1) {
     const entry = resolve(self[1]!)
     console.log(`Building ${binary} from ${entry} …`)
-    const build = Bun.spawnSync([self[0]!, 'build', entry, '--compile', '--outfile', binary], { stdio: ['inherit', 'inherit', 'inherit'] })
+    // Windows: built beside it, then swapped in (see replaceBinary); bun wants the .exe there too.
+    const out = isWindows ? `${binary}.${process.pid}.new.exe` : binary
+    const build = Bun.spawnSync([self[0]!, 'build', entry, '--compile', '--outfile', out], { stdio: ['inherit', 'inherit', 'inherit'] })
     if (build.exitCode !== 0) process.exit(build.exitCode ?? 1)
+    if (isWindows) replaceBinary(out)
   } else {
     const brew = homebrewLink(self[0]!)
     if (brew) {
@@ -83,11 +97,11 @@ function placeBinary(): void {
       console.log(`Using Homebrew's cq (${brew}).`)
       return
     }
-    if (resolve(self[0]!) !== binary) {
+    if (!samePath(resolve(self[0]!), binary)) {
       const tmp = `${binary}.${process.pid}.new`
       copyFileSync(self[0]!, tmp)
       chmodSync(tmp, 0o755)
-      renameSync(tmp, binary)
+      replaceBinary(tmp)
     }
   }
   if (!isMac) return
@@ -96,7 +110,32 @@ function placeBinary(): void {
   if (!sign.ok) console.log(`codesign failed: ${sign.out}`)
 }
 
+/**
+ * Windows: a symlink takes administrator rights or Developer Mode, so the folder cq.exe is in goes
+ * on your own Path instead (new terminals see it).
+ */
+export function userPath(change: 'add' | 'remove', dir = paths.bin): void {
+  const d = dir.replace(/'/g, "''")
+  // Through the registry, not [Environment]: that would write out every %VARIABLE% in your Path.
+  // Setting and clearing a variable after tells Windows (and new terminals) the Path changed.
+  const script = [
+    `$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)`,
+    `$parts = @(([string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')) -split ';' | Where-Object { $_ })`,
+    `$others = @($parts | Where-Object { $_.TrimEnd('\\') -ne '${d}' })`,
+    change === 'add' ? `if ($others.Count -lt $parts.Count) { 'present'; exit }; $others += '${d}'` : `if ($others.Count -eq $parts.Count) { 'absent'; exit }`,
+    `$key.SetValue('Path', ($others -join ';'), 'ExpandString')`,
+    `[Environment]::SetEnvironmentVariable('AFTERHOURS_PATH_CHANGED', '1', 'User'); [Environment]::SetEnvironmentVariable('AFTERHOURS_PATH_CHANGED', $null, 'User')`,
+    `'changed'`,
+  ].join('; ')
+  const r = run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script])
+  if (change === 'add' && r.out.endsWith('changed')) console.log(`cq is on your Path (${dir}): open a new terminal to use it.`)
+  else if (change === 'add' && !r.out.endsWith('present')) {
+    console.log(`Couldn't add ${dir} to your Path (${r.out}). Add it in Settings → System → About → Advanced system settings → Environment Variables.`)
+  }
+}
+
 function linkOntoPath(): void {
+  if (isWindows) return userPath('add')
   const link = join(homedir(), '.local', 'bin', 'cq')
   mkdirSync(dirname(link), { recursive: true })
   try {
@@ -163,6 +202,11 @@ export function nextSteps(result: InstallResult): string {
 
 export function uninstall(): void {
   service().uninstall()
+  if (isWindows) {
+    userPath('remove')
+    console.log(`Stopped ${BRAND.name} and removed it from the startup apps and your Path. Your queue and settings stay in ${CQ_HOME}.`)
+    return
+  }
   const link = join(homedir(), '.local', 'bin', 'cq')
   try {
     if (lstatSync(link).isSymbolicLink() && readlinkSync(link) === paths.binary) rmSync(link)
@@ -201,12 +245,14 @@ export async function update(): Promise<void> {
   // Next to the binary, so the final rename stays on one volume and is atomic.
   const tmp = `${paths.binary}.${process.pid}.download`
   writeFileSync(tmp, bytes, { mode: 0o755 })
-  renameSync(tmp, paths.binary)
+  replaceBinary(tmp)
   console.log(`Updated to ${release.tag_name}. ${BRAND.name} restarts itself with it in a moment.`)
 }
 
-/** The release file for this computer: cq-darwin-arm64, cq-linux-x64… */
+/** The release file for this computer: cq-darwin-arm64, cq-linux-x64, cq-windows-x64.exe… */
 export function releaseAsset(platform: string = process.platform, arch: string = process.arch): string {
+  // One Windows build: Windows on Arm runs x64 programs as they are.
+  if (platform === 'win32') return 'cq-windows-x64.exe'
   return `cq-${platform === 'darwin' ? 'darwin' : 'linux'}-${arch === 'arm64' ? 'arm64' : 'x64'}`
 }
 

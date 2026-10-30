@@ -5,8 +5,9 @@ import { join } from 'node:path'
 import { VERSION } from '../daemon/main'
 import { isTrusted } from '../daemon/sessions'
 import { BRAND } from '../shared/brand'
-import { codeRoots, findExecutable, loadConfig, paths, readToken } from '../shared/config'
-import { installHint, isMac, osLabel } from '../platform/os'
+import { findHost } from '../daemon/winterm'
+import { codeRoots, findClaude, findExecutable, findGitBash, loadConfig, paths, readToken } from '../shared/config'
+import { installHint, isMac, isWindows, MIN_WINDOWS_BUILD, osLabel, windowsBuild } from '../platform/os'
 import { service } from '../platform/service'
 import { launcherPath } from './install'
 import { relayHealth } from './remote'
@@ -25,7 +26,7 @@ export interface ClaudeStatus {
 }
 
 export function claudeStatus(): ClaudeStatus {
-  const path = findExecutable('claude', loadConfig().claudePath)
+  const path = findClaude(loadConfig().claudePath)
   if (!path) return { path: null, version: null, loggedIn: false, authMethod: null }
   const version = run([path, '--version']).out.split('\n')[0] ?? null
   let loggedIn = false
@@ -53,9 +54,21 @@ export async function checks(): Promise<Check[]> {
   else if (!claude.loggedIn) bad(`Claude Code ${claude.version} is not signed in: run \`claude\` and sign in`)
   else ok(`Claude Code: ${claude.version}, signed in${claude.authMethod ? ` (${claude.authMethod})` : ''}`)
 
-  const tmux = findExecutable('tmux', config.tmuxPath)
-  if (tmux) ok(`tmux: ${run([tmux, '-V']).out}`)
-  else bad(`tmux not found: ${installHint('tmux')}`)
+  if (isWindows) {
+    // No tmux here: tasks run in pseudo consoles in cq's own terminal host, and Claude Code needs Git Bash.
+    const build = windowsBuild()
+    if (build >= MIN_WINDOWS_BUILD) ok(`${osLabel()}: runs tasks in its own terminals (ConPTY)`)
+    else bad(`${osLabel()} is too old: tasks need Windows 10 version 1809 (build ${MIN_WINDOWS_BUILD}) or newer`)
+    const bash = findGitBash()
+    if (bash) ok(`Git Bash: ${bash}`)
+    else bad(`Git for Windows not found (Claude Code needs its bash): ${installHint('git')}`)
+    const host = await findHost()
+    info(host ? `Terminal host: running (pid ${host.pid})` : 'Terminal host: starts with the first task')
+  } else {
+    const tmux = findExecutable('tmux', config.tmuxPath)
+    if (tmux) ok(`tmux: ${run([tmux, '-V']).out}`)
+    else bad(`tmux not found: ${installHint('tmux')}`)
+  }
 
   const health = await daemonHealth()
   if (!health) {
@@ -79,6 +92,7 @@ export async function checks(): Promise<Check[]> {
   const svc = service()
   if (!svc.installed()) info(svc.kind === 'none' ? `Not started by itself: there's no service manager here, so run cq daemon (cq install says how)` : 'Not set to start by itself: run cq install')
   else if (svc.kind === 'launchd') ok('Starts at login')
+  else if (svc.kind === 'windows') ok(`Starts when you sign in to Windows (${svc.name}, in Settings → Apps → Startup)`)
   else if (svc.lingers?.()) ok(`Runs in the background (${svc.name}): starts at boot, keeps running after you log out`)
   else info(`Runs in the background (${svc.name}) while you're logged in. To keep it running after you log out: sudo loginctl enable-linger $USER`)
   if (!readToken()) bad(`no token at ${paths.token} (the daemon creates it)`)
@@ -108,7 +122,10 @@ export async function doctor(): Promise<void> {
 
 /** Hides bot tokens and your home path. */
 export function redact(text: string): string {
-  return text.replace(/\d{6,}:[A-Za-z0-9_-]{25,}/g, '<telegram-token>').split(homedir()).join('~')
+  const home = homedir()
+  // On Windows the home path also shows up JSON-escaped (C:\\Users\\me) and with forward slashes.
+  const forms = [...new Set([home.replace(/\\/g, '\\\\'), home, home.replace(/\\/g, '/')])]
+  return forms.reduce((t, form) => t.split(form).join('~'), text.replace(/\d{6,}:[A-Za-z0-9_-]{25,}/g, '<telegram-token>'))
 }
 
 /**

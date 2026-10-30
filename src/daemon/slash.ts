@@ -39,7 +39,7 @@ function commandsIn(dir: string, scope: SlashCommand['scope']): SlashCommand[] {
       if (statSync(path, { throwIfNoEntry: false })?.isDirectory()) walk(path, depth + 1)
       else if (name.endsWith('.md')) {
         const rel = relative(dir, path).slice(0, -3)
-        out.push({ name: rel.split('/').join(':'), description: describe(read(path)), scope, kind: 'command' })
+        out.push({ name: rel.split(/[\\/]/).join(':'), description: describe(read(path)), scope, kind: 'command' })
       }
     }
   }

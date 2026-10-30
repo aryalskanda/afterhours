@@ -1,17 +1,23 @@
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { posix, resolve } from 'node:path'
 import { BRAND } from '../shared/brand'
-import { detectCodeFolders, expandHome, findExecutable, loadConfig, saveConfig, type Config } from '../shared/config'
+import { detectCodeFolders, expandHome, findExecutable, findGitBash, loadConfig, saveConfig, type Config } from '../shared/config'
+import { within } from '../shared/paths'
 import type { Effort, ExecMode } from '../shared/types'
-import { inContainer, installHint, isMac, isWsl } from '../platform/os'
+import { inContainer, installHint, isMac, isWindows, isWsl } from '../platform/os'
 import { awakeCommand } from './awake'
 import { claudeStatus, doctor } from './doctor'
 import { install, migrateIfNeeded, type InstallResult } from './install'
 import { telegramCommand, TOKEN_RE } from './telegram'
-import { ask, confirmYes, daemonHealth, restartAgent, run } from './util'
+import { ask, confirmYes, daemonHealth, restartAgent, run, runHere } from './util'
 
-const tilde = (p: string) => (p === homedir() || p.startsWith(homedir() + '/') ? '~' + p.slice(homedir().length) : p)
+/** "/Users/me/code" → "~/code" (on Windows "C:\Users\me\code" → "~/code" too, which expandHome reads back). */
+const tilde = (p: string) => {
+  const home = homedir()
+  if (isWindows) return within(home, p) ? ('~' + p.slice(home.length)).replace(/\\/g, '/') : p
+  return p === home || p.startsWith(home + '/') ? '~' + p.slice(home.length) : p
+}
 
 function isDir(p: string): boolean {
   try {
@@ -31,8 +37,11 @@ export function folderPath(typed: string, wsl = isWsl()): string {
   t = t.replace(/\\ /g, ' ')
   const drive = /^([A-Za-z]):(?:[\\/]+(.*))?$/.exec(t)
   if (drive && wsl) t = `/mnt/${drive[1]!.toLowerCase()}/${(drive[2] ?? '').replace(/\\/g, '/')}`
+  // Natively on Windows, D:\Projects stays as it is ("D:" alone is the drive's top, not its current folder).
+  else if (drive && process.platform === 'win32') t = `${drive[1]!.toUpperCase()}:\\${drive[2] ?? ''}`
   t = t.replace(/\/+$/, '')
-  return resolve(expandHome(t || '/'))
+  // A WSL path is a Linux path, whatever this runs on.
+  return (wsl ? posix.resolve : resolve)(expandHome(t || '/'))
 }
 
 /**
@@ -122,9 +131,9 @@ async function fullDiskAccess(result: InstallResult): Promise<void> {
 
 /** While tasks run the computer stays awake (the default); a laptop can also work with its lid closed. */
 async function awakeStep(): Promise<void> {
-  const where = isMac ? 'Mac' : isWsl() ? 'PC' : 'computer'
+  const where = isMac ? 'Mac' : isWindows || isWsl() ? 'PC' : 'computer'
   console.log(`  While tasks run, the ${where} stays awake by itself, and sleeps as usual once they're done.`)
-  if (isWsl()) {
+  if (isWindows || isWsl()) {
     console.log('  With the lid closed, Windows decides: set "When I close the lid: Do nothing" in Control Panel → Power Options.')
     return
   }
@@ -176,7 +185,7 @@ function askDefaults(config: Config): void {
 
 export async function setup(): Promise<void> {
   stepNo = 0
-  console.log(`${BRAND.name} setup: queue Claude Code tasks from Telegram; they run on this ${isMac ? 'Mac' : isWsl() ? 'PC' : 'computer'} while you're away.`)
+  console.log(`${BRAND.name} setup: queue Claude Code tasks from Telegram; they run on this ${isMac ? 'Mac' : isWindows || isWsl() ? 'PC' : 'computer'} while you're away.`)
   console.log('It takes about five minutes. You can press Ctrl+C at any time and run cq setup again.')
   if (!migrateIfNeeded()) return
 
@@ -188,7 +197,10 @@ export async function setup(): Promise<void> {
       console.log('  ✖ Install Claude Code (https://claude.com/claude-code), then run cq setup again.')
       return
     }
-    if (Bun.spawnSync(['sh', '-c', 'curl -fsSL https://claude.ai/install.sh | bash'], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
+    const installer = isWindows
+      ? ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://claude.ai/install.ps1 | iex']
+      : ['sh', '-c', 'curl -fsSL https://claude.ai/install.sh | bash']
+    if (!runHere(installer)) {
       console.log('  ✖ The Claude Code installer did not finish. See https://claude.com/claude-code, then run cq setup again.')
       return
     }
@@ -212,24 +224,25 @@ export async function setup(): Promise<void> {
   }
   console.log(`  ✔ ${claude.version}, signed in${claude.authMethod ? ` (${claude.authMethod})` : ''}. ${BRAND.name} uses it as you would, with your own plan.`)
 
-  step('tmux (runs Claude in the background)')
-  if (!findExecutable('tmux')) {
-    const hint = installHint('tmux')
-    // Only a command we know how to run (a package manager was found): never guess one.
-    if (/^install /.test(hint) || !confirmYes(`  tmux is missing. Install it now (${hint})?`)) {
-      console.log(`  ✖ Install tmux (${hint}), then run cq setup again.`)
-      return
+  if (isWindows) {
+    // No tmux on Windows: tasks run in cq's own terminal host. Claude Code needs Git Bash, though.
+    step('Git for Windows (Claude Code runs its commands with its bash)')
+    if (!findGitBash()) {
+      const hint = installHint('git')
+      if (!confirmYes(`  Git for Windows is missing. Install it now (${hint})?`)) {
+        console.log(`  ✖ Install Git for Windows (${hint}, or https://git-scm.com/downloads/win), then run cq setup again.`)
+        return
+      }
+      if (!runHere([...hint.split(' '), '--source', 'winget', '--accept-package-agreements', '--accept-source-agreements']) || !findGitBash()) {
+        console.log('  ✖ Git did not install. Install it from https://git-scm.com/downloads/win, open a new terminal, and run cq setup again.')
+        return
+      }
     }
-    if (Bun.spawnSync(['sh', '-c', hint], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
-      console.log(`  ✖ That did not work${isMac ? ' (Homebrew is from https://brew.sh)' : ''}. Install tmux yourself, then run cq setup again.`)
-      return
-    }
-    if (!findExecutable('tmux')) {
-      console.log('  ✖ tmux did not install. Install it yourself, then run cq setup again.')
-      return
-    }
+    console.log(`  ✔ ${run(['git', '--version']).out || 'Git for Windows'} (${findGitBash()})`)
+  } else {
+    step('tmux (runs Claude in the background)')
+    if (!(await tmuxStep())) return
   }
-  console.log(`  ✔ ${run([findExecutable('tmux')!, '-V']).out}`)
 
   step('Your code folders (what you browse and search from your phone)')
   const config = loadConfig()
@@ -237,6 +250,7 @@ export async function setup(): Promise<void> {
   candidates.forEach((p, i) => console.log(`    ${i + 1}) ${tilde(p)}`))
   if (candidates.length === 0) console.log('    (none of the usual places exist; type a path)')
   if (isWsl()) console.log('    (Windows folders work too: type D:\\Projects or "D:\\My Projects", and it finds them under /mnt/d)')
+  if (isWindows) console.log('    (type a path such as D:\\Projects, or "D:\\My Projects" with spaces)')
   for (;;) {
     const parsed = parseFolderChoice(ask('  Which hold your projects? Numbers or paths, separated by commas', candidates.length ? '1' : ''), candidates)
     if (typeof parsed === 'string') {
@@ -270,4 +284,25 @@ export async function setup(): Promise<void> {
 
   console.log(`\nAll set. Send your bot a prompt; ${BRAND.name} takes it from there.\n`)
   await doctor()
+}
+
+async function tmuxStep(): Promise<boolean> {
+  if (!findExecutable('tmux')) {
+    const hint = installHint('tmux')
+    // Only a command we know how to run (a package manager was found): never guess one.
+    if (/^install /.test(hint) || !confirmYes(`  tmux is missing. Install it now (${hint})?`)) {
+      console.log(`  ✖ Install tmux (${hint}), then run cq setup again.`)
+      return false
+    }
+    if (Bun.spawnSync(['sh', '-c', hint], { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode !== 0) {
+      console.log(`  ✖ That did not work${isMac ? ' (Homebrew is from https://brew.sh)' : ''}. Install tmux yourself, then run cq setup again.`)
+      return false
+    }
+    if (!findExecutable('tmux')) {
+      console.log('  ✖ tmux did not install. Install it yourself, then run cq setup again.')
+      return false
+    }
+  }
+  console.log(`  ✔ ${run([findExecutable('tmux')!, '-V']).out}`)
+  return true
 }

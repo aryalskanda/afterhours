@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
+import { within as inside } from '../shared/paths'
 import type { Approval, Effort, Job, JobSpec } from '../shared/types'
 import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
@@ -520,7 +521,7 @@ export class TelegramBridge {
   }
 
   private within(path: string): boolean {
-    return this.roots().some(r => path === r || path.startsWith(r + '/'))
+    return this.roots().some(r => inside(r, path))
   }
 
   private recent(): string[] {

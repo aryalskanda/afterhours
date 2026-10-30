@@ -2,6 +2,7 @@ import { existsSync, readdirSync, watch, type FSWatcher, type Dirent } from 'nod
 import { readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, sep } from 'node:path'
+import { samePath, within as inside } from '../shared/paths'
 import type { Store } from './store'
 
 // The map of your project folders behind the folder browser and search, in the apps and in
@@ -227,22 +228,23 @@ export function searchFolders(index: FolderIndex, query: string, recent: string[
 
 export function relativeToRoots(path: string, roots: string[]): string {
   for (const root of roots) {
-    if (path === root) return basename(root)
-    if (path.startsWith(root + '/')) return relative(root, path)
+    if (samePath(path, root)) return basename(root)
+    // Shown with forward slashes on Windows too, like ~/ below: short, and the same everywhere.
+    if (inside(root, path)) return relative(root, path).replace(/\\/g, '/')
   }
-  return path.startsWith(homedir() + '/') ? '~/' + relative(homedir(), path) : path
+  return inside(homedir(), path) && !samePath(path, homedir()) ? '~/' + relative(homedir(), path).replace(/\\/g, '/') : path
 }
 
 /** The parent to go "up" to, or null at a root. */
 export function parentWithin(path: string, roots: string[]): string | null {
-  if (roots.includes(path)) return null
+  if (roots.some(r => samePath(r, path))) return null
   const parent = dirname(path)
-  return roots.some(r => parent === r || parent.startsWith(r + '/')) ? parent : null
+  return roots.some(r => inside(r, parent)) ? parent : null
 }
 
 /** Whether `path` is one of `roots` or inside one. */
 export function within(path: string, roots: string[]): boolean {
-  return roots.some(r => path === r || path.startsWith(r.endsWith(sep) ? r : r + sep))
+  return roots.some(r => inside(r, path))
 }
 
 /** Places in a home folder that are never where projects live. */
@@ -319,6 +321,8 @@ export class FolderMap {
   private watched = ''
   private pending = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | null = null
+  /** Goes up when watching stops, so a refresh that started before then doesn't write after it. */
+  private epoch = 0
 
   constructor(private o: FolderMapOptions) {
     o.store.db.exec(`CREATE TABLE IF NOT EXISTS folders (
@@ -466,6 +470,8 @@ export class FolderMap {
     this.watched = ''
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
+    // A refresh still walking the folders is dropped: what it would write to may be closed by now.
+    this.epoch++
   }
 
   private queue(dir: string): void {
@@ -496,7 +502,9 @@ export class FolderMap {
       starts.push({ path: dir, depth, levels: this.levelsOf(dir, roots) })
     }
     if (starts.length === 0) return
+    const epoch = this.epoch
     const result = await walkFolders(starts, this.rows, { children: this.kids })
+    if (epoch !== this.epoch) return
     for (const f of result.folders) next.set(f.path, f)
     this.commit(next)
   }

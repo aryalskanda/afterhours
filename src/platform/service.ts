@@ -1,13 +1,15 @@
 // Running the daemon in the background, started at login or boot: a LaunchAgent on macOS, a
-// systemd user service on Linux. Where neither is available (a container, WSL without systemd),
-// it says how to run `cq daemon` instead.
+// systemd user service on Linux, a startup app on Windows. Where none is available (a container,
+// WSL without systemd), it says how to run `cq daemon` instead.
 
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { BRAND } from '../shared/brand'
 import { CQ_HOME, LAUNCH_AGENT_LABEL, paths, searchPath, writeFileAtomic } from '../shared/config'
-import { isMac, isWsl } from './os'
+import { isMac, isWindows, isWsl } from './os'
+import { processList } from './win32'
 
 export interface ServiceResult {
   ok: boolean
@@ -15,7 +17,7 @@ export interface ServiceResult {
 }
 
 export interface Service {
-  readonly kind: 'launchd' | 'systemd' | 'none'
+  readonly kind: 'launchd' | 'systemd' | 'windows' | 'none'
   /** e.g. "LaunchAgent dev.afterhours.agent". */
   readonly name: string
   /** Writes the service for `program` (run as `program daemon`) and starts it, replacing a running one. */
@@ -200,6 +202,122 @@ const systemd: Service = {
   },
 }
 
+// --- Windows: a startup app ----------------------------------------------------------------------
+//
+// Windows' own services run before anyone signs in, without the desktop, Claude Code's sign-in or
+// the PC's sleep settings, and installing one takes administrator rights. So, like the macOS
+// LaunchAgent, Afterhours starts when you sign in: a value under the Run key (Settings → Apps →
+// Startup lists it). It starts `cq service`, which keeps `cq daemon` running the way launchd and
+// systemd do; conhost --headless keeps both without a console window.
+
+export const WINDOWS_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+export const WINDOWS_RUN_VALUE = BRAND.name
+
+function conhost(): string {
+  return join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'conhost.exe')
+}
+
+/** What the Run key starts at sign-in. */
+export function windowsRunCommand(program: string): string {
+  return `"${conhost()}" --headless "${program}" service`
+}
+
+function readPid(path: string): number | null {
+  try {
+    const pid = Number(readFileSync(path, 'utf8').trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+/** Our processes (cq.exe), as pids are reused on Windows: a stale pid file must never end something else. */
+function ours(): { pid: number; ppid: number }[] {
+  const exe = basename(paths.binary).toLowerCase()
+  return processList().filter(p => p.exe.toLowerCase() === exe)
+}
+
+/** `cq service`: runs the daemon, and starts it again 5 s after it stops with an error (or after an update, exit 75). */
+export async function runService(): Promise<void> {
+  const running = readPid(paths.servicePid)
+  if (running && running !== process.pid && ours().some(p => p.pid === running)) return // already supervising
+  writeFileAtomic(paths.servicePid, `${process.pid}\n`, 0o600)
+  mkdirSync(paths.logs, { recursive: true })
+  for (;;) {
+    const log = openSync(paths.log, 'a')
+    // Read each time: an update puts the new cq.exe here and the old one aside.
+    const child = spawn(paths.binary, ['daemon'], { cwd: homedir(), stdio: ['ignore', log, log], windowsHide: true, env: { ...process.env, PATH: searchPath(), CQ_HOME } })
+    const code = await new Promise<number>(resolve => {
+      child.on('exit', c => resolve(c ?? 1))
+      child.on('error', () => resolve(1))
+    })
+    closeSync(log)
+    // 0: stopped on purpose, or another daemon already runs.
+    if (code === 0) break
+    await Bun.sleep(5000)
+  }
+  if (readPid(paths.servicePid) === process.pid) rmSync(paths.servicePid, { force: true })
+}
+
+/**
+ * Starts `cq service` the way the Run key does, but through WMI: the process then belongs to
+ * neither this terminal nor its job, so closing the terminal doesn't end it.
+ */
+function startWindowsService(program: string): { ok: boolean; out: string } {
+  const command = windowsRunCommand(program).replace(/'/g, "''")
+  const dir = homedir().replace(/'/g, "''")
+  return exec([
+    'powershell.exe',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${command}'; CurrentDirectory = '${dir}' }; exit $r.ReturnValue`,
+  ])
+}
+
+const windows: Service = {
+  kind: 'windows',
+  name: `startup app "${WINDOWS_RUN_VALUE}"`,
+  async install(program) {
+    const set = exec(['reg.exe', 'add', WINDOWS_RUN_KEY, '/v', WINDOWS_RUN_VALUE, '/t', 'REG_SZ', '/d', windowsRunCommand(program), '/f'])
+    if (!set.ok) return { ok: false, message: `Couldn't add ${BRAND.name} to the startup apps: ${set.out}` }
+    this.stop()
+    const start = startWindowsService(program)
+    if (!start.ok) return { ok: false, message: `Couldn't start ${BRAND.name}: ${start.out || 'Windows refused'}` }
+    return { ok: true, message: `Started ${BRAND.name} in the background: it starts by itself when you sign in to Windows.` }
+  },
+  stop() {
+    // The supervisor first, so it doesn't start the daemon again; then the daemon under it. The
+    // terminal host and the Claude sessions in it keep running, as tmux does elsewhere.
+    const supervisor = readPid(paths.servicePid)
+    const procs = ours()
+    const targets = procs.filter(p => p.pid === supervisor || p.ppid === supervisor).map(p => p.pid)
+    for (const pid of targets) {
+      try {
+        process.kill(pid)
+      } catch {
+        // already gone
+      }
+    }
+    // Gone before anything starts again: a new daemon would find the port still taken, and stop.
+    for (let i = 0; i < 50 && ours().some(p => targets.includes(p.pid)); i++) Bun.sleepSync(100)
+    rmSync(paths.servicePid, { force: true })
+  },
+  uninstall() {
+    this.stop()
+    exec(['reg.exe', 'delete', WINDOWS_RUN_KEY, '/v', WINDOWS_RUN_VALUE, '/f'])
+  },
+  restart() {
+    const program = this.installed() ? /"[^"]+" --headless "([^"]+)" service/.exec(exec(['reg.exe', 'query', WINDOWS_RUN_KEY, '/v', WINDOWS_RUN_VALUE]).out)?.[1] : null
+    if (!program) return false
+    this.stop()
+    return startWindowsService(program).ok
+  },
+  installed() {
+    return exec(['reg.exe', 'query', WINDOWS_RUN_KEY, '/v', WINDOWS_RUN_VALUE]).ok
+  },
+}
+
 // --- neither ---------------------------------------------------------------------------------
 
 /** What to do without a service manager. */
@@ -238,6 +356,7 @@ function hasSystemdUser(): boolean {
 
 export function service(): Service {
   if (isMac) return launchd
+  if (isWindows) return windows
   if (process.platform === 'linux' && hasSystemdUser()) return systemd
   return none
 }

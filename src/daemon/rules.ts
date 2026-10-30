@@ -2,7 +2,7 @@
 // which of them an app may apply, and what each says in words. Applying one returns it to Claude
 // Code in the hook's `updatedPermissions`, so Claude Code writes the rule itself.
 
-import { relative } from 'node:path'
+import { isAbsolute, relative } from 'node:path'
 
 /** One of Claude Code's permission updates, as its hooks see them. */
 export interface PermissionUpdate {
@@ -71,7 +71,8 @@ function ruleWords(r: { toolName: string; ruleContent?: string }, cwd: string | 
     case 'Edit':
     case 'Write': {
       const path = content.replace(/^\/\//, '/')
-      const shown = cwd && path.startsWith('/') && !relative(cwd, path).startsWith('..') ? relative(cwd, path) || 'this folder' : path
+      const rel = cwd ? relative(cwd, path).replace(/\\/g, '/') : ''
+      const shown = cwd && isAbsolute(path) && !rel.startsWith('..') && !isAbsolute(rel) ? rel || 'this folder' : path
       return `${r.toolName === 'Read' ? 'reading' : 'editing'} ${shown}`
     }
     default:

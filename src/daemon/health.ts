@@ -39,8 +39,13 @@ let claudeVersionCache: { at: number; version: string | null } | null = null
 /** "2.1.301", from `claude --version` (asked at most every 10 minutes). */
 export function claudeVersion(claudePath: string, now: number): string | null {
   if (claudeVersionCache && now - claudeVersionCache.at < 600_000) return claudeVersionCache.version
-  const r = Bun.spawnSync([claudePath, '--version'], { stdout: 'pipe', stderr: 'ignore', env: cleanEnv() })
-  const version = r.exitCode === 0 ? (/(\d+\.\d+\.\d+)/.exec(r.stdout.toString())?.[1] ?? null) : null
+  let version: string | null = null
+  try {
+    const r = Bun.spawnSync([claudePath, '--version'], { stdout: 'pipe', stderr: 'ignore', env: cleanEnv() })
+    version = r.exitCode === 0 ? (/(\d+\.\d+\.\d+)/.exec(r.stdout.toString())?.[1] ?? null) : null
+  } catch {
+    // Not there (moved, uninstalled): on Windows spawning it throws instead of failing.
+  }
   claudeVersionCache = { at: now, version }
   return version
 }

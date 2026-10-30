@@ -1,6 +1,7 @@
 // `cq pair`, `cq devices`, `cq remote` and `cq audit`: remote access from the Afterhours apps.
 
 import { fingerprint, type OfferView } from '@afterhours/protocol'
+import { resolve } from 'node:path'
 import { renderUnicodeCompact } from 'uqr'
 import type { RemoteStatus } from '../daemon/remote'
 import { BRAND } from '../shared/brand'
@@ -339,7 +340,7 @@ export async function remoteCommand(args: string[]): Promise<boolean> {
         console.error(`Usage: cq remote ${sub} <folder>`)
         return false
       }
-      const path = expandHome(folder).replace(/\/+$/, '') || '/'
+      const path = (process.platform === 'win32' ? resolve(expandHome(folder)) : expandHome(folder).replace(/\/+$/, '')) || '/'
       r.allowedRoots = r.allowedRoots.filter(p => p !== path)
       if (sub === 'allow') r.allowedRoots.push(path)
       return save(r.allowedRoots.length ? `Apps may run tasks in: ${r.allowedRoots.join(', ')}` : 'Apps may run tasks anywhere in your home folder.')

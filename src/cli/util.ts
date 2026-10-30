@@ -4,8 +4,22 @@ import { service } from '../platform/service'
 import type { TelegramStatus } from '../telegram/bot'
 
 export function run(argv: string[]): { ok: boolean; out: string } {
-  const r = Bun.spawnSync(argv, { env: { ...process.env, PATH: searchPath() }, stdout: 'pipe', stderr: 'pipe' })
-  return { ok: r.exitCode === 0, out: (r.stdout.toString() + r.stderr.toString()).trim() }
+  try {
+    const r = Bun.spawnSync(argv, { env: { ...process.env, PATH: searchPath() }, stdout: 'pipe', stderr: 'pipe', windowsHide: true })
+    return { ok: r.exitCode === 0, out: (r.stdout.toString() + r.stderr.toString()).trim() }
+  } catch (err) {
+    // A program that isn't there is a failure like any other (Windows throws for it).
+    return { ok: false, out: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** Runs a command in this terminal (its prompts and output shown); false if it failed or isn't there. */
+export function runHere(argv: string[]): boolean {
+  try {
+    return Bun.spawnSync(argv, { stdio: ['inherit', 'inherit', 'inherit'] }).exitCode === 0
+  } catch {
+    return false
+  }
 }
 
 export function daemonUrl(path: string): string {

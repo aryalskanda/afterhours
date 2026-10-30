@@ -5,14 +5,14 @@ import { closeSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { BRAND } from '../shared/brand'
-import { hasDisplay, isLinux, isMac, isWsl } from './os'
+import { hasDisplay, isLinux, isMac, isWindows, isWsl } from './os'
 import { powershell } from './power'
 
 /**
  * Keeps the computer from going to sleep while there's queued or running work, with the system's own
  * tools: a `caffeinate` assertion on macOS; a systemd-inhibit lock on Linux, which with `lid` holds
- * off the lid switch too; on Windows (WSL2), SetThreadExecutionState in a powershell.exe that lives
- * as long as this does. Each ends with the daemon, even if it crashes.
+ * off the lid switch too; on Windows (natively or from WSL2), SetThreadExecutionState in a
+ * powershell.exe that lives as long as this does. Each ends with the daemon, even if it crashes.
  */
 export class KeepAwake {
   private proc: Subprocess | null = null
@@ -30,8 +30,9 @@ export class KeepAwake {
     if (on && !this.proc) {
       const argv = keepAwakeCommand(process.pid, { lid })
       try {
-        // WSL: powershell.exe stops once its input closes, which is when this process ends.
-        if (argv) this.proc = Bun.spawn(argv, { stdin: isWsl() ? 'pipe' : 'ignore', stdout: 'ignore', stderr: 'ignore' })
+        // Windows: powershell.exe stops once its input closes, which is when this process ends.
+        const windows = isWindows || isWsl()
+        if (argv) this.proc = Bun.spawn(argv, { stdin: windows ? 'pipe' : 'ignore', stdout: 'ignore', stderr: 'ignore', windowsHide: true })
         this.lid = lid
       } catch {
         // Staying awake is a nicety; never worth failing over.
@@ -48,7 +49,7 @@ const WINDOWS_AWAKE = `$s = Add-Type -MemberDefinition '[DllImport("kernel32.dll
 
 export function keepAwakeCommand(pid: number, o: { lid?: boolean } = {}): string[] | null {
   if (isMac) return ['caffeinate', '-i', '-w', String(pid)]
-  if (isWsl()) {
+  if (isWindows || isWsl()) {
     const ps = powershell()
     return ps ? [ps, '-NoProfile', '-NonInteractive', '-Command', WINDOWS_AWAKE] : null
   }
@@ -85,10 +86,22 @@ export function hasFullDiskAccess(): boolean {
 function vsCodeRunning(): boolean {
   try {
     if (isMac) return Bun.spawnSync(['pgrep', '-f', 'Visual Studio Code.app/Contents/MacOS/']).exitCode === 0
+    if (isWindows) {
+      const out = Bun.spawnSync(['tasklist', '/FI', 'IMAGENAME eq Code.exe', '/NH'], { stdout: 'pipe', stderr: 'ignore', windowsHide: true }).stdout.toString()
+      return /^Code\.exe\s/im.test(out)
+    }
     return Bun.spawnSync(['pgrep', '-x', 'code']).exitCode === 0
   } catch {
     return false // no pgrep
   }
+}
+
+/** How to open a vscode:// link here; `background`: without bringing VS Code to the front, where the system can. */
+function urlOpener(url: string, background: boolean): string[] | null {
+  if (isMac) return background ? ['open', '-g', url] : ['open', url]
+  // Windows hands a link to the app registered for it (VS Code registers vscode://).
+  if (isWindows) return ['rundll32.exe', 'url.dll,FileProtocolHandler', url]
+  return Bun.which('xdg-open') ? ['xdg-open', url] : null
 }
 
 /**
@@ -99,7 +112,7 @@ function vsCodeRunning(): boolean {
 export function openInVsCode(sessionId: string, log: (line: string) => void): boolean {
   if (!hasDisplay()) return false
   const url = `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`
-  const opener = isMac ? ['open', url] : Bun.which('xdg-open') ? ['xdg-open', url] : null
+  const opener = urlOpener(url, false)
   if (!opener) return false
   Bun.spawn(opener, { stdout: 'ignore', stderr: 'ignore' })
   log(`opened chat ${sessionId} in VS Code, as an app asked`)
@@ -109,7 +122,7 @@ export function openInVsCode(sessionId: string, log: (line: string) => void): bo
 export function reopenInVsCode(sessionId: string, log: (line: string) => void): void {
   if (!hasDisplay() || !vsCodeRunning()) return
   const url = `vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`
-  const opener = isMac ? ['open', '-g', url] : Bun.which('xdg-open') ? ['xdg-open', url] : null
+  const opener = urlOpener(url, true)
   if (!opener) return
   Bun.spawn(opener, { stdout: 'ignore', stderr: 'ignore' })
   log(`opened chat ${sessionId} in VS Code again`)
