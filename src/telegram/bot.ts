@@ -6,7 +6,8 @@ import type { Approval, Effort, Job, JobSpec } from '../shared/types'
 import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
-import { folderLabel, folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
+import { browse, browseLabel, canChoose, startNear, THIS_PC, type BrowseEnv } from '../daemon/browse'
+import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
 import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
 import { settleBranch, type BranchGit } from '../daemon/branches'
@@ -42,6 +43,10 @@ export interface TelegramOptions {
   log: (line: string) => void
   /** Waits a moment (a key pressed, before the screen is shown again); tests don't wait. */
   pause?: (ms: number) => Promise<void>
+  /** Where folder browsing starts and how disks are laid out (tests give their own). */
+  browseEnv?: BrowseEnv
+  /** Folders worth suggesting as shortcuts (tests give their own). */
+  suggest?: (have: string[]) => FolderSuggestion[]
   /** Runs something a moment later (tests run it at once). */
   later?: (run: () => void, ms: number) => void
 }
@@ -55,7 +60,7 @@ type Pending =
   /** Tasks: words to find among the finished ones. */
   | { kind: 'tasksearch' }
   /** Project folders → Add: a folder you type. */
-  | { kind: 'rootpath' }
+  | { kind: 'rootpath'; mode: 'c' | 'a' }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
@@ -833,8 +838,7 @@ export class TelegramBridge {
       case 'tasksearch':
         return this.showTasks(chat, undefined, text)
       case 'rootpath': {
-        const path = folderPath(text)
-        const r = this.addRoot(path)
+        const r = this.useFolder(folderPath(text), p.mode)
         if (!r.ok) this.setPending(p) // try again
         await this.send(chat, this.projectFoldersView(r.text))
         return
@@ -1305,25 +1309,55 @@ export class TelegramBridge {
   private folderSuggestions: FolderSuggestion[] = []
 
   private folderName(path: string): string {
-    return folderLabel(path, { wsl: isWsl() })
+    return browseLabel(path, this.o.browseEnv)
   }
 
   private projectFoldersView(note?: string): ui.View {
     return ui.projectFoldersView(this.roots().map(path => ({ path, label: this.folderName(path) })), note)
   }
 
-  /** Adds a project folder (a folder inside one already used is covered by it). */
-  private addRoot(path: string): { ok: boolean; text: string } {
+  /** The browser, at `dir`, as a message (or edited into the one you tapped). */
+  private async showFolderBrowser(chat: number, at: number | undefined, dir: string, page: number, mode: 'c' | 'a'): Promise<void> {
+    const b = browse(dir, page, 8, this.o.browseEnv)
+    const first = dir === startNear(mode === 'c' ? this.roots()[0] : undefined, this.o.browseEnv) && b.page === 0
+    const view = ui.folderBrowserView(
+      {
+        id: this.state.folderId(b.path),
+        label: b.label,
+        parentId: b.parent === null ? null : this.state.folderId(b.parent),
+        page: b.page,
+        pages: b.pages,
+        total: b.total,
+        items: b.items.map(it => ({ id: this.state.folderId(it.path), title: it.title, isRepo: it.isRepo })),
+        canChoose: canChoose(b.path, this.o.browseEnv),
+        shortcuts: first ? this.folderSuggestions.map(f => ({ label: this.folderName(f.path), why: f.why })) : [],
+      },
+      mode,
+    )
+    if (at) await this.edit(chat, at, view)
+    else await this.send(chat, view)
+  }
+
+  /** Makes `path` the project folder (`c`: instead of the others) or one more (`a`). */
+  private useFolder(path: string, mode: 'c' | 'a'): { ok: boolean; text: string } {
     if (!existsSync(path) || !statSync(path).isDirectory()) return { ok: false, text: `${this.folderName(path)} isn't a folder. Send another, or tap Back.` }
+    if (!canChoose(path, this.o.browseEnv)) return { ok: false, text: `${this.folderName(path)} is too big to be a project folder. Open a folder inside it.` }
     const roots = this.roots()
-    const covering = roots.find(r => inside(r, path))
-    if (covering) return { ok: true, text: `${this.folderName(path)} is already covered by ${this.folderName(covering)}.` }
     const config = this.o.config()
-    config.folders.roots = [...roots.filter(r => !inside(path, r) && !inside(r, path)), path]
+    let text: string
+    if (mode === 'c') {
+      config.folders.roots = [path]
+      text = `Claude now works in ${this.folderName(path)}.`
+    } else {
+      const covering = roots.find(r => inside(r, path))
+      if (covering) return { ok: true, text: `${this.folderName(path)} is already covered by ${this.folderName(covering)}.` }
+      config.folders.roots = [...roots.filter(r => !inside(path, r)), path]
+      text = `Added ${this.folderName(path)}.`
+    }
     this.o.saveConfig(config)
     // The folder map follows the new roots; reading a big folder can take a while.
     void this.o.folders.rebuild().catch(err => this.o.log(`telegram: rebuilding the folder map failed: ${errorText(err)}`))
-    return { ok: true, text: `Added ${this.folderName(path)}.` }
+    return { ok: true, text }
   }
 
   /** Stops using the n-th project folder (never the last one). */
@@ -1952,30 +1986,42 @@ export class TelegramBridge {
           await this.settle(chat, message, 'Good. You can change this any time in Settings → Project folders.')
           return 'Saved.'
         }
-        if (sub === 'a') {
-          this.folderSuggestions = suggestProjectFolders({ have: this.roots(), wsl: isWsl() })
-          const view = ui.addFolderView(this.folderSuggestions.map(f => ({ ...f, label: this.folderName(f.path) })))
-          if (at) await this.edit(chat, at, view)
-          else await this.send(chat, view)
+        // c: choose one folder (replacing the others); a: add another. Both browse, from where you are.
+        if (sub === 'c' || sub === 'a') {
+          const have = sub === 'a' ? this.roots() : []
+          this.folderSuggestions = this.o.suggest ? this.o.suggest(have) : suggestProjectFolders({ have, wsl: isWsl() })
+          await this.showFolderBrowser(chat, at, startNear(sub === 'c' ? this.roots()[0] : undefined, this.o.browseEnv), 0, sub)
           return
         }
         if (sub === 't') {
-          this.setPending({ kind: 'rootpath' })
+          const mode = parts[2] === 'a' ? 'a' : 'c'
+          this.setPending({ kind: 'rootpath', mode })
           await this.ask(chat, 'Send the folder, like D:\\Projects or ~/code.', 'A folder')
           return 'Waiting for the folder.'
         }
-        let note: string | undefined
-        if (sub === 's') {
-          const found = this.folderSuggestions[Number(parts[2])]
-          if (!found) return 'Those suggestions are out of date. Tap Add a folder again.'
-          note = this.addRoot(found.path).text
-        } else if (sub === 'r') {
-          note = this.removeRoot(Number(parts[2]))
-        }
+        const note = sub === 'r' ? this.removeRoot(Number(parts[2])) : undefined
         const view = this.projectFoldersView(note)
         if (at) await this.edit(chat, at, view)
         else await this.send(chat, view)
         return note
+      }
+      // Browsing for a project folder: open one (fb), use the one you are in (fu), or a shortcut (fs).
+      case 'fb': {
+        const dir = this.state.folderPath(Number(parts[1]))
+        if (dir === null || (dir !== THIS_PC && !existsSync(dir))) return 'That folder is gone. Tap Back and start again.'
+        await this.showFolderBrowser(chat, at, dir, Number(parts[2]) || 0, parts[3] === 'a' ? 'a' : 'c')
+        return
+      }
+      case 'fu':
+      case 'fs': {
+        const mode = parts[parts.length - 1] === 'a' ? 'a' : 'c'
+        const path = parts[0] === 'fs' ? this.folderSuggestions[Number(parts[1])]?.path : this.state.folderPath(Number(parts[1]))
+        if (path === undefined || path === null) return 'That is out of date. Tap Back and start again.'
+        const r = this.useFolder(path, mode)
+        const view = this.projectFoldersView(r.text)
+        if (at) await this.edit(chat, at, view)
+        else await this.send(chat, view)
+        return r.text
       }
       case 'rescan':
         await this.o.folders.rebuild()

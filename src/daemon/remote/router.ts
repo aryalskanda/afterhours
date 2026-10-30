@@ -40,6 +40,7 @@ import { oneLine } from '../format'
 import { slashCommands } from '../slash'
 import { isUpload, saveUpload } from '../uploads'
 import { permissionDetail } from '../notify'
+import { browse, canChoose, THIS_PC } from '../browse'
 import { listChildren, relativeToRoots, suggestRoots, within as withinFolders, type FolderMap } from '../folders'
 import { settleBranch } from '../branches'
 import type { PowerControl } from '../power'
@@ -88,6 +89,7 @@ export const FEATURES = [
   'folders.browse',
   'folders.roots',
   'parallel',
+  'folders.set',
   'settings.remote',
   'queue.edit.when',
 ]
@@ -953,41 +955,54 @@ export class Router {
     return { ok: true, data }
   }
 
-  private async rootsInfo(config: Config, roots: string[], browse?: FolderHit[]): Promise<FolderRoots> {
+  private async rootsInfo(config: Config, roots: string[], browsed?: FolderHit[], browseInfo?: FolderRoots['browseInfo']): Promise<FolderRoots> {
     const search = codeRoots(config)
     return {
       roots: search.map(path => ({ path, name: basename(path) || path, folders: this.d.folders.countUnder(path) })),
       scannedAt: this.d.folders.builtAt,
       suggestions: suggestRoots(search, this.home(), COMMON_CODE_FOLDERS.map(expandHome)).filter(x => isAllowed(x.path, roots)),
       home: this.home(),
-      ...(browse ? { browse } : {}),
+      ...(browsed ? { browse: browsed } : {}),
+      ...(browseInfo ? { browseInfo } : {}),
     }
   }
 
-  /** The project folders, and for owners one of your folders' subfolders, to pick a new one from. */
-  private async folderRoots(config: Config, role: Role, browse?: string): Promise<Outcome> {
+  /**
+   * The project folders, and for owners any folder's subfolders (from the top of the disk down), to
+   * pick a new one from. `:pc` is Windows' "This PC": the drives.
+   */
+  private async folderRoots(config: Config, role: Role, browseArg?: string): Promise<Outcome> {
     let list: FolderHit[] | undefined
-    if (browse !== undefined) {
+    let info: FolderRoots['browseInfo']
+    if (browseArg !== undefined) {
       if (role !== 'owner') return { ok: false, code: 'forbidden', error: 'Only an owner can pick project folders.' }
-      const home = realPath(this.home())
-      const dir = realPath(resolve(expandHome(browse || '~')))
-      if (!isDir(dir) || !withinFolders(dir, [home])) return { ok: false, code: 'policy', error: 'Browse inside your home folder.' }
-      list = listChildren(dir).map(c => ({ path: c.path, name: c.name, isRepo: c.isRepo, kind: c.kind, hasChildren: c.hasChildren }))
+      const env = { home: realPath(this.home()) }
+      const dir = browseArg === ':pc' ? THIS_PC : realPath(resolve(expandHome(browseArg || '~')))
+      if (dir !== THIS_PC && !isDir(dir)) return { ok: false, code: 'not-found', error: 'That isn’t a folder.' }
+      // The first 300: a folder with thousands is scrolled, not listed whole.
+      const v = browse(dir, 0, 300, env)
+      list = v.items.map(c => ({ path: c.path, name: c.title, isRepo: c.isRepo, kind: c.kind, hasChildren: c.hasChildren }))
+      const wire = (p: string | null) => (p === null ? null : p === THIS_PC ? ':pc' : p)
+      info = { path: wire(dir)!, label: v.label, parent: wire(v.parent), canChoose: canChoose(dir, env) }
     }
-    return { ok: true, data: await this.rootsInfo(config, allowedRoots(config), list) }
+    return { ok: true, data: await this.rootsInfo(config, allowedRoots(config), list, info) }
   }
 
   /** An owner adds or removes a project folder: it's searched and browsed from then on, and a change is audited. */
-  private async setFolderRoot(action: 'add' | 'remove', input: string, by: string, config: Config): Promise<Outcome> {
-    const home = realPath(this.home())
+  private async setFolderRoot(action: 'add' | 'remove' | 'set', input: string, by: string, config: Config): Promise<Outcome> {
     const path = realPath(resolve(expandHome(input)))
     const configured = codeRoots(config).map(raw => ({ raw, real: realPath(raw) }))
     const have = configured.map(c => c.real)
     let next: string[]
     let text: string
-    if (action === 'add') {
+    if (action === 'set') {
       if (!isDir(path)) return { ok: false, code: 'not-found', error: 'That isn’t a folder.' }
-      if (path === home || !withinFolders(path, [home])) return { ok: false, code: 'policy', error: 'A project folder has to be inside your home folder, and not the home folder itself.' }
+      if (!canChoose(path, { home: realPath(this.home()) })) return { ok: false, code: 'policy', error: 'That is a whole disk: open a folder inside it.' }
+      next = [path]
+      text = `${basename(path)} is the project folder.`
+    } else if (action === 'add') {
+      if (!isDir(path)) return { ok: false, code: 'not-found', error: 'That isn’t a folder.' }
+      if (!canChoose(path, { home: realPath(this.home()) })) return { ok: false, code: 'policy', error: 'That is a whole disk: open a folder inside it.' }
       const covering = have.find(h => withinFolders(path, [h]))
       if (covering) return { ok: true, text: `${basename(path)} is already covered by ${basename(covering)}.`, data: await this.rootsInfo(config, allowedRoots(config)) }
       // Folders inside the new one are part of it now.
@@ -1001,14 +1016,14 @@ export class Router {
     }
     let updated: Config = { ...config, folders: { ...config.folders, roots: next } }
     // Apps may run tasks in it, when they're limited to certain folders.
-    if (action === 'add' && config.remote.allowedRoots.length > 0 && !isAllowed(path, allowedRoots(config))) {
+    if ((action === 'add' || action === 'set') && config.remote.allowedRoots.length > 0 && !isAllowed(path, allowedRoots(config))) {
       updated = { ...updated, remote: { ...config.remote, allowedRoots: [...config.remote.allowedRoots, path] } }
     }
     if (action === 'remove' && config.remote.allowedRoots.length > 1 && config.remote.allowedRoots.some(r => realPath(resolve(expandHome(r))) === path)) {
       updated = { ...updated, remote: { ...config.remote, allowedRoots: config.remote.allowedRoots.filter(r => realPath(resolve(expandHome(r))) !== path) } }
     }
     this.d.saveConfig(updated)
-    this.d.log(`${by} ${action === 'add' ? 'added' : 'removed'} the project folder ${path}`)
+    this.d.log(`${by} ${action === 'add' ? 'added' : action === 'set' ? 'chose' : 'removed'} the project folder ${path}`)
     this.d.folders.refreshIfStale()
     await this.d.folders.refresh()
     return { ok: true, text, data: await this.rootsInfo(updated, allowedRoots(updated)) }

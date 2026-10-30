@@ -111,7 +111,7 @@ Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like
 4. Starts it in the background, so it runs whenever you're signed in (a LaunchAgent on a Mac, a systemd service on Linux, a startup app on Windows).
 5. Runs **`cq setup`**, which walks you through:
    - signing Claude Code in, if you haven't;
-   - **your project folders**: it finds them for you, from where you've already used Claude Code and where your git projects are, and just asks you to press Enter. Nothing found? It uses your home folder and says so. (On Windows it also looks at your other drives.) You can change them later from Telegram, in **Settings → Project folders**;
+   - **the folder that holds your projects**: you browse for it like in a file picker, starting in your home folder. Type a number to open a folder, `u` to go up (as far as the top of the disk; on Windows, to your drives), Enter to choose the folder you're in. Setup also offers shortcuts to places it found (where you've used Claude Code, folders full of git projects). You can change it later, or add another, from Telegram (**Settings → Project folders**) or the Afterhours app;
    - new tasks start with the recommended settings (Claude plans first, Sonnet, high effort, on its own git branch), which you change on any task from your phone. `cq setup --custom` asks about them instead;
    - **Full Disk Access** (Mac only): it opens the right System Settings pane and tells you what to add. The Claude sessions Afterhours starts need it to work in folders like `~/Documents` while nobody is there to click "Allow". The permission goes to a tiny launcher that never changes, so updates keep it;
    - whether this is a laptop you want to keep working with its lid closed;

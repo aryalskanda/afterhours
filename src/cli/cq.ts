@@ -5,14 +5,14 @@ import { HELP } from '../daemon/commands'
 import { runDaemon, VERSION } from '../daemon/main'
 import { findHost, runTermHost } from '../daemon/winterm'
 import { BRAND } from '../shared/brand'
-import { CQ_HOME, findExecutable, loadConfig, paths, readToken, saveConfig, TMUX_SESSION, TMUX_SOCKET } from '../shared/config'
+import { CQ_HOME, expandHome, findExecutable, loadConfig, paths, readToken, saveConfig, TMUX_SESSION, TMUX_SOCKET } from '../shared/config'
 import type { LaunchSpec } from '../shared/types'
 import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
 import { awakeCommand } from './awake'
 import { foldersCommand } from './folders'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
-import { chooseFolders, setup, telegramStep } from './setup'
+import { chooseFolder, setup, telegramStep } from './setup'
 import { installHint, isWindows } from '../platform/os'
 import { runService } from '../platform/service'
 import { telegramCommand } from './telegram'
@@ -190,12 +190,12 @@ async function menu(): Promise<void> {
   const items: [string, () => Promise<void> | void][] = [
     ['Check that everything works', () => doctor()],
     [
-      'Choose the folders Claude may work in',
+      'Choose the folder Claude works in',
       () => {
         const config = loadConfig()
-        config.folders.roots = chooseFolders(config.folders.roots)
+        config.folders.roots = [chooseFolder(config.folders.roots.map(expandHome)[0])]
         saveConfig(config)
-        console.log('Saved. It picks them up within a few seconds.')
+        console.log('Saved. It picks it up within a few seconds.')
       },
     ],
     ['Connect my Telegram bot again', () => telegramStep()],

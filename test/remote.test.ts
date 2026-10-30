@@ -587,7 +587,7 @@ describe('remote access', () => {
     expect(await conn.request({ type: 'folders', query: '', parent: join(projects, 'nothing') })).toMatchObject({ ok: false, code: 'not-found' })
   })
 
-  test('project folders: anyone sees them; an owner adds and removes them inside the home folder, audited', async () => {
+  test('project folders: anyone sees them; an owner browses from the top of the disk, adds, sets and removes them, audited', async () => {
     const m = machine()
     const home = mkdtempSync(join(tmpdir(), 'cq-home-'))
     m.setHome(home)
@@ -608,24 +608,38 @@ describe('remote access', () => {
       m.setRemote({ allowedRoots: [projects, home] })
       const suggested = (await owner.conn.request({ type: 'folders.roots' })).data as { suggestions: { path: string; repos: number }[] }
       expect(suggested.suggestions.map(x => [x.path, x.repos])).toEqual([[join(home, 'code'), 3]])
-      const browsed = (await owner.conn.request({ type: 'folders.roots', browse: home })).data as { browse: { name: string }[] }
+      const browsed = (await owner.conn.request({ type: 'folders.roots', browse: home })).data as { browse: { name: string }[]; browseInfo: { path: string; label: string; parent: string | null; canChoose: boolean } }
       expect(browsed.browse.map(b => b.name)).toEqual(['code', 'Documents'])
+      expect(browsed.browseInfo).toMatchObject({ label: '~', canChoose: true })
+      // Up goes above the home folder, to the top of the disk: nothing above that.
+      const up = (await owner.conn.request({ type: 'folders.roots', browse: browsed.browseInfo.parent! })).data as { browseInfo: { parent: string | null } }
+      expect(up.browseInfo.parent).not.toBeNull()
+      const top = (await owner.conn.request({ type: 'folders.roots', browse: '/' })).data as { browseInfo: { parent: string | null; canChoose: boolean } }
+      expect(top.browseInfo).toMatchObject({ parent: null, canChoose: false })
+      expect(await owner.conn.request({ type: 'folders.roots', browse: join(home, 'nope') })).toMatchObject({ ok: false, code: 'not-found' })
 
       const added = await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code') })
       expect(added).toMatchObject({ ok: true, text: 'code is a project folder.' })
       expect(m.config().folders.roots.map(p => p.replace(/^\/private/, ''))).toEqual([projects, join(home, 'code')].map(p => p.replace(/^\/private/, '')))
       expect((added.data as { roots: { path: string; folders: number }[] }).roots.map(r => r.folders)).toEqual([expect.any(Number), 4])
-      // Already covered, and outside the home folder, and the home folder itself, are refused.
+      // Already covered is said so; a folder that isn't one, and the top of the disk, are refused.
       expect((await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code', 'one') })).text).toContain('already covered')
-      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: m.outside })).toMatchObject({ ok: false, code: 'policy' })
-      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: home })).toMatchObject({ ok: false, code: 'policy' })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'nope') })).toMatchObject({ ok: false, code: 'not-found' })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: '/' })).toMatchObject({ ok: false, code: 'policy' })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'set', path: '/' })).toMatchObject({ ok: false, code: 'policy' })
       // Searching covers it now.
       expect((await owner.conn.request({ type: 'folders', query: 'two' })).data).toMatchObject([{ name: 'two', rel: 'two' }])
 
+      // Set: this folder replaces the others.
+      const set = await owner.conn.request({ type: 'folders.roots.set', action: 'set', path: join(home, 'Documents') })
+      expect(set).toMatchObject({ ok: true, text: 'Documents is the project folder.' })
+      expect(m.config().folders.roots.map(p => p.replace(/^\/private/, ''))).toEqual([join(home, 'Documents')].map(p => p.replace(/^\/private/, '')))
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'set', path: projects })).toMatchObject({ ok: true })
+      expect(await owner.conn.request({ type: 'folders.roots.set', action: 'add', path: join(home, 'code') })).toMatchObject({ ok: true })
       expect(await owner.conn.request({ type: 'folders.roots.set', action: 'remove', path: join(home, 'code') })).toMatchObject({ ok: true })
       expect(await owner.conn.request({ type: 'folders.roots.set', action: 'remove', path: projects })).toMatchObject({ ok: false, code: 'invalid' })
       const audit = (await owner.conn.request({ type: 'audit', limit: 50 })).data as { entries: { action: string; detail: string | null }[] }
-      expect(audit.entries.filter(e => e.action === 'folders.roots.set').map(e => e.detail?.split(' ')[0])).toContain('add')
+      expect(audit.entries.filter(e => e.action === 'folders.roots.set').map(e => e.detail?.split(' ')[0])).toEqual(expect.arrayContaining(['add', 'set']))
     } finally {
       m.setHome(undefined)
     }

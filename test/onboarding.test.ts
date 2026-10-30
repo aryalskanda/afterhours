@@ -3,9 +3,9 @@
 
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { findToken, maskToken } from '../src/cli/clipboard'
-import { chooseFolders } from '../src/cli/setup'
+import { chooseFolder } from '../src/cli/setup'
 import { folderLabel, fromChats, suggestProjectFolders, windowsHomes, windowsName } from '../src/daemon/folder-suggest'
 import { projectStoreDir } from '../src/daemon/sessions'
 
@@ -99,42 +99,88 @@ describe('the Telegram token', () => {
   })
 })
 
-describe('the folders question in setup', () => {
-  const found = [
-    { path: '/home/me/Work', why: '3 projects' },
-    { path: '/home/me/Play', why: '2 git projects' },
-    { path: '/home/me/Old', why: '2 git projects' },
-  ]
-  const answering = (reply: string) => {
-    const original = globalThis.prompt
-    globalThis.prompt = () => reply
-    return () => void (globalThis.prompt = original)
-  }
-  const quiet = () => {
+describe('choosing the folder in setup, by browsing', () => {
+  /** Answers each question in turn from `replies`, and records what was shown. */
+  function script(replies: string[]) {
+    const asked: string[] = []
+    const shown: string[] = []
+    const prompt = globalThis.prompt
     const log = console.log
-    console.log = () => {}
-    return () => void (console.log = log)
+    globalThis.prompt = (q?: string) => (asked.push(String(q)), replies[asked.length - 1] ?? '')
+    console.log = (...a: unknown[]) => void shown.push(a.join(' '))
+    return { asked, shown, done: () => ((globalThis.prompt = prompt), (console.log = log)) }
   }
+  const unix = { wsl: false, windows: false }
 
-  test('Enter takes everything that was found; numbers take some', () => {
-    const done = [answering(''), quiet()]
-    // The default answer is every number, so Enter (an empty reply) is all of them.
-    expect(chooseFolders([], { found, wsl: false })).toEqual(found.map(f => f.path))
-    done.forEach(d => d())
-    const again = [answering('1, 3'), quiet()]
-    expect(chooseFolders([], { found, wsl: false })).toEqual(['/home/me/Work', '/home/me/Old'])
-    again.forEach(d => d())
+  test('start in the home folder, open a folder by number, go up, and Enter chooses where you are', () => {
+    const home = tmp()
+    for (const n of ['Documents', 'Pictures']) mkdirSync(join(home, n))
+    mkdirSync(join(home, 'Documents', 'Work'))
+    const t = script(['1', '1', 'u', '', ])
+    // Documents → Work → up (Documents) → Enter.
+    let chosen = ''
+    try {
+      chosen = chooseFolder(undefined, { found: [], env: { ...unix, home } })
+    } finally {
+      t.done()
+    }
+    expect(chosen).toBe(join(home, 'Documents'))
+    expect(t.shown.join('\n')).toContain('You are in: ~')
+    expect(t.shown.join('\n')).toContain('1) Documents')
+    expect(t.shown.join('\n')).toContain('You are in: ~/Documents')
   })
 
-  test('nothing found: no question, the folders already chosen stay (or none, so the home folder is used)', () => {
-    const asked: string[] = []
-    const original = globalThis.prompt
-    globalThis.prompt = (q?: string) => (asked.push(String(q)), '')
-    const q = quiet()
-    expect(chooseFolders([], { found: [], wsl: false })).toEqual([])
-    expect(chooseFolders(['/home/me/code'], { found: [], wsl: false })).toEqual(['/home/me/code'])
-    q()
-    globalThis.prompt = original
-    expect(asked).toEqual([])
+  test('pages, a shortcut, and a typed folder', () => {
+    const home = tmp()
+    for (let i = 0; i < 12; i++) mkdirSync(join(home, `d${String(i).padStart(2, '0')}`))
+    const shortcut = join(home, 'd05')
+    const t1 = script(['n', 'n', 'p', 'a'])
+    let chosen = ''
+    try {
+      chosen = chooseFolder(undefined, { found: [{ path: shortcut, why: '5 git projects' }], env: { ...unix, home } })
+    } finally {
+      t1.done()
+    }
+    expect(chosen).toBe(shortcut)
+    expect(t1.shown.join('\n')).toContain('page 1 of 2')
+    expect(t1.shown.join('\n')).toContain('page 2 of 2')
+    expect(t1.shown.join('\n')).toContain('a) ')
+    const t2 = script(['/definitely/not/here', join(home, 'd03')])
+    try {
+      chosen = chooseFolder(undefined, { found: [], env: { ...unix, home } })
+    } finally {
+      t2.done()
+    }
+    expect(chosen).toBe(join(home, 'd03'))
+    expect(t2.shown.join('\n')).toContain('Not a folder I can use')
+  })
+
+  test('mistakes are answered, not fatal: a number that is not there, up, then Enter', () => {
+    const home = tmp()
+    mkdirSync(join(home, 'only'))
+    const t = script(['9', 'u', ''])
+    let chosen = ''
+    try {
+      chosen = chooseFolder(undefined, { found: [], env: { ...unix, home } })
+    } finally {
+      t.done()
+    }
+    expect(t.shown.join('\n')).toContain("There's no 9 on this page.")
+    expect(chosen).toBe(dirname(home))
+  })
+
+  test('opens next to a folder already chosen, so its neighbours show', () => {
+    const home = tmp()
+    mkdirSync(join(home, 'a'))
+    mkdirSync(join(home, 'b'))
+    const t = script([''])
+    let chosen = ''
+    try {
+      chosen = chooseFolder(join(home, 'a'), { found: [], env: { ...unix, home } })
+    } finally {
+      t.done()
+    }
+    expect(chosen).toBe(home)
+    expect(t.shown.join('\n')).toContain('2) b')
   })
 })

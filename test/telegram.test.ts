@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
@@ -184,6 +184,8 @@ function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
     },
     commandContext: () => ({ runner, store, config: () => config, saveConfig: c => (config = c), now: () => now, source: 'cli' }),
     uploadsDir: join(home, 'uploads'),
+    browseEnv: { home: root, wsl: false, windows: false },
+    suggest: () => [{ path: join(root, 'beta'), why: '2 git projects' }],
     now: () => now,
     log: () => {},
     pause: async () => {},
@@ -295,7 +297,7 @@ describe('pairing', () => {
     expect(paired!.html).toContain('Paired')
     expect(paired!.markup).toMatchObject({ is_persistent: true })
     expect(where!.html).toContain('Where Claude will work')
-    expect(h.api.view(where!.id).keyboard.flat().map(b => b.text)).toEqual(['Looks right', 'Add a folder'])
+    expect(h.api.view(where!.id).keyboard.flat().map(b => b.text)).toEqual(['Looks right', 'Change folder'])
     const before = h.api.sent.length
     await h.say('rm -rf everything please', STRANGER)
     await h.tap('g:pause', 1, STRANGER)
@@ -961,39 +963,95 @@ describe('every session from your phone', () => {
 describe('reading and answering on a phone', () => {
   const longDescription = 'The Linux build runs inside WSL2 unchanged, so Windows works from day one; a native engine can come later without changing anything people already set up.'
 
-  test('Settings → Project folders: add one by tapping a suggestion or typing it, and stop using one', async () => {
+  test('Settings → Project folders: browse to a folder, go up, turn pages, use a shortcut, add another, remove one', async () => {
     const h = await paired()
+    // Start with one folder inside the tree, so browsing opens at the tree's top.
+    h.config().folders.roots = [join(h.root, 'beta')]
     await h.say('/settings')
     const settings = h.api.last().id
     await h.tap(button(h.api.view(settings).keyboard, 'Project folders'), settings)
-    expect(h.api.view(settings).html).toContain('Project folders')
-    expect(h.api.view(settings).html).toContain(h.root)
-    // Only one folder: it can't be removed.
+    expect(h.api.view(settings).html).toContain('~/beta')
+    // The last folder can't be removed.
     await h.tap('g:pf:r:0', settings)
     expect(h.api.view(settings).html).toContain('Keep at least one folder')
-    expect(h.config().folders.roots).toEqual([h.root])
-    // A folder typed in is added (and one inside a folder already used is covered by it).
-    const other = mkdtempSync(join(tmpdir(), 'cq-tg-root-'))
-    await h.tap('g:pf:a', settings)
-    expect(h.api.view(settings).html).toContain('Add a folder')
-    await h.tap('g:pf:t', settings)
-    await h.say(other)
-    expect(h.api.last().html).toContain('Added')
-    expect(h.config().folders.roots).toEqual([h.root, other])
-    await h.tap('g:pf:t', settings)
-    await h.say(join(h.root, 'alpha'))
-    expect(h.api.last().html).toContain('is already covered')
-    expect(h.config().folders.roots).toEqual([h.root, other])
-    // Something that isn't a folder says so, and waits for another.
-    await h.tap('g:pf:t', settings)
+
+    // Change folder: browse from the folder's neighbours, open one, go down, use it.
+    await h.tap(button(h.api.view(settings).keyboard, 'Change folder'), settings)
+    let view = h.api.view(settings)
+    expect(view.html).toContain('Choose the project folder')
+    expect(view.html).toContain('You are in: <b>~</b>')
+    expect(view.html).toContain('<b>1.</b> alpha')
+    expect(view.html).toContain('(a git project)')
+    expect(view.html).toContain('Shortcuts')
+    expect(view.keyboard.flat().map(b => b.text)).toEqual(expect.arrayContaining(['Up', 'Use this folder', 'Shortcut a', 'Send a folder', 'Back']))
+    await h.tap(choice(view, 'gamma-web'), settings)
+    view = h.api.view(settings)
+    expect(view.html).toContain('You are in: <b>~/gamma-web</b>')
+    expect(view.html).not.toContain('Shortcuts') // only on the first screen
+    await h.tap(choice(view, 'web'), settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Use this folder'), settings)
+    expect(h.config().folders.roots).toEqual([join(h.root, 'gamma-web', 'web')])
+    expect(h.api.view(settings).html).toContain('Claude now works in ~/gamma-web/web.')
+
+    // Up goes back out, one level at a time.
+    // Change folder opens next to the one in use (inside gamma-web, beside web), and Up goes out of it.
+    await h.tap(button(h.api.view(settings).keyboard, 'Change folder'), settings)
+    expect(h.api.view(settings).html).toContain('You are in: <b>~/gamma-web</b>')
+    await h.tap(button(h.api.view(settings).keyboard, 'Up'), settings)
+    expect(h.api.view(settings).html).toContain('You are in: <b>~</b>')
+
+    // A shortcut chooses it at once.
+    await h.tap('g:pf', settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Change folder'), settings)
+    expect(h.api.view(settings).html).toContain('Shortcuts')
+    await h.tap(button(h.api.view(settings).keyboard, 'Shortcut a'), settings)
+    expect(h.config().folders.roots).toEqual([join(h.root, 'beta')])
+
+    // Add another: browsing starts at the top of the tree; a folder inside one in use is covered.
+    await h.tap(button(h.api.view(settings).keyboard, 'Add another'), settings)
+    expect(h.api.view(settings).html).toContain('Add another project folder')
+    await h.tap(choice(h.api.view(settings), 'beta'), settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Use this folder'), settings)
+    expect(h.api.view(settings).html).toContain('is already covered')
+    await h.tap(button(h.api.view(settings).keyboard, 'Add another'), settings)
+    await h.tap(choice(h.api.view(settings), 'alpha'), settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Use this folder'), settings)
+    expect(h.config().folders.roots).toEqual([join(h.root, 'beta'), join(h.root, 'alpha')])
+    expect(h.api.view(settings).html).toContain('Added ~/alpha.')
+
+    // A folder typed in (a path starts with /, which is not a command here), and one that isn't a folder.
+    await h.tap(button(h.api.view(settings).keyboard, 'Add another'), settings)
+    await h.tap('g:pf:t:a', settings)
     await h.say('/definitely/not/here')
     expect(h.api.last().html).toContain("isn't a folder")
-    await h.say(other)
+    await h.say(join(h.root, 'gamma-web'))
+    expect(h.api.last().html).toContain('Added ~/gamma-web.')
+    expect(h.config().folders.roots).toEqual([join(h.root, 'beta'), join(h.root, 'alpha'), join(h.root, 'gamma-web')])
+
     // Stop using the second one.
     await h.tap('g:pf', settings)
     await h.tap('g:pf:r:1', settings)
-    expect(h.config().folders.roots).toEqual([h.root])
-    expect(h.api.view(settings).html).toContain('Stopped using')
+    expect(h.config().folders.roots).toEqual([join(h.root, 'beta'), join(h.root, 'gamma-web')])
+    expect(h.api.view(settings).html).toContain('Stopped using ~/alpha')
+  })
+
+  test('the top of a disk is not a project folder; pages turn when there are many folders', async () => {
+    const h = await paired()
+    for (let i = 0; i < 11; i++) mkdirSync(join(h.root, 'zz', `f${String(i).padStart(2, '0')}`), { recursive: true })
+    h.config().folders.roots = [join(h.root, 'zz', 'f00')]
+    await h.say('/settings')
+    const settings = h.api.last().id
+    await h.tap('g:pf', settings)
+    await h.tap(button(h.api.view(settings).keyboard, 'Change folder'), settings)
+    // Opens in zz (the chosen folder's neighbours): 11 folders, 8 to a page.
+    expect(h.api.view(settings).html).toContain('page 1 of 2')
+    expect(h.api.view(settings).keyboard.flat().map(b => b.text)).toContain('Next')
+    expect(h.api.view(settings).keyboard.flat().map(b => b.text)).not.toContain('Previous')
+    await h.tap(button(h.api.view(settings).keyboard, 'Next'), settings)
+    expect(h.api.view(settings).html).toContain('page 2 of 2')
+    expect(h.api.view(settings).html).toContain('<b>3.</b> f10')
+    await h.tap(button(h.api.view(settings).keyboard, 'Previous'), settings)
+    expect(h.api.view(settings).html).toContain('page 1 of 2')
   })
 
   test('a typed answer to an earlier question brings the next one down to where you are, with its buttons', async () => {

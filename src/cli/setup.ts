@@ -3,6 +3,7 @@ import { homedir } from 'node:os'
 import { posix, resolve } from 'node:path'
 import { BRAND } from '../shared/brand'
 import { expandHome, findExecutable, findGitBash, loadConfig, saveConfig, type Config } from '../shared/config'
+import { browse, canChoose, startNear, type BrowseEnv } from '../daemon/browse'
 import { folderLabel, folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
 import { within } from '../shared/paths'
 import type { Effort, ExecMode } from '../shared/types'
@@ -67,31 +68,57 @@ export function parseFolderChoice(answer: string, candidates: string[], wsl = is
 }
 
 /**
- * The folders where Claude may work, without typing: found from where you've used Claude Code and
- * where git projects are, all chosen at once. Enter takes them; numbers pick some; a path adds one.
+ * Choosing the folder that holds your projects by browsing, like a file picker in a terminal: you
+ * start in your home folder, open folders by number, go up, turn pages, and press Enter to choose
+ * the one you are in. A few found places are offered as shortcuts, and a path can still be typed.
+ * Returns the chosen folder.
  */
-export function chooseFolders(current: string[], o: { wsl?: boolean; found?: FolderSuggestion[] } = {}): string[] {
-  const wsl = o.wsl ?? isWsl()
-  const found = o.found ?? suggestProjectFolders({ wsl })
-  const label = (p: string) => folderLabel(p, { wsl })
-  if (found.length === 0) {
-    const keep = current.length > 0 ? current : []
-    console.log(`  I couldn't find your projects, so Claude can work anywhere in your home folder${keep.length > 0 ? ` (and ${keep.map(label).join(', ')})` : ''}.`)
-    console.log('  You can add folders later from Telegram: Settings → Project folders.')
-    return keep
-  }
-  console.log('  I found these, from where you have used Claude Code and where your git projects are:')
-  found.forEach((f, i) => console.log(`    ${i + 1}) ${label(f.path)}  (${f.why})`))
-  console.log('  Claude will only work inside the folders you choose, and you can change them later from Telegram.')
-  const all = found.map((_, i) => i + 1).join(',')
+export function chooseFolder(current?: string, o: { wsl?: boolean; found?: FolderSuggestion[]; env?: BrowseEnv } = {}): string {
+  const env = { ...o.env, wsl: o.wsl ?? o.env?.wsl ?? isWsl() }
+  const found = o.found ?? suggestProjectFolders({ wsl: env.wsl })
+  let dir = startNear(current, env)
+  let page = 0
+  console.log('  Claude only works inside the folder you choose. You can change it later from Telegram or the app.')
   for (;;) {
-    const answer = ask('  Press Enter to use all of these, or type numbers (like 1,3) or a folder', all)
-    const parsed = parseFolderChoice(answer, found.map(f => f.path))
-    if (typeof parsed === 'string') {
-      console.log(`  ${parsed}`)
+    const v = browse(dir, page, 9, env)
+    console.log(`\n  You are in: ${v.label}${v.pages > 1 ? `   (page ${v.page + 1} of ${v.pages})` : ''}`)
+    if (v.items.length === 0) console.log('    (no folders in here)')
+    v.items.forEach((it, i) => console.log(`    ${i + 1}) ${it.title}${it.isRepo ? '  (a git project)' : ''}`))
+    if (v.page === 0 && dir === startNear(current, env) && found.length > 0) {
+      console.log('  Shortcuts, from where you have used Claude Code and where your git projects are:')
+      found.forEach((f, i) => console.log(`    ${String.fromCharCode(97 + i)}) ${folderLabel(f.path, { wsl: env.wsl })}  (${f.why})`))
+    }
+    const keys = [
+      ...(canChoose(dir, env) ? ['Enter = choose this folder'] : []),
+      'number = open it',
+      ...(v.parent !== null ? ['u = up'] : []),
+      ...(v.pages > 1 ? ['n / p = next / previous page'] : []),
+      ...(found.length > 0 ? ['a, b… = a shortcut'] : []),
+      'or type a folder',
+    ]
+    const answer = ask(`  ${keys.join(' · ')}`, '').trim()
+    if (answer === '') {
+      if (canChoose(dir, env)) return dir
+      console.log('  Open a folder first: this one is too big to be a project folder.')
       continue
     }
-    return parsed
+    const lower = answer.toLowerCase()
+    if (/^\d+$/.test(answer)) {
+      const it = v.items[Number(answer) - 1]
+      if (!it) console.log(`  There's no ${answer} on this page.`)
+      else (dir = it.path), (page = 0)
+    } else if (lower === 'u') {
+      if (v.parent === null) console.log("  That's the top.")
+      else (dir = v.parent), (page = 0)
+    } else if (lower === 'n') page = Math.min(v.pages - 1, page + 1)
+    else if (lower === 'p') page = Math.max(0, page - 1)
+    else if (/^[a-z]$/.test(lower) && found[lower.charCodeAt(0) - 97]) return found[lower.charCodeAt(0) - 97]!.path
+    else {
+      // A typed folder: used right away when it is one.
+      const typed = folderPath(answer, env.wsl)
+      if (canChoose(typed, env)) return typed
+      console.log(`  Not a folder I can use: ${answer}`)
+    }
   }
 }
 
@@ -270,9 +297,11 @@ export async function setup(o: { custom?: boolean } = {}): Promise<void> {
     if (!(await tmuxStep())) return
   }
 
-  step('Your project folders (where Claude may work)')
+  step('The folder that holds your projects')
   const config = loadConfig()
-  config.folders.roots = chooseFolders(config.folders.roots).map(tilde)
+  const have = config.folders.roots.map(expandHome).filter(isDir)
+  if (have.length > 0 && confirmYes(`  Keep using ${have.map(p => tilde(p)).join(', ')}?`)) config.folders.roots = have.map(tilde)
+  else config.folders.roots = [tilde(chooseFolder(have[0]))]
 
   if (o.custom) {
     step('Defaults for new tasks (each task can still change them)')

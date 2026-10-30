@@ -1133,7 +1133,7 @@ export function settingsView(o: {
 
 // --- project folders: where Claude may work ----------------------------------------------------
 
-/** The project folders, with a number each to stop using one, and Add. */
+/** The project folders, with a number each to stop using one, and the ways to change them. */
 export function projectFoldersView(roots: { path: string; label: string }[], note?: string): View {
   return {
     html: [
@@ -1145,20 +1145,48 @@ export function projectFoldersView(roots: { path: string; label: string }[], not
     ]
       .filter(Boolean)
       .join('\n'),
-    keyboard: [...numberRows(roots.map((_, i) => ({ data: `g:pf:r:${i}` }))), [btn('Add a folder', 'g:pf:a'), btn('Back', 'g:set')]],
+    keyboard: [...numberRows(roots.map((_, i) => ({ data: `g:pf:r:${i}` }))), [btn('Change folder', 'g:pf:c'), btn('Add another', 'g:pf:a')], [btn('Back', 'g:set')]],
   }
 }
 
-/** Folders worth adding, found for you, to tap. */
-export function addFolderView(found: { path: string; label: string; why: string }[]): View {
+/** Choosing a folder by browsing: `c` replaces the project folders with it, `a` adds it. */
+export interface FolderBrowser {
+  /** This folder's id (button data) and how a person reads it. */
+  id: number
+  label: string
+  /** The folder above (its id), or null at the top. */
+  parentId: number | null
+  page: number
+  pages: number
+  total: number
+  items: { id: number; title: string; isRepo: boolean }[]
+  /** This folder can be chosen (not the top of a disk, not This PC). */
+  canChoose: boolean
+  /** Found places, on the first screen only. */
+  shortcuts: { label: string; why: string }[]
+}
+
+export function folderBrowserView(b: FolderBrowser, mode: 'c' | 'a'): View {
+  const heading = mode === 'c' ? 'Choose the project folder' : 'Add another project folder'
+  const kb: InlineKeyboard = [...numberRows(b.items.map(it => ({ data: `g:fb:${it.id}:0:${mode}` })))]
+  const nav: InlineButton[] = []
+  if (b.parentId !== null) nav.push(btn('Up', `g:fb:${b.parentId}:0:${mode}`))
+  if (b.page > 0) nav.push(btn('Previous', `g:fb:${b.id}:${b.page - 1}:${mode}`))
+  if (b.page < b.pages - 1) nav.push(btn('Next', `g:fb:${b.id}:${b.page + 1}:${mode}`))
+  if (nav.length > 0) kb.push(nav)
+  if (b.canChoose) kb.push([btn('Use this folder', `g:fu:${b.id}:${mode}`)])
+  if (b.shortcuts.length > 0) kb.push(...rows(b.shortcuts.map((_, i) => btn(`Shortcut ${String.fromCharCode(97 + i)}`, `g:fs:${i}:${mode}`)), 3))
+  kb.push([btn('Send a folder', `g:pf:t:${mode}`), btn('Back', 'g:pf')])
   return {
     html: [
-      '<b>Add a folder</b>',
-      found.length > 0 ? 'I found these, from where you have used Claude Code and where your git projects are:' : 'I found nothing more to suggest.',
-      ...found.map((f, i) => numbered(i + 1, `${esc(f.label)} <i>(${esc(f.why)})</i>`)),
-      '<i>Tap a number, or send a folder to add one that is not here (like D:\\Projects or ~/code).</i>',
+      `<b>${heading}</b>`,
+      `You are in: <b>${esc(b.label)}</b>${b.pages > 1 ? ` · page ${b.page + 1} of ${b.pages}` : ''}`,
+      ...(b.items.length > 0 ? b.items.map((it, i) => numbered(i + 1, `${esc(it.title)}${it.isRepo ? ' <i>(a git project)</i>' : ''}`)) : ['<i>No folders in here.</i>']),
+      ...(b.shortcuts.length > 0 ? ['', '<b>Shortcuts</b> <i>(where you have used Claude Code, and where your git projects are)</i>', ...b.shortcuts.map((x, i) => `<b>${String.fromCharCode(97 + i)}.</b> ${esc(x.label)} <i>(${esc(x.why)})</i>`)] : []),
+      '',
+      `<i>Tap a number to open a folder${b.canChoose ? ', or Use this folder to choose the one you are in' : ''}. Or send a folder like D:\\Projects or ~/code.</i>`,
     ].join('\n'),
-    keyboard: [...numberRows(found.map((_, i) => ({ data: `g:pf:s:${i}` }))), [btn('Send a folder', 'g:pf:t'), btn('Back', 'g:pf')]],
+    keyboard: kb,
   }
 }
 
@@ -1170,7 +1198,7 @@ export function foldersWelcomeView(roots: { label: string }[]): View {
       ...roots.map((r, i) => numbered(i + 1, esc(r.label))),
       '<i>These are the folders you will pick from when you start a task.</i>',
     ].join('\n'),
-    keyboard: [[btn('Looks right', 'g:pf:ok'), btn('Add a folder', 'g:pf:a')]],
+    keyboard: [[btn('Looks right', 'g:pf:ok'), btn('Change folder', 'g:pf:c')]],
   }
 }
 
