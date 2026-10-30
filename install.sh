@@ -15,6 +15,7 @@
 #   AFTERHOURS_VERSION=v0.6.0   install that release instead of the latest
 #   AFTERHOURS_BINARY=./cq      install this binary instead of downloading one
 #   AFTERHOURS_REPO=owner/repo  where releases come from
+#   AFTERHOURS_BASE_URL=…       download from here instead (for tests)
 #   AFTERHOURS_YES=1            answer yes to every question (for scripts and cloud-init)
 #   AFTERHOURS_NO_SETUP=1       stop after installing; run `cq setup` yourself later
 set -eu
@@ -114,12 +115,14 @@ else
   case "$repo" in
     *'{'*) fail "Set AFTERHOURS_REPO=owner/repo: this copy of the script didn't come with a release." ;;
   esac
-  if [ -n "${AFTERHOURS_VERSION:-}" ]; then
+  if [ -n "${AFTERHOURS_BASE_URL:-}" ]; then
+    base="$AFTERHOURS_BASE_URL"
+  elif [ -n "${AFTERHOURS_VERSION:-}" ]; then
     base="https://github.com/$repo/releases/download/$AFTERHOURS_VERSION"
   else
     base="https://github.com/$repo/releases/latest/download"
   fi
-  say "Downloading $asset…"
+  say "Downloading ${asset}…"
   curl -fsSL "$base/$asset" -o "$tmp/cq"
   curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
   expected="$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/SHA256SUMS")"
