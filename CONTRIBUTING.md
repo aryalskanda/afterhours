@@ -5,11 +5,9 @@ Thanks for helping. Bug reports, fixes, docs and ideas are all welcome. This pag
 ## What's in this repository
 
 - **The engine** (`src/`): the `cq` command, the background service, and the Telegram bot.
-- **The protocol** (`packages/protocol`): keys, end-to-end encryption and the messages between apps and machines.
-- **The relay** (`relay/`): the small server that forwards encrypted messages between apps and machines.
 - **The landing page** (`site/`).
 
-The phone and desktop apps live in a separate repository that isn't open source. Problems with the engine, the bot, the relay or the protocol belong here.
+Problems with the engine or the bot belong here.
 
 ## Reporting a bug
 
@@ -79,16 +77,11 @@ Then restart the daemon and run `bun src/cli/cq.ts telegram` in the same shell. 
 | `src/daemon/launch.ts` | The `claude` command line and per-session settings |
 | `src/daemon/screens.ts` | The Claude Code screens Afterhours answers with keystrokes |
 | `src/daemon/commands.ts` | The text commands |
-| `src/daemon/remote/` | The engine's side of the apps: devices, rules, events |
 | `src/telegram/` | The bot |
 | `src/platform/` | What differs by system: the background service, staying awake and sleeping |
 | `src/cli/` | `cq` and `cq setup` |
 | `bin/cq-launcher.c` | The macOS launcher that holds Full Disk Access |
-| `packages/protocol/` | The protocol shared by the engine, the relay and the apps |
-| `relay/` | The relay |
 | `test/` | The tests, with fakes for tmux, Telegram and the system in `test/fakes.ts` |
-
-[docs/architecture.md](docs/architecture.md) explains how the apps, the relay and the engine fit together, and the security model behind them.
 
 ## Making a change
 
@@ -115,8 +108,6 @@ Then restart the daemon and run `bun src/cli/cq.ts telegram` in the same shell. 
   It uses your Claude sign-in, runs three small Haiku tasks, and costs a few cents. If you can't run it, say so in the pull request. Maintainers also run it before every release.
 
 - **Anything system-specific** (`src/platform/`, `install.sh`, `install.ps1`): say in the pull request which systems you tested on.
-
-- **The protocol and the relay**: changes here affect apps that aren't in this repository, and anything touching keys, pairing or encryption gets a careful security review. Open an issue first.
 
 ## Commit messages
 

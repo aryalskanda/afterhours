@@ -23,11 +23,7 @@ Getting started:
 Setup and service:
   cq telegram <token>  connect your Telegram bot (from @BotFather) and pair your account
   cq telegram off      stop using Telegram
-  cq pair              pair the ${BRAND.name} app with this machine (shows a QR code; --relay wss://… the first time)
-  cq devices           the devices paired with this machine; cq devices remove <name> cuts one off
-  cq remote            remote access settings: relay, name, allowed folders, what apps may do
-  cq audit             what apps did on this machine
-  cq folders           the project folders the apps and the bot search; cq folders add|remove <path>
+  cq folders           the project folders the bot searches; cq folders add|remove <path>
   cq awake             whether this computer stays awake while tasks run (cq awake on|off); cq awake lid on: with the lid closed too
   cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux)
   cq restart           restart it (on macOS, after granting Full Disk Access)
@@ -39,7 +35,7 @@ Setup and service:
   cq logs [-f]         the background service's log
   cq daemon            run it in this terminal instead of in the background
 
-Queue commands (the same ones work over iMessage; jobs default to the current folder):
+Queue commands (jobs default to the current folder):
 ${HELP.split('\n').slice(1).map(l => '  ' + l).join('\n')}
 
 ${BRAND.name} runs Claude Code with your own sign-in and plan. It is not made by or affiliated with Anthropic.`

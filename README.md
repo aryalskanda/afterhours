@@ -138,7 +138,7 @@ Starts: now
 | **How** | How it goes about it: **Plan first** (Afterhours approves the plan), **Plan, I approve**, **Just do it** (no plan), **Only answer** (Claude reads and answers, and changes nothing). What it may do without asking: **Auto**, **Accept edits**, **No prompts**. So "plan, then no prompts" is two taps. |
 | **Model** | The model and the effort. With a plan, **Plan** and **Work** pick which side you're setting: plan with Opus at Max, then tap **Work** and set Sonnet at Low. Both show on the card ([more](#plan-with-one-model-work-with-another)). |
 | **When** | **Now**, **Next** (before everything waiting), **At the reset** of the 5-hour limit, **In an hour**, **Tonight** (23:00), **Morning** (07:00), **Type a time** (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`), **Every day at…** a time, or after one of the tasks ahead (by number) has finished well. |
-| **More** | **Live link: on/off** (a claude.ai page showing the result, [more](#live-links)), a **time limit** (30m to 4h), and **three ways** (**3 models**, or **Same ×3**: three tasks, each on its own branch; when all finish you get one message to compare them and **Keep** one, which is merged while the others are thrown away). |
+| **More** | **Live link: on/off** (a claude.ai page showing the result, [more](#live-links)), and a **time limit** (30m to 4h). |
 | **Files** | Send a photo or file in the chat (with a caption as the prompt, if you like): it's kept on the computer and Claude is told to read it. Up to 10, 5 MB each. The card comes down to where you are. |
 
 When the bot asks you to type something (a time, a folder name, an answer), the text box opens as a reply with a hint in it. After you type, the card comes down to where you are and the old one goes.
@@ -155,7 +155,7 @@ The keys under the text box:
 - **Status**: what's running and what it last did, anything waiting on you (with **Allow** / **Deny** right there), what's next, your 5-hour and weekly usage as bars, and **Pause** / **Resume**. Each running task has **Screen**, **Stop** (or **Continue**) and **Kill**.
 - **Queue**: the waiting tasks by number. Tap a number and that task's buttons show under the numbers: **Move up**, **Move down**, **Run next**, **Hold** / **Release**, **Change** (anything about it: prompt, how, models, efforts, when it starts, time limit, live link, then **Save**) and **Remove**. They stay with the task as it moves. **Clear** empties the queue.
 - **Tasks**: finished tasks, with **Search**. A number opens one: follow up, new task in its folder, live link, merge, pull request, discard.
-- **Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **Write here**: everything you type goes into that chat until you tap **Leave chat** (the first key, while you're in a chat).
+- **Chats**: your recent chats from every project, newest first. Open one to see your last prompt and Claude's last reply, then **Write here**: everything you type goes into that chat until you tap **Leave chat** (the first key, while you're in a chat). Photos, screenshots and files go in too, with their caption as the message; an album goes in as one message.
 - **Mac** (**PC** or **Computer** elsewhere): stay awake and sleep, [below](#stay-awake-and-sleep).
 - **Settings**: how much the bot messages you (all, important, or off), tasks at once, whether it watches your other chats for usage limits and continues them by itself, and rescanning your folders.
 
@@ -359,12 +359,10 @@ The words before the first colon count as options only if every one of them is a
 | `reopenInVsCode` | `true` | When a task that took a chat from VS Code ends, open the chat there again |
 | `telegram` | set by `cq telegram` | The bot token and your paired account |
 | `aliases`, `trustedDirs` | | Project names for text commands, and folders whose trust prompt Afterhours may accept |
-| `imessage.enabled` | `false` | Text commands over iMessage instead of Telegram (see below) |
 | `port`, `claudePath`, `tmuxPath` | 7787, from `PATH` | |
 
 Next to it: `state.db` (queue and history), the folder map (in `state.db`), `logs/cqd.log`, `jobs/` (per-task session settings) and `token` (how `cq` and the hooks talk to the background service).
 
-**iMessage** (optional): text the commands to yourself at your **Apple ID email**. SMS is ignored on purpose, because SMS senders can be faked.
 
 ## How it works
 

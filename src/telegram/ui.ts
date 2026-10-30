@@ -260,12 +260,11 @@ function limitText(minutes: number): string {
 /** What the card always shows: one line per choice, in the order of the tabs under it. */
 function summaryLines(d: Draft, ctx: UiContext, chat: Chat | null): string[] {
   const how = howOf(d)
-  const split = d.plan && !d.threeWays
+  const split = d.plan
   const work = d.workModel || d.workEffort ? modelEffort(d.workModel ?? d.model, d.workEffort ?? d.effort) : 'same as the plan'
   const extras = [
     d.wantLink ? 'a live link at the end' : '',
     d.maxMinutes ? `stops after ${limitText(d.maxMinutes)} of work` : '',
-    d.threeWays ? `three ways (${d.threeWays === 'models' ? 'three models' : `${esc(modelLabel(d.model))} three times`}), each on its own branch` : '',
     d.attachments.length > 0 ? `${d.attachments.length} file${d.attachments.length === 1 ? '' : 's'} for Claude to read` : '',
   ].filter(Boolean)
   return [
@@ -437,11 +436,10 @@ function modelSection(d: Draft, ctx: UiContext, v: CardView): Section {
       EFFORTS.map(e => btn(chosen(e === current, effortLabel(e)), `d:${id}:${op}:${e}`)),
       3,
     )
-  if (!d.plan || d.threeWays) {
+  if (!d.plan) {
     return {
       html: [
         '<b>Model and effort</b>',
-        d.threeWays === 'models' ? '<i>Three ways on three models: each way has its own model; the effort is for all three.</i>' : '',
         '<i>Higher effort thinks longer and uses more of your usage limit.</i>',
         !d.plan ? '<i>To plan with one model and effort and work with another (plan at High, work at Low), pick Plan first in How.</i>' : '',
       ]
@@ -498,16 +496,11 @@ export const TIME_LIMITS = [0, 30, 60, 120, 240]
 
 function moreSection(d: Draft, ctx: UiContext): Section {
   const id = d.id
-  const fresh = !d.editJob && !d.sessionId
-  const ways = ctx.models.length >= 3 ? ctx.models.slice(0, 3).map(modelLabel).join(', ') : 'three models'
   return {
     html: [
       '<b>More</b>',
       `Live link: <b>${onOff(d.wantLink)}</b>. It ends with a claude.ai page showing the result, to open on your phone.`,
       `Time limit: <b>${d.maxMinutes ? limitText(d.maxMinutes) : 'none'}</b>. It stops after that much work; you can let it go on.`,
-      fresh
-        ? `Three ways: <b>${d.threeWays === 'models' ? `on ${esc(ways)}` : d.threeWays === 'same' ? `${esc(modelLabel(d.model))} three times` : 'off'}</b>. Three tasks, each on its own branch; when all have finished you keep one.`
-        : '',
       d.editJob ? '' : `Files: <b>${d.attachments.length > 0 ? d.attachments.length : 'none'}</b>. Send a photo or file in this chat to attach it.`,
     ]
       .filter(Boolean)
@@ -515,7 +508,6 @@ function moreSection(d: Draft, ctx: UiContext): Section {
     rows: [
       [btn(`Live link: ${onOff(d.wantLink)}`, `d:${id}:l`)],
       TIME_LIMITS.map(m => btn(chosen((d.maxMinutes ?? 0) === m, m === 0 ? 'None' : m < 60 ? `${m}m` : `${m / 60}h`), `d:${id}:tl:${m}`)),
-      ...(fresh ? [[btn(chosen(!d.threeWays, 'One way'), `d:${id}:3:0`), btn(chosen(d.threeWays === 'models', '3 models'), `d:${id}:3:m`), btn(chosen(d.threeWays === 'same', 'Same ×3'), `d:${id}:3:s`)]] : []),
       ...(d.attachments.length > 0 ? [[btn(`Remove the file${d.attachments.length === 1 ? '' : 's'}`, `d:${id}:at:x`)]] : []),
     ],
   }
@@ -640,34 +632,6 @@ export function tasksView(jobs: Job[], o: { query: string; more: boolean }, ctx:
       ...numberRows(jobs.map(j => ({ data: `j:${j.id}:open` }))),
       [btn('Search', 'g:tsearch'), ...(o.more && last ? [btn('Older', `g:tasks:${last.id}`)] : []), ...(o.query ? [btn('Show all', 'g:tasks')] : [])],
     ],
-  }
-}
-
-/** Three ways finished: each one's result, and which to keep. */
-export function compareView(jobs: Job[], ctx: UiContext): View {
-  const first = jobs[0]!
-  const lines = jobs.map((j, i) => {
-    const state = j.status === 'done' ? 'done' : j.status === 'failed' ? 'failed' : 'stopped'
-    const said = oneLine(j.summary || j.lastMessage || '', 160)
-    return `${numbered(i + 1, `<b>#${j.id}</b> ${state} · ${esc(modelLabel(j.model))}, ${effortLabel(j.effort)}`)}${j.branch ? ` · <code>${esc(j.branch)}</code>` : ''}${said ? `\n   <i>${esc(said)}</i>` : ''}`
-  })
-  const keepable = jobs.filter(j => j.status === 'done' && j.branch && !j.branchNote)
-  return {
-    html: `<b>The three ways are done</b> · ${esc(ctx.label(first.projectDir))}\n${quote(first.prompt, 300)}\n${lines.join('\n')}\n<i>Keep one: it’s merged, and the other branches are thrown away.</i>`,
-    keyboard: [...(keepable.length > 0 ? [keepable.map(j => btn(`Keep #${j.id}`, `g:keep:${j.id}`))] : []), [btn('Keep none', `g:keep:0:${first.group}`)]],
-  }
-}
-
-/** Three ways queued: the three tasks, each on its own branch. */
-export function queuedWaysView(jobs: Job[], ctx: UiContext): View {
-  const first = jobs[0]!
-  return {
-    html:
-      `<b>Queued ${jobs.map(j => `#${j.id}`).join(', ')}</b> · ${esc(ctx.label(first.projectDir))}\n` +
-      `${quote(first.prompt, 1500)}\n` +
-      jobs.map(j => `#${j.id}: ${esc(modelLabel(j.model))}, ${effortLabel(j.effort)}`).join('\n') +
-      '\n<i>Each on its own branch. When all three have finished, you choose which to keep.</i>',
-    keyboard: [[btn('Run next', `j:${first.id}:top`), btn('Remove all', `g:ways:${first.group}`)]],
   }
 }
 
