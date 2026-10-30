@@ -614,7 +614,8 @@ describe('remote access', () => {
       // Up goes above the home folder, to the top of the disk: nothing above that.
       const up = (await owner.conn.request({ type: 'folders.roots', browse: browsed.browseInfo.parent! })).data as { browseInfo: { parent: string | null } }
       expect(up.browseInfo.parent).not.toBeNull()
-      const top = (await owner.conn.request({ type: 'folders.roots', browse: '/' })).data as { browseInfo: { parent: string | null; canChoose: boolean } }
+      // The top is "/" on Unix and This PC (the list of drives) on Windows, where "/" is just a drive.
+      const top = (await owner.conn.request({ type: 'folders.roots', browse: process.platform === 'win32' ? ':pc' : '/' })).data as { browseInfo: { parent: string | null; canChoose: boolean } }
       expect(top.browseInfo).toMatchObject({ parent: null, canChoose: false })
       expect(await owner.conn.request({ type: 'folders.roots', browse: join(home, 'nope') })).toMatchObject({ ok: false, code: 'not-found' })
 

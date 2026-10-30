@@ -127,7 +127,8 @@ export function suggestProjectFolders(o: SuggestOptions = {}): FolderSuggestion[
 export function folderLabel(path: string, o: { home?: string; wsl?: boolean } = {}): string {
   const home = o.home ?? homedir()
   if (path === home) return '~'
-  if (path.startsWith(home + sep)) return '~' + path.slice(home.length)
+  // Either slash counts, and the rest is written with "/", as tilde() does everywhere else.
+  if (path.startsWith(home + '/') || path.startsWith(home + '\\')) return '~' + path.slice(home.length).replace(/\\/g, '/')
   return o.wsl ? windowsName(path) : path
 }
 
