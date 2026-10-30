@@ -26,7 +26,8 @@ beforeEach(() => {
   writeFileSync(join(root, 'logo.png'), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
   writeFileSync(join(root, 'data.bin'), new Uint8Array([1, 0, 2, 0, 3]))
   writeFileSync(join(outside, 'private.txt'), 'not yours to read\n')
-  symlinkSync(outside, join(root, 'link-out'))
+  // A junction on Windows: a link to a folder that needs neither administrator rights nor Developer Mode.
+  symlinkSync(outside, join(root, 'link-out'), process.platform === 'win32' ? 'junction' : undefined)
 })
 afterEach(() => rmSync(join(root, '..'), { recursive: true, force: true }))
 

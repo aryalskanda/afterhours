@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Chat } from '../src/daemon/chats'
 import { applyOption, parseQueueText, runCommand, type QueueOptions } from '../src/daemon/commands'
 import { PowerControl } from '../src/daemon/power'
@@ -145,7 +145,8 @@ describe('chats', () => {
 
   test('an empty folder, and an unknown one', async () => {
     expect(await runCommand('chats', ctx([]))).toBe('No Claude Code chats in nacho yet.')
-    expect(await runCommand('chats /definitely/not/here', ctx([]))).toBe('Folder not found: /definitely/not/here')
+    // Resolved as a path here (on Windows, on the current drive).
+    expect(await runCommand('chats /definitely/not/here', ctx([]))).toBe(`Folder not found: ${resolve('/definitely/not/here')}`)
   })
 })
 

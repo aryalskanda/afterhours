@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   authMessage,
   newIdentity,
@@ -191,8 +194,8 @@ describe('relay', () => {
 
   // This relay keeps links on disk; one that keeps them in memory gets them again from the machine.
   test.skipIf(OTHER_RELAY !== null)('links survive a relay restart', async () => {
-    const dir = await Bun.$`mktemp -d`.text()
-    const db = `${dir.trim()}/relay.db`
+    // Not `mktemp -d`: Windows has none of its own (Git's would give a path SQLite can't open).
+    const db = join(mkdtempSync(join(tmpdir(), 'relay-')), 'relay.db')
     relay = await testRelay({ db })
     const machineId = newIdentity()
     const phoneId = newIdentity()

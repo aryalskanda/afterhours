@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { AppClient, newIdentity, parsePairingLink, peerId, type Event, type HostSession, type MacInfo, type MachineConnection, type Request, type Role, type Snapshot } from '@afterhours/protocol'
 import { testRelay, type TestRelay } from '../relay/test/target'
 import type { Chat, ChatSource } from '../src/daemon/chats'
@@ -138,6 +138,8 @@ function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower } = {}
   remote.apply()
   cleanups.push(() => {
     remote!.stop()
+    // A folder browsed in the test is looked at again a moment later: not after the database closes.
+    folders.stopWatching()
     store.close()
   })
   return {
@@ -924,7 +926,7 @@ describe('prompts', () => {
     const queued = await conn.request({ type: 'queue', folder: m.project, prompt: 'Why does this crash?', options: { attachments: [path], group: 'try-3' } })
     expect(queued.ok).toBe(true)
     expect(m.store.queued()[0]).toMatchObject({ attachments: [path], group: 'try-3' })
-    expect((queued.data as { job: { attachments: string[] } }).job.attachments).toEqual([path.slice(path.lastIndexOf('/') + 1)])
+    expect((queued.data as { job: { attachments: string[] } }).job.attachments).toEqual([basename(path)])
     expect(await conn.request({ type: 'queue', folder: m.project, prompt: 'x', options: { attachments: ['/etc/hosts'] } })).toMatchObject({ ok: false, code: 'invalid' })
     const viewer = await pairedApp(m, { role: 'viewer' })
     expect(await viewer.conn.request({ type: 'upload', name: 'a.txt', data: 'aGk=' })).toMatchObject({ ok: false, code: 'forbidden' })

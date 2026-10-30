@@ -17,7 +17,8 @@ describe('install.sh', () => {
     expect(bad).toEqual([])
   })
 
-  test('downloads, checks the checksum, installs and puts cq on the PATH, in a UTF-8 locale', async () => {
+  // install.sh is for macOS and Linux (Windows has install.ps1), and needs a POSIX sh.
+  test.skipIf(process.platform === 'win32')('downloads, checks the checksum, installs and puts cq on the PATH, in a UTF-8 locale', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cq-install-'))
     const home = join(root, 'home')
     const stubs = join(root, 'bin')

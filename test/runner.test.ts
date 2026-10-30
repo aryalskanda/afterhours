@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
+
+/** Where the runner writes a job's session settings (it joins the path, so it has \ on Windows). */
+const settingsFile = (id: number) => join('/tmp/cqhome/jobs', `${id}.settings.json`)
 import type { Notice } from '../src/daemon/notify'
 import { canTakeOver, Runner, windowName, type ToolActivity } from '../src/daemon/runner'
 import { sessionSettings } from '../src/daemon/launch'
@@ -45,7 +48,8 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
       config = c
     },
     now: () => now,
-    allowedDir: dir => allowed.some(a => dir === a || dir.startsWith(`${a}/`)),
+    // Resolved as the runner resolves the paths it checks: from the task's folder (on Windows, onto its drive).
+    allowedDir: dir => allowed.map(a => resolve(project, a)).some(a => dir === a || dir.startsWith(a + sep)),
     claudePath: '/bin/claude',
     selfCommand: ['/bin/cq'],
     port: 7787,
@@ -182,13 +186,13 @@ describe('launch', () => {
       '--permission-mode',
       'plan',
       '--settings',
-      '/tmp/cqhome/jobs/1.settings.json',
+      settingsFile(1),
       '--name',
       'Afterhours: Create hello.txt',
       '--',
       'Create hello.txt',
     ])
-    const settings = JSON.parse(h.files.get('/tmp/cqhome/jobs/1.settings.json')!)
+    const settings = JSON.parse(h.files.get(settingsFile(1))!)
     expect(settings.autoContinueAtUsageLimit).toBe(true)
     expect(settings.hooks.PermissionRequest[0].hooks[0]).toEqual({ type: 'command', command: "'/tmp/cqhome/bin/cq-hook' PermissionRequest", timeout: 960 })
     expect(settings.hooks.PostToolUse[0].hooks[0].async).toBe(true)
@@ -202,7 +206,7 @@ describe('launch', () => {
     const argv = h.runner.launchSpec(job.id)!.argv
     expect(argv).toContain('--allow-dangerously-skip-permissions')
     expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('bypassPermissions')
-    expect(JSON.parse(h.files.get(`/tmp/cqhome/jobs/${job.id}.settings.json`)!).skipDangerousModePermissionPrompt).toBe(true)
+    expect(JSON.parse(h.files.get(settingsFile(job.id))!).skipDangerousModePermissionPrompt).toBe(true)
   })
 
   test('nothing starts while paused or before a limit resets', async () => {
@@ -622,7 +626,7 @@ describe('asking you', () => {
     // Nothing went to the phone, and each is in the log.
     expect(h.notices.length).toBe(before)
     expect(h.store.pendingApprovals(j.id)).toEqual([])
-    expect(h.logs.some(l => l.includes('allowed Read of /other/app/e2e/out/shot.png'))).toBe(true)
+    expect(h.logs.some(l => l.includes(`allowed Read of ${resolve(h.project, '/other/app/e2e/out/shot.png')}`))).toBe(true)
   })
 
   test('the web is read without asking in a mode that doesn’t ask', async () => {
@@ -909,7 +913,7 @@ describe('live links', () => {
   test('at the end, Claude is asked for one; the link is kept and said, and the answer stays the answer', async () => {
     const h = setup()
     const j = await startJob(h, { plan: false, wantLink: true })
-    expect(JSON.parse(h.files.get(`/tmp/cqhome/jobs/${j.id}.settings.json`)!).permissions).toEqual({ allow: ['Artifact'] })
+    expect(JSON.parse(h.files.get(settingsFile(j.id))!).permissions).toEqual({ allow: ['Artifact'] })
     const first = await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'Added the dark mode toggle.' })
     expect(first).toMatchObject({ decision: 'block' })
     expect(String((first as { reason: string }).reason)).toContain('publish a Claude artifact')

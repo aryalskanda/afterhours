@@ -61,7 +61,8 @@ test('report log lines leave out prompts, replies and your name', () => {
   expect(redactLogLine('t telegram: paired with Sam (12345)')).toBe('t telegram: paired with <you>')
 })
 
-test('homebrewLink maps a Cellar binary to the link Homebrew keeps current', () => {
+// Homebrew is macOS and Linux only.
+test.skipIf(process.platform === 'win32')('homebrewLink maps a Cellar binary to the link Homebrew keeps current', () => {
   const prefix = mkdtempSync(join(tmpdir(), 'cq-brew-'))
   mkdirSync(join(prefix, 'Cellar', 'afterhours', '0.1.0', 'bin'), { recursive: true })
   mkdirSync(join(prefix, 'bin'))
