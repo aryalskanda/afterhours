@@ -41,6 +41,32 @@ bot  #14 done in 48m · 6 files changed, 212 insertions(+)
 | **Every chat, from your phone** | **💬 Chats** lists your recent chats from every project, VS Code ones included. Open one and type: your messages go into that same conversation. A chat in VS Code that hits a usage limit continues by itself at the reset, inside VS Code. |
 | **Your phone, your bot** | Afterhours talks to a Telegram bot you create, straight from your computer. No servers, accounts or open ports. |
 
+## Isn't this what the Claude app does?
+
+Partly, and the Claude app is very good at what it does. **Remote Control** (`claude remote-control`, which the app shows as `claude rc`) lets you steer a Claude Code session that's running on your computer from your phone. **Cloud sessions** (Claude Code on the web) run on Anthropic's machines against a GitHub repo, so your computer can be off.
+
+Afterhours is for something else: **lining up work on your own computer and walking away.** You pick any project folder from your phone, queue several tasks, and they run one after another, through plans, permission requests and usage limits, without you sitting at the computer or starting anything there first.
+
+The question people ask most: *can I, straight from my phone, start Claude in a project folder where nothing is running?* With Remote Control, no: a `claude` process has to be running on the computer, in that folder, first (its server mode only opens sessions in the folder it was started in). With Afterhours, yes: it runs in the background as a service and starts Claude in whichever folder you pick.
+
+| | Remote Control | Cloud sessions | Afterhours |
+| --- | --- | --- | --- |
+| **Where Claude runs** | Your computer | Anthropic's cloud VM | Your computer |
+| **Start in any local folder from your phone, with nothing running there** | No: start `claude` in that folder first | Only GitHub repos (or an uploaded copy) | Yes |
+| **A queue: task 2 starts when task 1 is done** | No | No (sessions run separately) | Yes, across projects, with order, hold, "after #N", schedules |
+| **Plan approved without you** | No: a person approves the plan | No | Yes for **Plan first** tasks; **Plan, I approve** sends it to your phone |
+| **Plan with one model and effort, work with another** | `opusplan` only (Opus plans, Sonnet works) | `opusplan` only | Any pair, each with its own effort (e.g. Opus · Max, then Sonnet · Low) |
+| **After a usage limit** | You resume it at the terminal | Not documented | Waits for the reset (5-hour or weekly) and continues; nothing new starts meanwhile |
+| **Your local files, `.env`, databases, local services** | Yes | Not by default (untracked files and local services aren't there) | Yes |
+| **Permission requests and questions on your phone** | Yes | Yes | Yes (unanswered ones are denied, or Claude uses its judgment, after a timeout) |
+| **Computer must stay on** | Yes | No | Yes (and it keeps the computer awake while there's work) |
+| **Setup** | Built in | Built in | Install it, make a Telegram bot (about five minutes) |
+| **Cost** | Your Claude plan | Your Claude plan (counts toward its limits) | Your Claude plan; Afterhours is free |
+
+Use the **Claude app** to talk to one live session, or when the work is in a GitHub repo and your computer is off. Use **Afterhours** to hand off a list of tasks for your own machine: tonight's refactor in one project, then tests in another, then a fix that waits for the limit reset. They work together, too: every task Afterhours runs is an ordinary Claude Code conversation you can open in VS Code, the terminal or, with Remote Control, the Claude app.
+
+This comparison is from Anthropic's docs for Claude Code 2.1 ([Remote Control](https://code.claude.com/docs/en/remote-control), [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web), [models](https://code.claude.com/docs/en/model-config)). Those features change quickly, so check there for the latest.
+
 ## Install
 
 You need three things before you start:
@@ -201,7 +227,7 @@ Your phone sees every chat: **Chats** lists them all, and the same conversation 
   - If it hasn't started 2 minutes later, or the chat was closed, the queue continues it instead.
   - **Don't continue** and **Continue here instead** are on the message. **Auto-continue** in **Settings** turns it off.
 - **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
-- **Remote Control**, Anthropic's own feature, lets you type into a live VS Code chat from the Claude app. In VS Code, run `/remote-control`, or turn on *Enable Remote Control for all sessions*. Afterhours works alongside it.
+- **Remote Control**, Anthropic's own feature, lets you type into a live chat from the Claude app: run `/remote-control` in it (or `claude remote-control` in a terminal), or in VS Code turn on *Enable Remote Control for all sessions*. Afterhours works alongside it ([how they differ](#isnt-this-what-the-claude-app-does)).
 
 ## Run tasks side by side
 
