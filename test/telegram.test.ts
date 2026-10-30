@@ -187,15 +187,16 @@ function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
     now: () => now,
     log: () => {},
     pause: async () => {},
+    later: run => later.push(run),
   })
   let updateId = 1
   const from = (id: number) => ({ id, is_bot: false, first_name: id === OWNER ? 'Skanda' : 'Mallory', username: id === OWNER ? 'skanda' : 'mallory' })
   const say = (text: string, user = OWNER) =>
     bridge.handle({ update_id: updateId++, message: { message_id: updateId, from: from(user), chat: { id: user, type: 'private' }, date: 0, text } } as TgUpdate)
   /** A photo or file from you, with an optional caption. */
-  const sendFile = (id: string, name: string, bytes: string | Uint8Array, caption?: string) => {
+  const sendFile = (id: string, name: string, bytes: string | Uint8Array, caption?: string, album?: string) => {
     api.files.set(id, { name, bytes: typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes })
-    return bridge.handle({ update_id: updateId++, message: { message_id: updateId, from: from(OWNER), chat: { id: OWNER, type: 'private' }, date: 0, document: { file_id: id, file_name: name }, ...(caption ? { caption } : {}) } } as TgUpdate)
+    return bridge.handle({ update_id: updateId++, message: { message_id: updateId, from: from(OWNER), chat: { id: OWNER, type: 'private' }, date: 0, document: { file_id: id, file_name: name }, ...(caption ? { caption } : {}), ...(album ? { media_group_id: album } : {}) } } as TgUpdate)
   }
   const tap = (data: string, messageId: number, user = OWNER) =>
     bridge.handle({
@@ -839,6 +840,40 @@ describe('every session from your phone', () => {
     expect(h.store.queued()).toHaveLength(2)
   })
 
+  test('inside a chat, a photo or screenshot goes into that chat; an album goes in as one message', async () => {
+    const h = await paired()
+    h.chatList.push(chat(h))
+    h.store.kvSet('telegram.focus', { sessionId: SID, title: 'Dark mode for settings' })
+    await h.sendFile('shot1', 'screenshot.png', 'png bytes', 'The button is misaligned here')
+    expect(h.api.last().html).toContain('Sent to “Dark mode for settings” as #')
+    const first = h.store.queued()[0]!
+    expect([first.prompt, first.sessionId, first.attachments?.length]).toEqual(['The button is misaligned here', SID, 1])
+    expect(readFileSync(first.attachments![0]!, 'utf8')).toBe('png bytes')
+    // No card was made for it.
+    expect(h.api.sent.some(m => m.html.includes('file for Claude to read'))).toBe(false)
+
+    // Two photos sent together: gathered, then one message with both.
+    await h.sendFile('a1', 'one.png', 'one', undefined, 'album-1')
+    await h.sendFile('a2', 'two.png', 'two', 'Both screens', 'album-1')
+    expect(h.store.queued()).toHaveLength(1)
+    h.later.forEach(run => run())
+    await Bun.sleep(0)
+    const album = h.store.queued()[1]!
+    expect([album.prompt, album.attachments?.length]).toEqual(['Both screens', 2])
+  })
+
+  test('a screenshot into the chat the queue is running is typed in, with where to read it', async () => {
+    const h = await paired()
+    const job = await running(h)
+    h.chatList.push(chat(h, { sessionId: job.sessionId!, running: true }))
+    h.store.kvSet('telegram.focus', { sessionId: job.sessionId, title: 'Dark mode for settings' })
+    await h.sendFile('s', 'screen.png', 'png', undefined)
+    const typed = h.tmux.windows.get(windowName(job.id))!.input.find(x => x.startsWith('text:'))!
+    expect(typed).toContain('Have a look at this.')
+    expect(typed).toContain('Attached from the phone (read it):')
+    expect(typed).toContain('screen.png')
+  })
+
   test('a chat open in VS Code: your message takes it over', async () => {
     const h = await paired()
     h.chatList.push(chat(h, { where: 'VS Code' }))
@@ -921,6 +956,42 @@ describe('every session from your phone', () => {
 
 describe('reading and answering on a phone', () => {
   const longDescription = 'The Linux build runs inside WSL2 unchanged, so Windows works from day one; a native engine can come later without changing anything people already set up.'
+
+  test('a typed answer to an earlier question brings the next one down to where you are, with its buttons', async () => {
+    const h = await paired()
+    const job = await running(h)
+    const reply = h.runner.onHook('PreToolUse', job.id, {
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          { question: 'Where should the remote code live?', header: 'Remote code', options: [{ label: 'A private repo' }, { label: 'Just delete it' }] },
+          { question: 'What should happen to the history?', header: 'History', options: [{ label: 'Rewrite it' }, { label: 'Keep the history' }] },
+        ],
+      },
+    })
+    await Bun.sleep(0)
+    const first = h.api.last().id
+    await h.tap(choice(h.api.view(first), 'A private repo'), first)
+    expect(h.api.view(first).html).toContain('2 of 2')
+    // Back to the first question, and a typed answer to it.
+    await press(h, first, 'Back')
+    await press(h, first, 'Type an answer')
+    await h.say('keep it in the repo, unmentioned')
+    // The second question is the newest message, with its buttons; the old one has none.
+    const sent = h.api.sent.filter(m => m.html.includes('What should happen to the history?'))
+    const below = sent.at(-1)!
+    expect(below.id).not.toBe(first)
+    expect(h.api.view(below.id).keyboard.flat().map(b => b.text)).toEqual(expect.arrayContaining(['1', '2']))
+    expect(h.api.view(first).keyboard).toEqual([])
+    expect(h.api.last().html).toContain('Question 2 of 2 is below')
+    await h.tap(choice(h.api.view(below.id), 'Keep the history'), below.id)
+    expect(await reply).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason:
+          'The user is away from the keyboard and answered from their phone: "Where should the remote code live?" → keep it in the repo, unmentioned; "What should happen to the history?" → Keep the history',
+      },
+    })
+  })
 
   test("Claude's questions come one at a time, in full; multi-select ticks; a typed answer goes to its own question", async () => {
     const h = await paired()
@@ -1622,42 +1693,6 @@ describe('everything the app has, in the bot', () => {
     expect(labels(h, id)).toContain('✓ At the reset')
     await press(h, id, 'Queue')
     expect(h.store.queued()[0]!.notBefore).toBe(h.now() + 2 * 3_600_000)
-  })
-
-  test('three ways: three branches to compare, then keep one', async () => {
-    const merged: string[] = []
-    const h = await paired({
-      git: {
-        mergeBranch: async (_d, branch) => (merged.push(`+${branch}`), { ok: true, text: `Merged ${branch}.` }),
-        discardBranch: async (_d, branch) => (merged.push(`-${branch}`), { ok: true, text: '' }),
-        pullRequest: async () => ({ ok: true, text: 'pr' }),
-      },
-    })
-    const id = await card(h, 'Redo the parser')
-    await press(h, id, 'More')
-    await press(h, id, '3 models')
-    await press(h, id, 'Queue')
-    const jobs = h.store.queued()
-    expect(jobs).toHaveLength(3)
-    expect(new Set(jobs.map(j => j.group)).size).toBe(1)
-    expect(jobs.every(j => j.isolate)).toBe(true)
-    expect(new Set(jobs.map(j => j.model)).size).toBe(3)
-    expect(h.api.view(id).html).toContain('Each on its own branch')
-    // Finish them one by one: one message to compare, after the last.
-    const finish = async (j: (typeof jobs)[number]) => {
-      h.store.updateJob(j.id, { status: 'done', branch: `afterhours/${j.id}-x`, summary: `did it ${j.model}`, finishedAt: h.now() })
-      await h.bridge.notify({ type: 'done', job: h.store.getJob(j.id)!, diff: null, next: null })
-    }
-    await finish(jobs[0]!)
-    await finish(jobs[1]!)
-    expect(h.api.sent.some(m => m.html.includes('The three ways are done'))).toBe(false)
-    await finish(jobs[2]!)
-    const compare = h.api.sent.find(m => m.html.includes('The three ways are done'))!
-    expect(compare.html).toContain('did it')
-    await press(h, compare.id, `Keep #${jobs[1]!.id}`)
-    expect(merged).toEqual([])
-    await press(h, compare.id, `Yes, keep #${jobs[1]!.id}`)
-    expect(merged).toEqual([`-afterhours/${jobs[0]!.id}-x`, `+afterhours/${jobs[1]!.id}-x`, `-afterhours/${jobs[2]!.id}-x`])
   })
 
   test('a photo or file goes on the card as an attachment, and its caption is the prompt', async () => {

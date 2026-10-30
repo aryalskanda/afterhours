@@ -75,8 +75,6 @@ export interface Draft extends Choices {
   front: boolean
   /** Stop it after this many minutes of work. */
   maxMinutes: number | null
-  /** Three ways: three tasks, each on its own branch: one per model, or the chosen model three times. */
-  threeWays: 'models' | 'same' | null
   /** Files saved on the machine for Claude to read. */
   attachments: string[]
   /** Change: the card edits this queued task instead of queueing a new one. */
@@ -117,7 +115,6 @@ const COLUMNS: Record<keyof Draft, string> = {
   afterJob: 'after_job',
   front: 'front',
   maxMinutes: 'max_minutes',
-  threeWays: 'three_ways',
   attachments: 'attachments',
   editJob: 'edit_job',
   browse: 'browse',
@@ -156,7 +153,7 @@ export class TelegramState {
     if (!have.has('work_model')) db.exec('ALTER TABLE tg_drafts ADD COLUMN work_model TEXT')
     for (const column of ['not_before', 'edit_job', 'repeat_daily', 'after_job', 'max_minutes']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER`)
     for (const column of ['at_reset', 'front']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`)
-    for (const column of ['work_effort', 'three_ways', 'attachments', 'view']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} TEXT`)
+    for (const column of ['work_effort', 'attachments', 'view']) if (!have.has(column)) db.exec(`ALTER TABLE tg_drafts ADD COLUMN ${column} TEXT`)
   }
 
   addDraft(

@@ -22,6 +22,8 @@ export interface TgMessage {
   caption?: string
   photo?: { file_id: string; file_size?: number; width: number; height: number }[]
   document?: { file_id: string; file_name?: string; file_size?: number }
+  /** Photos sent together (an album) arrive as one message each, sharing this. */
+  media_group_id?: string
   /** A message's buttons, as Telegram gives them with a tap on one. */
   reply_markup?: { inline_keyboard?: InlineKeyboard }
 }

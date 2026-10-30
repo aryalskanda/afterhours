@@ -10,7 +10,7 @@ import { settleBranch, type BranchGit } from '../daemon/branches'
 import type { PowerControl } from '../daemon/power'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
-import { MAX_UPLOAD_BYTES, saveUpload } from '../daemon/uploads'
+import { MAX_UPLOAD_BYTES, saveUpload, withAttachments } from '../daemon/uploads'
 import type { Store } from '../daemon/store'
 import { refusedFormatting, type BotApi, type InlineKeyboard, type Markup, type ReplyKeyboard, type TgCallbackQuery, type TgMessage, type TgUpdate } from './api'
 import { htmlToText, telegramHtmlProblem } from './markdown'
@@ -39,6 +39,8 @@ export interface TelegramOptions {
   log: (line: string) => void
   /** Waits a moment (a key pressed, before the screen is shown again); tests don't wait. */
   pause?: (ms: number) => Promise<void>
+  /** Runs something a moment later (tests run it at once). */
+  later?: (run: () => void, ms: number) => void
 }
 
 /** Something the bot asked you to type next. */
@@ -113,6 +115,8 @@ const WORDS: Record<string, string> = {
 const PENDING_TTL = 30 * 60_000
 /** Without a message's buttons at hand, the second tap of something that asks twice comes within this. */
 const CONFIRM_MS = 15_000
+/** How long the photos of one album are gathered before they go into a chat together. */
+const ALBUM_MS = 1500
 /** /mac and /sleep where there's nothing to sleep. */
 const NO_POWER = 'There is nothing here to keep awake or sleep (a container).'
 const MAX_PAIR_ATTEMPTS = 5
@@ -434,21 +438,11 @@ export class TelegramBridge {
     }
     const msg = await this.deliver(chat, ui.noticeView(notice, ctx))
     if (!msg) return
-    if ((notice.type === 'done' || notice.type === 'failed') && notice.job.group) await this.compareIfDone(chat, notice.job.group)
     if (notice.type === 'started') this.cards.set(notice.job.id, { messageId: msg.message_id, card: {} })
     if (notice.type === 'permission' || notice.type === 'question' || notice.type === 'plan_review' || notice.type === 'trust') {
       this.requests.set(notice.code, msg.message_id)
       if (notice.type === 'question') this.questions.set(notice.code, { ...ui.newQuestionState(), messageId: msg.message_id })
     }
-  }
-
-  /** Three ways: once all three have finished, one message to compare them and keep one. */
-  private async compareIfDone(chat: number, group: string): Promise<void> {
-    const jobs = this.o.store.inGroup(group)
-    if (jobs.length < 2 || jobs.some(j => j.status === 'queued' || j.status === 'running' || j.status === 'held')) return
-    if (this.o.store.kvGet(`telegram.compared.${group}`)) return
-    this.o.store.kvSet(`telegram.compared.${group}`, true)
-    await this.deliver(chat, ui.compareView(jobs, this.noticeContext()))
   }
 
   /**
@@ -683,6 +677,9 @@ export class TelegramBridge {
     const saved = saveUpload(dir, name === 'photo.jpg' ? got.name : name, Buffer.from(got.bytes).toString('base64'), this.o.now())
     if ('error' in saved) return void (await this.sendText(chat, saved.error))
     const caption = (m.caption ?? '').trim()
+    // Inside a chat, a photo or file goes into that conversation, like what you type.
+    const focus = this.focus()
+    if (focus) return this.fileToChat(chat, focus, saved.path, caption, m.media_group_id)
     let d = this.state.latestOpenDraft(this.o.now() - 24 * 3600_000)
     if (!d) {
       d = this.state.addDraft({ ...this.choices(), prompt: caption }, this.o.now())
@@ -693,6 +690,25 @@ export class TelegramBridge {
     d = this.state.updateDraft(d.id, { attachments: [...d.attachments, saved.path] })
     await this.showDraft(chat, d)
     if (!d.prompt && d.folder) this.setPending({ kind: 'prompt', draftId: d.id })
+  }
+
+  /** Photos of one album, gathered for a moment so they go into the chat together. */
+  private albums = new Map<string, { files: string[]; caption: string }>()
+
+  private async fileToChat(chat: number, f: Focus, path: string, caption: string, album: string | undefined): Promise<void> {
+    if (!album) return this.sendToChat(chat, f, caption, [path])
+    const gathering = this.albums.get(album)
+    if (gathering) {
+      gathering.files.push(path)
+      if (caption && !gathering.caption) gathering.caption = caption
+      return
+    }
+    this.albums.set(album, { files: [path], caption })
+    ;(this.o.later ?? setTimeout)(() => {
+      const a = this.albums.get(album)
+      this.albums.delete(album)
+      if (a) void this.sendToChat(chat, f, a.caption, a.files).catch(err => this.o.log(`telegram: sending an album to a chat failed: ${errorText(err)}`))
+    }, ALBUM_MS)
   }
 
   private async tryPair(m: TgMessage, text: string): Promise<void> {
@@ -817,7 +833,8 @@ export class TelegramBridge {
         const job = approval ? this.o.store.getJob(approval.jobId) : null
         // One question of a set: that question gets your text, then the next one shows.
         if (p.step !== undefined && state && job && approval?.status === 'pending' && state.step === p.step) {
-          await this.sendText(chat, await this.answerStep(chat, p.code, job, questionsOf(approval), state, { text }))
+          // Typed: the question's message is far up by now, so the next one comes down here.
+          await this.sendText(chat, await this.answerStep(chat, p.code, job, questionsOf(approval), state, { text }, { below: true }))
           return
         }
         const reply = this.o.runner.answer(p.code, 'answer', text)
@@ -1066,9 +1083,6 @@ export class TelegramBridge {
         return void (await show({ view: 'more' }))
       case 'tl':
         return void (await show({ maxMinutes: Number(a) > 0 ? Number(a) : null, view: 'more' }))
-      case '3':
-        if (d.editJob || d.sessionId) return 'Three ways is for a new conversation.'
-        return void (await show({ threeWays: a === 'm' ? 'models' : a === 's' ? 'same' : null, view: 'more' }))
       case 'at':
         await show({ attachments: [], view: 'more' })
         return 'Files removed.'
@@ -1129,15 +1143,7 @@ export class TelegramBridge {
       attachments: d.attachments.length > 0 ? d.attachments : null,
       source: 'telegram',
     }
-    // Three ways: three tasks, each on its own branch, to compare.
-    const ways = d.threeWays && !d.sessionId ? this.waysOf(d) : null
-    const jobs = ways
-      ? (() => {
-          const group = `try-${now.toString(36)}`
-          return ways.map(model => this.o.runner.enqueue({ ...base, model, workModel: null, workEffort: null, isolate: true, group, sessionPolicy: 'new' }))
-        })()
-      : [this.o.runner.enqueue(base)]
-    const job = jobs[0]!
+    const job = this.o.runner.enqueue(base)
     this.state.updateDraft(d.id, { status: 'queued', jobId: job.id })
     if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
     const last: Choices = {
@@ -1153,18 +1159,8 @@ export class TelegramBridge {
     }
     this.o.store.kvSet('telegram.last', last)
     this.o.store.kvSet('lastProject', d.folder)
-    if (jobs.length > 1) {
-      await this.edit(chat, messageId, ui.queuedWaysView(jobs, this.uiContext()))
-      return `Queued ${jobs.map(j => `#${j.id}`).join(', ')}.`
-    }
     await this.edit(chat, messageId, ui.queuedView(job, this.whenText(job), this.uiContext()))
     return `Queued #${job.id}.`
-  }
-
-  /** The three models of "three ways": one on each of the first three, or the chosen one three times. */
-  private waysOf(d: Draft): string[] {
-    const models = this.o.config().models
-    return d.threeWays === 'models' && models.length >= 3 ? models.slice(0, 3) : [d.model, d.model, d.model]
   }
 
   /** Save on a card changing a waiting task: the task takes what the card shows. */
@@ -1515,6 +1511,7 @@ export class TelegramBridge {
     questions: Question[],
     state: ui.QuestionState & { messageId: number },
     answer: QuestionAnswer,
+    o: { below?: boolean } = {},
   ): Promise<string> {
     state.answers[state.step] = answer
     state.step++
@@ -1522,6 +1519,15 @@ export class TelegramBridge {
       const next = state.answers[state.step]
       state.ticked = next && 'picks' in next ? [...next.picks] : []
       const approval = this.o.store.getApproval(code)
+      if (approval && o.below) {
+        // The next question, with its buttons, where you are; the old message loses its buttons.
+        const before = state.messageId
+        const msg = await this.send(chat, ui.questionView(job, code, questions, state, this.minutesLeft(approval)))
+        state.messageId = msg.message_id
+        this.requests.set(code, msg.message_id)
+        if (before) await this.settleMessage(chat, before, '↓ Continues below.').catch(() => {})
+        return `Got it. Question ${state.step + 1} of ${questions.length} is below.`
+      }
       if (approval) await this.showQuestion(chat, job, approval, state)
       return `Got it. Question ${state.step + 1} of ${questions.length}.`
     }
@@ -1761,7 +1767,7 @@ export class TelegramBridge {
   }
 
   /** What you type inside a chat: typed into it if the queue is running it, else a task that continues it. */
-  private async sendToChat(chat: number, f: Focus, text: string): Promise<void> {
+  private async sendToChat(chat: number, f: Focus, text: string, files: string[] = []): Promise<void> {
     const c = this.o.chats.get(f.sessionId)
     if (!c?.cwd || !existsSync(c.cwd)) {
       this.setFocus(null)
@@ -1769,15 +1775,18 @@ export class TelegramBridge {
       return
     }
     const name = `“${ui.clip(c.title, 60)}”`
-    const typed = await this.o.runner.typeIfFree(c.sessionId, text)
+    // Files: Claude is told where they are and to read them (the uploads folder is readable to it).
+    if (!text) text = files.length === 1 ? 'Have a look at this.' : 'Have a look at these.'
+    const typed = await this.o.runner.typeIfFree(c.sessionId, files.length ? withAttachments(text, files) : text)
     if (typed !== null) {
       await this.sendText(chat, `Typed into ${name} (#${typed}). Claude reads it when its current step ends.`)
       return
     }
     const choices = this.choices()
-    const job = this.o.runner.enqueue(
-      continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text }),
-    )
+    const job = this.o.runner.enqueue({
+      ...continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text }),
+      ...(files.length ? { attachments: files } : {}),
+    })
     const take = c.where && !c.running ? ` It's open in ${c.where}: it closes there first.` : ''
     await this.sendText(chat, `Sent to ${name} as #${job.id}. ${this.whenText(job)}${take}`)
   }
@@ -1863,31 +1872,6 @@ export class TelegramBridge {
         const removed = this.o.runner.clear()
         await this.showQueue(chat, at && this.queueMessages.has(at) ? at : undefined, null)
         return removed.length === 0 ? 'The queue is already empty.' : `Took ${removed.length} off the queue.`
-      }
-      case 'ways': {
-        const jobs = this.o.store.inGroup(parts[1] ?? '').filter(j => j.status === 'queued')
-        for (const j of jobs) await this.o.runner.remove(j.id)
-        if (at) await this.settle(chat, message, `Removed ${jobs.length} from the queue.`)
-        return `Removed ${jobs.length}.`
-      }
-      case 'keep': {
-        const keep = Number(parts[1])
-        const group = keep > 0 ? this.o.store.getJob(keep)?.group : parts[2]
-        const jobs = group ? this.o.store.inGroup(group) : []
-        if (jobs.length === 0) return 'Those tasks are gone.'
-        const git = this.o.git
-        if (!git) return `Not here: settle the branches on the ${this.word}.`
-        if (!(await this.secondTap(chat, message, keep > 0 ? `Yes, keep #${keep}` : 'Yes, keep none'))) {
-          return keep > 0 ? `Tap again to merge #${keep} and throw the other branches away.` : 'Tap again to throw all three branches away.'
-        }
-        const out: string[] = []
-        for (const j of jobs) {
-          if (!j.branch || j.branchNote) continue
-          const r = await settleBranch(this.o.store, git, j.id, j.id === keep ? 'merge' : 'discard')
-          out.push(`#${j.id}: ${r.text}`)
-        }
-        await this.settle(chat, message, out.join(' · ') || 'Nothing to settle.')
-        return keep > 0 ? `Kept #${keep}.` : 'Thrown away.'
       }
       case 'tasks':
         await this.showTasks(chat, undefined, undefined, Number(parts[1]) || undefined)
