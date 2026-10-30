@@ -1,23 +1,37 @@
-# Runs scripts/compat.ts against the newest Claude Code: nightly, on demand, and before every
-# release. Needs an ANTHROPIC_API_KEY repository secret (a Console API key; each run costs a
-# few cents). Claude Code signs in with it through apiKeyHelper, so the key never passes
-# through Afterhours.
+# Runs scripts/compat.ts against the newest Claude Code, nightly and on demand, when the
+# repository has an ANTHROPIC_API_KEY secret (a Console API key; each run costs a few cents).
+# Without one, the run is skipped rather than failed. Claude Code signs in with the key through
+# apiKeyHelper, so it never passes through Afterhours.
 name: Claude Code compatibility
 
 on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
-  workflow_call:
-    secrets:
-      ANTHROPIC_API_KEY:
-        required: true
 
 permissions:
   contents: read
 
 jobs:
+  # Secrets can't be read in a job's `if`, so this looks for the key and tells the next job.
+  key:
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - id: check
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No ANTHROPIC_API_KEY secret, so the compatibility check is skipped. Run bun run compat locally before a release."
+          fi
+
   compat:
+    needs: key
+    if: needs.key.outputs.present == 'true'
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -35,7 +49,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          test -n "$ANTHROPIC_API_KEY" || { echo "Add an ANTHROPIC_API_KEY repository secret."; exit 1; }
           mkdir -p ~/.claude
           (umask 077 && printf '%s' "$ANTHROPIC_API_KEY" > ~/.claude/compat-key)
           echo '{"apiKeyHelper": "cat \"$HOME/.claude/compat-key\""}' > ~/.claude/settings.json

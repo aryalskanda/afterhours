@@ -59,13 +59,6 @@ Open **Terminal** (press ⌘Space, type "Terminal", press Enter) and paste:
 curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh
 ```
 
-Or, if you use [Homebrew](https://brew.sh):
-
-```sh
-brew install aryalskanda/tap/afterhours
-cq setup
-```
-
 ### Windows 10 or 11
 
 Afterhours runs inside **WSL**, Linux built into Windows, which the installer turns on for you. Right-click the Start button, choose **Terminal (Admin)** or **Windows PowerShell (Admin)**, and paste:
@@ -82,7 +75,7 @@ Windows may ask you to restart once (Ubuntu opens afterwards and asks you to pic
 curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/install.sh | sh
 ```
 
-Or with Homebrew on Linux: `brew install aryalskanda/tap/afterhours`. Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like (x64 or arm64). For a server with no browser, see [docs/linux.md](docs/linux.md).
+Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like (x64 or arm64). For a server with no browser, see [docs/linux.md](docs/linux.md).
 
 ### What the installer does
 
@@ -114,7 +107,7 @@ bun src/cli/cq.ts setup
 
 ### Updating and uninstalling
 
-- **Update:** `cq update` (Homebrew installs: `brew upgrade afterhours`). The background service restarts into the new version by itself.
+- **Update:** `cq update`. The background service restarts into the new version by itself.
 - **Uninstall:** `cq uninstall` stops it and removes it from login items. Your queue and settings stay in `~/.afterhours`; delete that folder to remove them too.
 
 ## Using it from Telegram
@@ -290,7 +283,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq awake` · `cq awake on\|off` · `cq awake lid on\|off` | Whether the computer stays awake while tasks run · turn that on or off · with the lid closed too |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq install` · `cq daemon` | Install the background service again · run Afterhours in this terminal instead |
-| `cq update` · `cq --version` | Update to the latest release (Homebrew installs: `brew upgrade afterhours`) · the version you have |
+| `cq update` · `cq --version` | Update to the latest release · the version you have |
 | `cq report` | Write a support file to your Desktop. It holds no prompts, code or tokens; read it before you send it. |
 | `cq uninstall` | Stop it and remove it from login items (keeps `~/.afterhours`) |
 
@@ -377,7 +370,7 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
 
 - **The real Claude Code.** Each task runs the unmodified `claude` command in a private tmux session (`tmux -L afterhours`). It starts with `--model`, `--effort` and `--permission-mode`, and follow-ups use `--resume`. Claude Code signs in as it always does on your computer; Afterhours never sees your credentials.
 - **Hooks for everything else.** Afterhours passes per-session settings with `--settings`, so your own `~/.claude/settings.json` is never touched. These settings add hooks that report to Afterhours on `127.0.0.1`: the end of a turn, usage-limit stops, permission requests and Claude's questions. They also add a status line that carries your limit windows.
-- **Two dialogs answered with keystrokes.** Claude Code doesn't let hooks approve a plan or trust a folder, so Afterhours reads those dialogs and presses the option for the task. It accepts the folder-trust dialog only for folders you've approved: the first time a task runs in a new folder, your phone asks you. A nightly [compatibility check](scripts/compat.ts) runs all of this against the newest Claude Code release.
+- **Two dialogs answered with keystrokes.** Claude Code doesn't let hooks approve a plan or trust a folder, so Afterhours reads those dialogs and presses the option for the task. It accepts the folder-trust dialog only for folders you've approved: the first time a task runs in a new folder, your phone asks you. A [compatibility check](scripts/compat.ts) runs all of this against the newest Claude Code release before each Afterhours release.
 - **Your other chats.** To list chats and spot usage-limit stops, Afterhours reads Claude Code's own records: running sessions in `~/.claude/sessions` and transcripts in `~/.claude/projects`. To continue an open chat after a limit, it posts one message into that session's inbox, Claude Code's own messaging between sessions on this computer. Taking a chat over sends that window's Claude process a normal quit signal (SIGTERM), then resumes the conversation with `--resume`.
 - **Your phone.** Afterhours polls the Telegram Bot API from your computer. Only the Telegram account you paired can use the bot.
 
@@ -415,14 +408,14 @@ bun src/cli/cq.ts daemon    # run in the foreground (Ctrl-C to stop; tasks keep 
 
 For an isolated instance, set `CQ_HOME=/tmp/ah-dev CQ_TMUX_SOCKET=ah-dev` and set a different `port` in that home's `config.json`.
 
-Releases: bump `version` in `package.json`, then push a matching tag (`git tag v0.6.0 && git push origin v0.6.0`). The release workflow:
+Releases: bump `version` in `package.json`, run `bun run compat`, then push a matching tag (`git tag v0.6.0 && git push origin v0.6.0`). The release workflow:
 
-1. runs the tests and the compatibility check;
+1. runs the type check and the tests;
 2. builds the macOS (Apple Silicon, Intel) and Linux (arm64, x64) binaries, with checksums and build attestations;
 3. publishes them with `install.sh`, `install.ps1` and a filled-in Homebrew formula (macOS and Linux);
 4. updates the tap when a `HOMEBREW_TAP_TOKEN` secret is set (write access to `<owner>/homebrew-tap`).
 
-The compatibility check needs an `ANTHROPIC_API_KEY` secret.
+The release doesn't run the compatibility check, because the check needs a Claude sign-in. It also runs every night in CI when the repository has an `ANTHROPIC_API_KEY` secret. Without one, that run is skipped.
 
 Where things are:
 

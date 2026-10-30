@@ -31,7 +31,7 @@ Post these when the landing page and the demo video are live. Read each communit
 > How it works:
 > - The unmodified `claude` CLI runs in a private tmux session.
 > - Per-session `--settings` add hooks that report to a local daemon.
-> - Two dialogs that hooks can't answer (plan approval, folder trust) are read and answered with keystrokes. A nightly compatibility check runs that against new Claude Code releases.
+> - Two dialogs that hooks can't answer (plan approval, folder trust) are read and answered with keystrokes. A compatibility check runs that against each new Claude Code release before Afterhours ships.
 > - Each new conversation can run on its own git branch, in a worktree.
 >
 > The engine is open source (TypeScript, Bun). I'm testing whether people would pay for a hosted version: an end-to-end encrypted relay and a phone app instead of a Telegram bot.
