@@ -186,6 +186,12 @@ export const FolderRoots = z.object({
   home: z.string(),
   /** With `browse`: that folder's subfolders. */
   browse: z.array(FolderHit).optional(),
+  /**
+   * With `browse`: the folder looked at, how to show it, the folder above (null at the very top; on
+   * Windows `:pc` is "This PC", the level that lists the drives), and whether it can be chosen
+   * (a whole disk can't). Missing from machines that only browse inside the home folder.
+   */
+  browseInfo: z.object({ path: z.string(), label: z.string(), parent: z.string().nullable(), canChoose: z.boolean() }).optional(),
 })
 export type FolderRoots = z.infer<typeof FolderRoots>
 
@@ -464,8 +470,11 @@ export const Request = z.discriminatedUnion('type', [
     typing: z.boolean().optional(),
     mac: z.boolean().optional(),
   }),
-  /** Owners: add or remove a project folder (inside the home folder). */
-  withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove']), path: z.string().min(1).max(4096) }),
+  /**
+   * Owners: add or remove a project folder, or `set` it (this folder replaces the others). Anywhere
+   * on the machine but the top of a disk (feature `folders.set`; older machines: inside the home folder).
+   */
+  withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove', 'set']), path: z.string().min(1).max(4096) }),
   withId({ type: z.literal('devices') }),
   withId({ type: z.literal('devices.remove'), device: PeerId }),
   withId({ type: z.literal('devices.rename'), device: PeerId, name: z.string().min(1).max(80) }),

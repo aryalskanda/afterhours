@@ -111,13 +111,13 @@ Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like
 4. Starts it in the background, so it runs whenever you're signed in (a LaunchAgent on a Mac, a systemd service on Linux, a startup app on Windows).
 5. Runs **`cq setup`**, which walks you through:
    - signing Claude Code in, if you haven't;
-   - choosing your code folders;
-   - choosing the defaults for new tasks;
+   - **the folder that holds your projects**: you browse for it like in a file picker, starting in your home folder. Type a number to open a folder, `u` to go up (as far as the top of the disk; on Windows, to your drives), Enter to choose the folder you're in. Setup also offers shortcuts to places it found (where you've used Claude Code, folders full of git projects). You can change it later, or add another, from Telegram (**Settings → Project folders**) or the Afterhours app;
+   - new tasks start with the recommended settings (Claude plans first, Sonnet, high effort, on its own git branch), which you change on any task from your phone. `cq setup --custom` asks about them instead;
    - **Full Disk Access** (Mac only): it opens the right System Settings pane and tells you what to add. The Claude sessions Afterhours starts need it to work in folders like `~/Documents` while nobody is there to click "Allow". The permission goes to a tiny launcher that never changes, so updates keep it;
    - whether this is a laptop you want to keep working with its lid closed;
-   - **your Telegram bot**: in Telegram, open **@BotFather**, send `/newbot`, pick a name and a username ending in "bot", paste the token it gives you, then send the bot the `/start <code>` message `cq setup` shows you.
+   - **your Telegram bot**: setup opens **BotFather** (Telegram's official bot for making bots) for you. Send it `/newbot`, pick a name and a username ending in "bot", and tap the token it sends back to copy it. Press Enter in the terminal and setup picks the token up from your clipboard (pasting works too). Then send your bot the `/start <code>` message setup shows you.
 
-Check everything at any time with **`cq doctor`**. Run `cq setup` again whenever you like; it is safe to repeat.
+Setup shows "Step 2 of 6" as it goes, so you can see the end. After it, you don't need commands: **everything else happens in Telegram** (the folders, the settings, sleeping the computer). If you do want the terminal, just type **`cq`** on its own for a short numbered menu (check everything, choose folders, connect Telegram again, update, restart). `cq doctor` checks that everything works. Run `cq setup` again whenever you like; it is safe to repeat.
 
 ### From source
 
@@ -305,7 +305,8 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq setup` | Guided setup (safe to run again) |
 | `cq doctor` | Check Claude Code, tmux (Git Bash and the terminal host on Windows), the background service, Full Disk Access (Mac) and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
-| `cq folders` · `cq folders add\|remove <path>` | The project folders the bot searches · add or remove one |
+| `cq` (on its own) | A short numbered menu of what people do after setup |
+| `cq folders` · `cq folders add\|remove <path>` | The project folders the bot searches · add or remove one (the bot does it too: **Settings → Project folders**) |
 | `cq awake` · `cq awake on\|off` · `cq awake lid on\|off` | Whether the computer stays awake while tasks run · turn that on or off · with the lid closed too |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq install` · `cq daemon` | Install the background service again · run Afterhours in this terminal instead |
