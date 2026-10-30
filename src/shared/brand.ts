@@ -9,8 +9,8 @@ export const BRAND = {
   homeDir: '.afterhours',
   /** LaunchAgent label. */
   agentLabel: 'dev.afterhours.agent',
-  /** GitHub "owner/repo" that publishes releases, once it exists. */
-  repo: null as string | null,
+  /** GitHub "owner/repo" that publishes releases. */
+  repo: 'aryalskanda/afterhours',
   /** Homebrew formula name. */
   formula: 'afterhours',
 }
