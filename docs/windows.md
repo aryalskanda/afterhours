@@ -25,10 +25,10 @@ It asks before it installs anything. Step by step:
 3. **Afterhours itself**: it downloads `cq.exe`, checks it against the release's checksums, puts it in `%USERPROFILE%\.afterhours\bin` and adds that folder to your Path.
 4. **`cq setup`**, which walks you through the rest:
    - signing Claude Code in, if you haven't;
-   - choosing your code folders. Type a path such as `D:\Projects`, or `"D:\My Projects"` when it has spaces. Several are fine, separated by commas.
-   - the defaults for new tasks;
+   - **your project folders**: it finds them for you (your other drives too) and asks you to press Enter. You can still type a path such as `D:\Projects`, or `"D:\My Projects"` when it has spaces;
+   - new tasks start with the recommended settings (change them on any task from your phone);
    - **starting in the background**: Afterhours is added to your startup apps, so it runs whenever you sign in to Windows, with no window;
-   - **your Telegram bot**: in Telegram, open **@BotFather**, send `/newbot`, pick a name and a username ending in "bot", paste the token it gives you, then send your bot the `/start <code>` message that `cq setup` shows.
+   - **your Telegram bot**: setup opens BotFather in Telegram. Send it `/newbot`, pick a name and a username ending in "bot", tap the token it sends to copy it, and press Enter in the terminal (setup reads it from your clipboard). Then send your bot the `/start <code>` message that `cq setup` shows.
 
 When it's done, open a **new** terminal window (so it picks up the new Path) and run `cq doctor`. Every line should have a ✔ or a •.
 
@@ -77,7 +77,7 @@ Use **PowerShell** or **Windows Terminal**:
 | `cq restart` | Restarts the background service; running tasks keep going |
 | `cq st`, `cq ls`, `cq q …` | The queue from the terminal, as in the [README](../README.md#text-commands) |
 
-- **Folders.** Windows paths work everywhere: `cq folders add "D:\My Projects"`, or `q D:\Code\shop plan: …` in the bot or the terminal.
+- **Folders.** Setup finds your projects (your other drives too) and asks you to press Enter. To change them, use the bot's **Settings → Project folders**, or type a Windows path anywhere: `cq folders add "D:\My Projects"`, or `q D:\Code\shop plan: …` in the bot or the terminal.
 - **Staying awake.** While tasks run, Afterhours asks Windows not to sleep. When the work is done, the PC sleeps as usual.
 - **Lid closed (laptops).** Windows decides this, not Afterhours. In Control Panel → Power Options → "Choose what closing the lid does", pick **Do nothing** for plugged in (and on battery, if you like).
 - **Sleeping from your phone.** **Sleep now** in the bot (or `/sleep`) puts the PC to sleep. It can't wake it again: open the lid or press a key.

@@ -1,11 +1,13 @@
 import { randomInt } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { codeRoots, type Config } from '../shared/config'
 import { within as inside } from '../shared/paths'
 import type { Approval, Effort, Job, JobSpec } from '../shared/types'
 import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
+import { folderLabel, folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
+import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
 import { settleBranch, type BranchGit } from '../daemon/branches'
 import type { PowerControl } from '../daemon/power'
@@ -52,6 +54,8 @@ type Pending =
   | { kind: 'search'; draftId: number }
   /** Tasks: words to find among the finished ones. */
   | { kind: 'tasksearch' }
+  /** Project folders → Add: a folder you type. */
+  | { kind: 'rootpath' }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
@@ -646,6 +650,11 @@ export class TelegramBridge {
 
     const key = this.keyOf(text)
     if (key) return this.onKey(chat, key)
+    // A folder typed for Project folders can start with / (a Mac or Linux path): only a real command isn't taken for it.
+    if (this.pending?.kind === 'rootpath' && text.startsWith('/') && !COMMANDS.some(c => c.command === text.slice(1).split(/[\s@]/)[0]!.toLowerCase())) {
+      const pending = this.takePending()
+      if (pending) return this.onPendingText(chat, pending, text)
+    }
     if (text.startsWith('/')) return this.onCommand(chat, text)
 
     const pending = this.takePending()
@@ -734,6 +743,8 @@ export class TelegramBridge {
     this.o.store.kvSet('telegram.look', LOOK)
     this.o.log(`telegram: paired with ${config.telegram.ownerName} (${from.id})`)
     await this.send(m.chat.id, { html: `<b>Paired.</b> Only you can use this bot now.\n\n${ui.helpHtml(this.word)}` }, this.keys())
+    // Where Claude will work, with the way to change it: a wrong guess in setup costs nothing.
+    await this.send(m.chat.id, ui.foldersWelcomeView(this.roots().map(path => ({ label: this.folderName(path) })))).catch(() => {})
   }
 
   private async showHelp(chat: number): Promise<void> {
@@ -821,6 +832,13 @@ export class TelegramBridge {
       }
       case 'tasksearch':
         return this.showTasks(chat, undefined, text)
+      case 'rootpath': {
+        const path = folderPath(text)
+        const r = this.addRoot(path)
+        if (!r.ok) this.setPending(p) // try again
+        await this.send(chat, this.projectFoldersView(r.text))
+        return
+      }
       case 'search': {
         const d = this.state.getDraft(p.draftId)
         if (!d || d.status !== 'open') return this.newDraft(chat, text)
@@ -1281,6 +1299,43 @@ export class TelegramBridge {
     const t = this.o.config().timeouts
     const seconds = a.kind === 'question' ? t.questionSec : a.kind === 'review' ? t.reviewSec : t.approvalSec
     return Math.max(1, Math.round((a.createdAt + seconds * 1000 - this.o.now()) / 60_000))
+  }
+
+  /** Folders suggested the last time Add a folder was shown (so a tap on a number means that folder). */
+  private folderSuggestions: FolderSuggestion[] = []
+
+  private folderName(path: string): string {
+    return folderLabel(path, { wsl: isWsl() })
+  }
+
+  private projectFoldersView(note?: string): ui.View {
+    return ui.projectFoldersView(this.roots().map(path => ({ path, label: this.folderName(path) })), note)
+  }
+
+  /** Adds a project folder (a folder inside one already used is covered by it). */
+  private addRoot(path: string): { ok: boolean; text: string } {
+    if (!existsSync(path) || !statSync(path).isDirectory()) return { ok: false, text: `${this.folderName(path)} isn't a folder. Send another, or tap Back.` }
+    const roots = this.roots()
+    const covering = roots.find(r => inside(r, path))
+    if (covering) return { ok: true, text: `${this.folderName(path)} is already covered by ${this.folderName(covering)}.` }
+    const config = this.o.config()
+    config.folders.roots = [...roots.filter(r => !inside(path, r) && !inside(r, path)), path]
+    this.o.saveConfig(config)
+    // The folder map follows the new roots; reading a big folder can take a while.
+    void this.o.folders.rebuild().catch(err => this.o.log(`telegram: rebuilding the folder map failed: ${errorText(err)}`))
+    return { ok: true, text: `Added ${this.folderName(path)}.` }
+  }
+
+  /** Stops using the n-th project folder (never the last one). */
+  private removeRoot(n: number): string {
+    const roots = this.roots()
+    const gone = roots[n]
+    if (gone === undefined) return 'That folder is already gone from the list.'
+    if (roots.length === 1) return 'Keep at least one folder. Add another first.'
+    const config = this.o.config()
+    config.folders.roots = roots.filter((_, i) => i !== n)
+    this.o.saveConfig(config)
+    return `Stopped using ${this.folderName(gone)}.`
   }
 
   private settingsView(): ui.View {
@@ -1887,6 +1942,40 @@ export class TelegramBridge {
         this.o.saveConfig({ ...this.o.config(), parallel: n })
         if (at) await this.edit(chat, at, this.settingsView())
         return n === 1 ? 'One task at a time.' : `Up to ${n} tasks at once.`
+      }
+      case 'set':
+        if (at) await this.edit(chat, at, this.settingsView())
+        return
+      case 'pf': {
+        const sub = parts[1]
+        if (sub === 'ok') {
+          await this.settle(chat, message, 'Good. You can change this any time in Settings → Project folders.')
+          return 'Saved.'
+        }
+        if (sub === 'a') {
+          this.folderSuggestions = suggestProjectFolders({ have: this.roots(), wsl: isWsl() })
+          const view = ui.addFolderView(this.folderSuggestions.map(f => ({ ...f, label: this.folderName(f.path) })))
+          if (at) await this.edit(chat, at, view)
+          else await this.send(chat, view)
+          return
+        }
+        if (sub === 't') {
+          this.setPending({ kind: 'rootpath' })
+          await this.ask(chat, 'Send the folder, like D:\\Projects or ~/code.', 'A folder')
+          return 'Waiting for the folder.'
+        }
+        let note: string | undefined
+        if (sub === 's') {
+          const found = this.folderSuggestions[Number(parts[2])]
+          if (!found) return 'Those suggestions are out of date. Tap Add a folder again.'
+          note = this.addRoot(found.path).text
+        } else if (sub === 'r') {
+          note = this.removeRoot(Number(parts[2]))
+        }
+        const view = this.projectFoldersView(note)
+        if (at) await this.edit(chat, at, view)
+        else await this.send(chat, view)
+        return note
       }
       case 'rescan':
         await this.o.folders.rebuild()

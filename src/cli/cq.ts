@@ -5,18 +5,18 @@ import { HELP } from '../daemon/commands'
 import { runDaemon, VERSION } from '../daemon/main'
 import { findHost, runTermHost } from '../daemon/winterm'
 import { BRAND } from '../shared/brand'
-import { CQ_HOME, findExecutable, loadConfig, paths, readToken, TMUX_SESSION, TMUX_SOCKET } from '../shared/config'
+import { CQ_HOME, findExecutable, loadConfig, paths, readToken, saveConfig, TMUX_SESSION, TMUX_SOCKET } from '../shared/config'
 import type { LaunchSpec } from '../shared/types'
 import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
 import { awakeCommand } from './awake'
 import { foldersCommand } from './folders'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
-import { setup } from './setup'
+import { chooseFolders, setup, telegramStep } from './setup'
 import { installHint, isWindows } from '../platform/os'
 import { runService } from '../platform/service'
 import { telegramCommand } from './telegram'
-import { daemonUrl, restartAgent } from './util'
+import { ask, daemonUrl, restartAgent } from './util'
 
 const CLI_HELP = `${BRAND.name} ${VERSION}: queue Claude Code tasks from your phone; they run on this computer while you're away.
 
@@ -184,8 +184,35 @@ async function tailWindows(path: string, lines: number, follow: boolean): Promis
   }
 }
 
+/** Just `cq`, at a terminal: the few things people do after setup, by number, so no command has to be remembered. */
+async function menu(): Promise<void> {
+  console.log(`${BRAND.name} ${VERSION}\n`)
+  const items: [string, () => Promise<void> | void][] = [
+    ['Check that everything works', () => doctor()],
+    [
+      'Choose the folders Claude may work in',
+      () => {
+        const config = loadConfig()
+        config.folders.roots = chooseFolders(config.folders.roots)
+        saveConfig(config)
+        console.log('Saved. It picks them up within a few seconds.')
+      },
+    ],
+    ['Connect my Telegram bot again', () => telegramStep()],
+    ['Update to the newest version', () => update()],
+    ['Restart it', () => console.log(restartAgent() ? `Restarted ${BRAND.name}.` : `Couldn't restart: ${BRAND.name} isn't installed. Run cq setup.`)],
+    ['Show what it has been doing', () => logs(false)],
+    ['Every command (for the curious)', () => console.log(CLI_HELP)],
+  ]
+  items.forEach(([label], i) => console.log(`  ${i + 1}) ${label}`))
+  const pick = Number(ask('\nWhich one? (Enter to leave)'))
+  const chosen = items[pick - 1]
+  if (chosen) await chosen[1]()
+}
+
 // Dispatch last, so every declaration above is initialized before a command runs.
 async function main(): Promise<void> {
+  if (process.argv.length <= 2 && process.stdin.isTTY && process.stdout.isTTY) return menu()
   const [cmd = 'help', ...rest] = process.argv.slice(2)
   switch (cmd) {
     case 'daemon':
@@ -203,7 +230,7 @@ async function main(): Promise<void> {
     case 'service':
       return runService()
     case 'setup':
-      return setup()
+      return setup({ custom: rest.includes('--custom') })
     case 'install': {
       const result = await install()
       if (result) console.log(nextSteps(result))

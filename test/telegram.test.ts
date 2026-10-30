@@ -290,8 +290,12 @@ describe('pairing', () => {
     await h.say(`/start ${code}`)
     expect(h.config().telegram.ownerId).toBe(OWNER)
     expect(h.config().telegram.ownerName).toBe('@skanda')
-    expect(h.api.last().html).toContain('Paired')
-    expect(h.api.last().markup).toMatchObject({ is_persistent: true })
+    // Paired (with the keys under the text box), then where Claude will work.
+    const [paired, where] = h.api.sent.slice(-2)
+    expect(paired!.html).toContain('Paired')
+    expect(paired!.markup).toMatchObject({ is_persistent: true })
+    expect(where!.html).toContain('Where Claude will work')
+    expect(h.api.view(where!.id).keyboard.flat().map(b => b.text)).toEqual(['Looks right', 'Add a folder'])
     const before = h.api.sent.length
     await h.say('rm -rf everything please', STRANGER)
     await h.tap('g:pause', 1, STRANGER)
@@ -307,7 +311,7 @@ describe('the look', () => {
 
   test('the keys under the text box are plain words; inside a chat only the first one changes', async () => {
     const h = await paired({ mac: new FakePower() })
-    expect(h.api.last().markup).toMatchObject({
+    expect(h.api.sent.at(-2)!.markup).toMatchObject({
       keyboard: [[{ text: 'New task' }, { text: 'Status' }, { text: 'Queue' }], [{ text: 'Tasks' }, { text: 'Chats' }, { text: 'Mac' }], [{ text: 'Settings' }, { text: 'Help' }]],
       input_field_placeholder: 'Type a task for Claude',
     })
@@ -956,6 +960,41 @@ describe('every session from your phone', () => {
 
 describe('reading and answering on a phone', () => {
   const longDescription = 'The Linux build runs inside WSL2 unchanged, so Windows works from day one; a native engine can come later without changing anything people already set up.'
+
+  test('Settings → Project folders: add one by tapping a suggestion or typing it, and stop using one', async () => {
+    const h = await paired()
+    await h.say('/settings')
+    const settings = h.api.last().id
+    await h.tap(button(h.api.view(settings).keyboard, 'Project folders'), settings)
+    expect(h.api.view(settings).html).toContain('Project folders')
+    expect(h.api.view(settings).html).toContain(h.root)
+    // Only one folder: it can't be removed.
+    await h.tap('g:pf:r:0', settings)
+    expect(h.api.view(settings).html).toContain('Keep at least one folder')
+    expect(h.config().folders.roots).toEqual([h.root])
+    // A folder typed in is added (and one inside a folder already used is covered by it).
+    const other = mkdtempSync(join(tmpdir(), 'cq-tg-root-'))
+    await h.tap('g:pf:a', settings)
+    expect(h.api.view(settings).html).toContain('Add a folder')
+    await h.tap('g:pf:t', settings)
+    await h.say(other)
+    expect(h.api.last().html).toContain('Added')
+    expect(h.config().folders.roots).toEqual([h.root, other])
+    await h.tap('g:pf:t', settings)
+    await h.say(join(h.root, 'alpha'))
+    expect(h.api.last().html).toContain('is already covered')
+    expect(h.config().folders.roots).toEqual([h.root, other])
+    // Something that isn't a folder says so, and waits for another.
+    await h.tap('g:pf:t', settings)
+    await h.say('/definitely/not/here')
+    expect(h.api.last().html).toContain("isn't a folder")
+    await h.say(other)
+    // Stop using the second one.
+    await h.tap('g:pf', settings)
+    await h.tap('g:pf:r:1', settings)
+    expect(h.config().folders.roots).toEqual([h.root])
+    expect(h.api.view(settings).html).toContain('Stopped using')
+  })
 
   test('a typed answer to an earlier question brings the next one down to where you are, with its buttons', async () => {
     const h = await paired()

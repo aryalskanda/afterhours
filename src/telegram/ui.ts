@@ -1126,8 +1126,51 @@ export function settingsView(o: {
       [1, 2, 3].map(k => btn(chosen(o.parallel === k, `${k} at once`), `g:par:${k}`)),
       // Continuing a chat by itself follows from watching them: turning it on watches them too.
       [btn(`Watch chats: ${onOff(o.watch)}`, 'g:watch'), btn(`Auto-continue: ${onOff(o.watch && o.autoContinue)}`, 'g:auto')],
-      [btn('Rescan folders', 'g:rescan')],
+      [btn('Project folders', 'g:pf'), btn('Rescan folders', 'g:rescan')],
     ],
+  }
+}
+
+// --- project folders: where Claude may work ----------------------------------------------------
+
+/** The project folders, with a number each to stop using one, and Add. */
+export function projectFoldersView(roots: { path: string; label: string }[], note?: string): View {
+  return {
+    html: [
+      '<b>Project folders</b>',
+      'Claude only works inside these, and you pick from them when you start a task.',
+      ...roots.map((r, i) => numbered(i + 1, esc(r.label))),
+      note ? `\n${esc(note)}` : '',
+      roots.length > 1 ? '<i>Tap a number to stop using that folder. Nothing on the computer changes.</i>' : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    keyboard: [...numberRows(roots.map((_, i) => ({ data: `g:pf:r:${i}` }))), [btn('Add a folder', 'g:pf:a'), btn('Back', 'g:set')]],
+  }
+}
+
+/** Folders worth adding, found for you, to tap. */
+export function addFolderView(found: { path: string; label: string; why: string }[]): View {
+  return {
+    html: [
+      '<b>Add a folder</b>',
+      found.length > 0 ? 'I found these, from where you have used Claude Code and where your git projects are:' : 'I found nothing more to suggest.',
+      ...found.map((f, i) => numbered(i + 1, `${esc(f.label)} <i>(${esc(f.why)})</i>`)),
+      '<i>Tap a number, or send a folder to add one that is not here (like D:\\Projects or ~/code).</i>',
+    ].join('\n'),
+    keyboard: [...numberRows(found.map((_, i) => ({ data: `g:pf:s:${i}` }))), [btn('Send a folder', 'g:pf:t'), btn('Back', 'g:pf')]],
+  }
+}
+
+/** Right after pairing: where Claude will work, and the way to change it. */
+export function foldersWelcomeView(roots: { label: string }[]): View {
+  return {
+    html: [
+      '<b>Where Claude will work</b>',
+      ...roots.map((r, i) => numbered(i + 1, esc(r.label))),
+      '<i>These are the folders you will pick from when you start a task.</i>',
+    ].join('\n'),
+    keyboard: [[btn('Looks right', 'g:pf:ok'), btn('Add a folder', 'g:pf:a')]],
   }
 }
 

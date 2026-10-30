@@ -2,14 +2,16 @@ import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, resolve } from 'node:path'
 import { BRAND } from '../shared/brand'
-import { detectCodeFolders, expandHome, findExecutable, findGitBash, loadConfig, saveConfig, type Config } from '../shared/config'
+import { expandHome, findExecutable, findGitBash, loadConfig, saveConfig, type Config } from '../shared/config'
+import { folderLabel, folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
 import { within } from '../shared/paths'
 import type { Effort, ExecMode } from '../shared/types'
 import { inContainer, installHint, isMac, isWindows, isWsl } from '../platform/os'
 import { awakeCommand } from './awake'
+import { findToken, maskToken, openLink, readClipboard } from './clipboard'
 import { claudeStatus, doctor } from './doctor'
 import { install, migrateIfNeeded, type InstallResult } from './install'
-import { telegramCommand, TOKEN_RE } from './telegram'
+import { telegramCommand } from './telegram'
 import { ask, confirmYes, daemonHealth, restartAgent, run, runHere } from './util'
 
 /** "/Users/me/code" → "~/code" (on Windows "C:\Users\me\code" → "~/code" too, which expandHome reads back). */
@@ -27,22 +29,7 @@ function isDir(p: string): boolean {
   }
 }
 
-/**
- * What a person types for a folder, as a path here: quotes and a trailing slash dropped, "\\ " read
- * as a space, and (inside WSL) a Windows path such as D:\\IT Works turned into /mnt/d/IT Works.
- */
-export function folderPath(typed: string, wsl = isWsl()): string {
-  let t = typed.trim()
-  if (t.length > 1 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) t = t.slice(1, -1).trim()
-  t = t.replace(/\\ /g, ' ')
-  const drive = /^([A-Za-z]):(?:[\\/]+(.*))?$/.exec(t)
-  if (drive && wsl) t = `/mnt/${drive[1]!.toLowerCase()}/${(drive[2] ?? '').replace(/\\/g, '/')}`
-  // Natively on Windows, D:\Projects stays as it is ("D:" alone is the drive's top, not its current folder).
-  else if (drive && process.platform === 'win32') t = `${drive[1]!.toUpperCase()}:\\${drive[2] ?? ''}`
-  t = t.replace(/\/+$/, '')
-  // A WSL path is a Linux path, whatever this runs on.
-  return (wsl ? posix.resolve : resolve)(expandHome(t || '/'))
-}
+export { folderPath }
 
 /**
  * "1, 3", "1 ~/work" or a path (spaces and Windows paths included) → folders; a string is what to
@@ -79,6 +66,35 @@ export function parseFolderChoice(answer: string, candidates: string[], wsl = is
   return [...new Set(out)]
 }
 
+/**
+ * The folders where Claude may work, without typing: found from where you've used Claude Code and
+ * where git projects are, all chosen at once. Enter takes them; numbers pick some; a path adds one.
+ */
+export function chooseFolders(current: string[], o: { wsl?: boolean; found?: FolderSuggestion[] } = {}): string[] {
+  const wsl = o.wsl ?? isWsl()
+  const found = o.found ?? suggestProjectFolders({ wsl })
+  const label = (p: string) => folderLabel(p, { wsl })
+  if (found.length === 0) {
+    const keep = current.length > 0 ? current : []
+    console.log(`  I couldn't find your projects, so Claude can work anywhere in your home folder${keep.length > 0 ? ` (and ${keep.map(label).join(', ')})` : ''}.`)
+    console.log('  You can add folders later from Telegram: Settings → Project folders.')
+    return keep
+  }
+  console.log('  I found these, from where you have used Claude Code and where your git projects are:')
+  found.forEach((f, i) => console.log(`    ${i + 1}) ${label(f.path)}  (${f.why})`))
+  console.log('  Claude will only work inside the folders you choose, and you can change them later from Telegram.')
+  const all = found.map((_, i) => i + 1).join(',')
+  for (;;) {
+    const answer = ask('  Press Enter to use all of these, or type numbers (like 1,3) or a folder', all)
+    const parsed = parseFolderChoice(answer, found.map(f => f.path))
+    if (typeof parsed === 'string') {
+      console.log(`  ${parsed}`)
+      continue
+    }
+    return parsed
+  }
+}
+
 function choose<T extends string>(label: string, options: [T, string][], current: string): T {
   options.forEach(([value, hint], i) => console.log(`    ${i + 1}) ${value}${hint ? ` · ${hint}` : ''}`))
   const fallback = String(Math.max(1, options.findIndex(([v]) => v === current) + 1))
@@ -91,9 +107,10 @@ function choose<T extends string>(label: string, options: [T, string][], current
 }
 
 let stepNo = 0
+let stepTotal = 0
 function step(title: string): void {
   stepNo++
-  console.log(`\n${stepNo}. ${title}`)
+  console.log(`\nStep ${stepNo} of ${stepTotal}: ${title}`)
 }
 
 async function waitForHealth(seconds: number) {
@@ -144,25 +161,32 @@ async function awakeStep(): Promise<void> {
   if (!(await awakeCommand(['lid', 'on']))) console.log('  Skipped. Try it again later with: cq awake lid on')
 }
 
-async function telegramStep(): Promise<void> {
+export async function telegramStep(): Promise<void> {
   const config = loadConfig()
   if (config.telegram.enabled && config.telegram.ownerId) {
     console.log(`  ✔ Already connected${config.telegram.ownerName ? ` and paired with ${config.telegram.ownerName}` : ''}.`)
     return
   }
   console.log('  You talk to Afterhours through a Telegram bot that only you can use. Making one takes a minute:')
-  console.log('    1. In Telegram, search for @BotFather (the one with the blue check) and open it.')
+  console.log('    1. Telegram opens on BotFather (Telegram\'s official bot for making bots). If it doesn\'t, search for @BotFather.')
   console.log('    2. Send it /newbot, then pick a name and a username that ends in "bot".')
-  console.log('    3. It replies with a token, a long code like 123456789:AAH4… Copy it.')
+  console.log('    3. It replies with a token, a long code like 123456789:AAH4… Tap it to copy.')
+  if (confirmYes('  Open BotFather in Telegram now?')) openLink('https://t.me/BotFather')
   for (;;) {
-    const token = ask('  Paste the token (or press Enter to skip)')
-    if (!token) {
-      console.log('  Skipped. Run cq telegram <token> whenever you like.')
+    const typed = ask('  After you copy the token, press Enter (or paste it here, or type "skip")')
+    if (/^skip$/i.test(typed)) {
+      console.log('  Skipped. Connect it later with: cq telegram <token>')
       return
     }
-    if (!TOKEN_RE.test(token)) {
-      console.log("  That doesn't look like a bot token (it looks like 123456789:AAH4…).")
+    // Pasted here, or still on the clipboard.
+    const token = findToken(typed) ?? (typed ? null : findToken(readClipboard()))
+    if (!token) {
+      console.log(typed ? "  That doesn't look like a bot token (it looks like 123456789:AAH4…)." : "  I couldn't find a token on your clipboard. Copy it in Telegram first, then press Enter.")
       continue
+    }
+    if (!typed) {
+      console.log(`  Found it: ${maskToken(token)}`)
+      if (!confirmYes('  Use this token?')) continue
     }
     if (await telegramCommand([token])) return
   }
@@ -183,8 +207,10 @@ function askDefaults(config: Config): void {
   config.isolate = confirmYes('  Run each new conversation on its own git branch, so your checkout is never touched?')
 }
 
-export async function setup(): Promise<void> {
+export async function setup(o: { custom?: boolean } = {}): Promise<void> {
   stepNo = 0
+  // Steps this run will show: Claude, Git Bash or tmux, folders, (defaults), background, (Mac: disk access), (awake), phone.
+  stepTotal = 5 + (o.custom ? 1 : 0) + (isMac ? 1 : 0) + (inContainer() ? 0 : 1)
   console.log(`${BRAND.name} setup: queue Claude Code tasks from Telegram; they run on this ${isMac ? 'Mac' : isWindows || isWsl() ? 'PC' : 'computer'} while you're away.`)
   console.log('It takes about five minutes. You can press Ctrl+C at any time and run cq setup again.')
   if (!migrateIfNeeded()) return
@@ -244,25 +270,17 @@ export async function setup(): Promise<void> {
     if (!(await tmuxStep())) return
   }
 
-  step('Your code folders (what you browse and search from your phone)')
+  step('Your project folders (where Claude may work)')
   const config = loadConfig()
-  const candidates = detectCodeFolders()
-  candidates.forEach((p, i) => console.log(`    ${i + 1}) ${tilde(p)}`))
-  if (candidates.length === 0) console.log('    (none of the usual places exist; type a path)')
-  if (isWsl()) console.log('    (Windows folders work too: type D:\\Projects or "D:\\My Projects", and it finds them under /mnt/d)')
-  if (isWindows) console.log('    (type a path such as D:\\Projects, or "D:\\My Projects" with spaces)')
-  for (;;) {
-    const parsed = parseFolderChoice(ask('  Which hold your projects? Numbers or paths, separated by commas', candidates.length ? '1' : ''), candidates)
-    if (typeof parsed === 'string') {
-      console.log(`  ${parsed}`)
-      continue
-    }
-    config.folders.roots = parsed.map(tilde)
-    break
-  }
+  config.folders.roots = chooseFolders(config.folders.roots).map(tilde)
 
-  step('Defaults for new tasks (each task can still change them)')
-  askDefaults(config)
+  if (o.custom) {
+    step('Defaults for new tasks (each task can still change them)')
+    askDefaults(config)
+  } else {
+    console.log('\nNew tasks start with the recommended settings (Claude plans first, Sonnet, high effort, on its own git branch).')
+    console.log('You can change any of it on a task from your phone. For these questions here: cq setup --custom')
+  }
   saveConfig(config)
 
   step(`Run ${BRAND.name} in the background`)
@@ -282,7 +300,8 @@ export async function setup(): Promise<void> {
   step('Your phone (Telegram)')
   await telegramStep()
 
-  console.log(`\nAll set. Send your bot a prompt; ${BRAND.name} takes it from there.\n`)
+  console.log(`\nAll set. Open Telegram and send your bot what Claude should do; ${BRAND.name} takes it from there.`)
+  console.log('Everything else (folders, settings, sleep) is in the bot too. In a terminal, just type cq for a short menu.\n')
   await doctor()
 }
 
