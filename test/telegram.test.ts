@@ -957,6 +957,21 @@ describe('every session from your phone', () => {
 describe('reading and answering on a phone', () => {
   const longDescription = 'The Linux build runs inside WSL2 unchanged, so Windows works from day one; a native engine can come later without changing anything people already set up.'
 
+  test('a card says to tap Queue, and Status reminds you of one that never was', async () => {
+    const h = await paired()
+    await h.say('push it to github')
+    const id = h.api.last().id
+    await h.tap(button(h.api.view(id).keyboard, 'Folder'), id)
+    await h.tap(choice(h.api.view(id), 'beta'), id)
+    await h.tap(button(h.api.view(id).keyboard, 'Use this folder'), id)
+    expect(h.api.view(id).html).toContain('Tap Queue to start it.')
+    await h.say('Status')
+    expect(h.api.last().html).toContain('A task card was never queued')
+    await h.tap(button(h.api.view(id).keyboard, 'Queue'), id)
+    await h.say('Status')
+    expect(h.api.last().html).not.toContain('never queued')
+  })
+
   test('a typed answer to an earlier question brings the next one down to where you are, with its buttons', async () => {
     const h = await paired()
     const job = await running(h)

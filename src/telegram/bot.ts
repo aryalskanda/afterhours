@@ -1244,6 +1244,7 @@ export class TelegramBridge {
       parallel: this.o.runner.parallel,
       approvals: this.o.store.pendingApprovals(),
       queued: this.o.store.queued(),
+      unqueued: this.state.readyDrafts(this.o.now() - 24 * 3600_000).length,
       paused: this.o.runner.paused,
       limits: this.o.runner.limits(),
     }

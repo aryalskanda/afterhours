@@ -6,7 +6,8 @@ import { VERSION } from '../daemon/main'
 import { isTrusted } from '../daemon/sessions'
 import { BRAND } from '../shared/brand'
 import { codeRoots, findExecutable, loadConfig, paths, readToken } from '../shared/config'
-import { installHint, isMac, osLabel } from '../platform/os'
+import { installHint, isMac, isWsl, osLabel } from '../platform/os'
+import { keepTaskExists } from '../platform/wsl'
 import { service } from '../platform/service'
 import { launcherPath } from './install'
 import { relayHealth } from './remote'
@@ -64,6 +65,10 @@ export async function checks(): Promise<Check[]> {
     ok(`${BRAND.name} ${health.version} is running (pid ${health.pid}, ${health.home})`)
     if (isMac && health.fullDiskAccess) ok('Full Disk Access: yes (Claude sessions can work in your folders unattended)')
     else if (isMac) bad(`Full Disk Access: missing. Add ${existsSync(launcherPath) ? launcherPath : paths.binary} in System Settings → Privacy & Security → Full Disk Access, then cq restart`)
+    if (isWsl()) {
+      if (keepTaskExists()) ok('Windows: Ubuntu keeps running after you close its window (the "Afterhours" sign-in task)')
+      else bad('Windows: nothing keeps Ubuntu running once its window closes, so Afterhours stops with it. Run cq install to add the sign-in task')
+    }
     const r = health.remote
     const relayAnswers = r?.enabled && r.relay ? await relayHealth(r.relay) : null
     const answers = relayAnswers?.ok ? `, which answers in ${relayAnswers.ms} ms` : ''

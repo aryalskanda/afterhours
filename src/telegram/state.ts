@@ -192,6 +192,14 @@ export class TelegramState {
     return row ? toDraft(row) : null
   }
 
+  /** Cards that have a folder and a prompt but were never queued (or discarded), newest first. */
+  readyDrafts(since: number): Draft[] {
+    return this.db
+      .query<Row, [number]>(`SELECT * FROM tg_drafts WHERE status = 'open' AND edit_job IS NULL AND folder IS NOT NULL AND prompt != '' AND created_at >= ? ORDER BY id DESC`)
+      .all(since)
+      .map(toDraft)
+  }
+
   getDraft(id: number): Draft | null {
     const row = this.db.query<Row, [number]>('SELECT * FROM tg_drafts WHERE id = ?').get(id)
     return row ? toDraft(row) : null

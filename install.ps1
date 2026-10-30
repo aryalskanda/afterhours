@@ -84,14 +84,20 @@ $version = if ($env:AFTERHOURS_VERSION) { "AFTERHOURS_VERSION=$($env:AFTERHOURS_
 $yes = if ($env:AFTERHOURS_YES -eq '1') { 'AFTERHOURS_YES=1 ' } else { '' }
 $url = "https://github.com/$repo/releases/latest/download/install.sh"
 if ($env:AFTERHOURS_VERSION) { $url = "https://github.com/$repo/releases/download/$($env:AFTERHOURS_VERSION)/install.sh" }
-$code = InUbuntu "curl -fsSL $url | ${version}${yes}AFTERHOURS_REPO=$repo sh"
+# Already set up (cq installed and paired)? Then only update it: setup would ask everything again.
+$ready = (InUbuntu 'test -x "$HOME/.afterhours/bin/cq" && grep -qs ownerId "$HOME/.afterhours/config.json"') -eq 0
+$noSetup = if ($ready) { 'AFTERHOURS_NO_SETUP=1 ' } else { '' }
+if ($ready) { Say 'Afterhours is already set up in Ubuntu: updating it. This can take a minute, with no output while it downloads.' }
+else { Say 'Installing inside Ubuntu: it downloads Afterhours, then asks a few questions here. This can take a minute.' }
+$code = InUbuntu "curl -fsSL $url | ${noSetup}${version}${yes}AFTERHOURS_REPO=$repo sh"
 if ($code -ne 0) { Fail 'The installer inside Ubuntu did not finish. Read what it said above, fix that, and run this command again.' }
 
 # --- 4. Keep Ubuntu running while you are signed in --------------------------------------------
 # WSL stops Ubuntu when nothing is using it, which would stop Afterhours. A task at sign-in holds it open.
 Step '4. Keeping Afterhours running'
 try {
-  $action = New-ScheduledTaskAction -Execute 'wsl.exe' -Argument "-d $distro --exec /bin/sh -c ""exec sleep infinity"""
+  # Hidden, so no window sits open; the same task `cq install` makes from inside Ubuntu.
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-WindowStyle Hidden -Command wsl.exe -d $distro --exec sleep infinity"
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
   Register-ScheduledTask -TaskName 'Afterhours' -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps Ubuntu (and Afterhours in it) running while you are signed in.' -Force | Out-Null

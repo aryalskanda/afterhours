@@ -21,6 +21,8 @@ You can also do it by hand: `wsl --install -d Ubuntu`, turn on systemd (put `[bo
 
 ## Day to day
 
+- **Closing the Ubuntu window is fine.** Windows stops Ubuntu when nothing is using it, which would stop Afterhours too, so `cq install` (and the installer) add a sign-in task named **Afterhours** that keeps it running. `cq doctor` shows whether it's there; if not, run `cq install` again.
+
 - **Staying awake.** While tasks run, Windows is kept awake (Afterhours asks Windows not to sleep). When the work is done, it sleeps as usual.
 - **Lid closed (laptops).** Windows decides this, not Afterhours. In Control Panel → Power Options → "Choose what closing the lid does", pick **Do nothing** for plugged in and on battery.
 - **Sleeping from your phone.** `/sleep` in the bot puts the PC to sleep (through Windows). It can't wake it again: open the lid or press a key.

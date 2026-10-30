@@ -6,6 +6,7 @@ import { selfCommand, VERSION } from '../daemon/main'
 import { BRAND, LEGACY } from '../shared/brand'
 import { CQ_HOME, ensureHome, findExecutable, LAUNCH_AGENT_LABEL, loadConfig, paths, writeFileAtomic } from '../shared/config'
 import { isMac, isWsl } from '../platform/os'
+import { keepWslRunning } from '../platform/wsl'
 import { launchAgentsDir, launchDomain, service, type Service } from '../platform/service'
 import { migrateLegacy } from './migrate'
 import { run } from './util'
@@ -136,6 +137,8 @@ export async function install(): Promise<InstallResult | null> {
   const program = launcher?.path ?? paths.binary
   const started = await svc.install(program)
   console.log(started.message)
+  // Windows stops Ubuntu when its last window closes: a sign-in task holds it open.
+  if (isWsl()) console.log(keepWslRunning().text)
   return { program, needsAccess: isMac && (!launcher || launcher.built), service: svc.kind, started: started.ok || svc.kind === 'none' }
 }
 

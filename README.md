@@ -391,7 +391,8 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
 - Still stuck? Open an issue with the file from `cq report` attached.
 
 - `cq: command not found` right after installing: open a **new** terminal (the installer added `~/.local/bin` to your PATH), or run `~/.afterhours/bin/cq doctor`.
-- Windows: if Afterhours stops when you close the Ubuntu window, run `cq doctor` in Ubuntu and see [docs/windows.md](docs/windows.md).
+- Windows: if the bot stops answering when you close the Ubuntu window, run `cq install` in Ubuntu: it adds the sign-in task that keeps Ubuntu running, and `cq doctor` confirms it ([docs/windows.md](docs/windows.md)).
+- You sent a prompt and nothing started: the card waits until you tap **Queue**. Status lists any card that was never queued.
 - Linux over SSH: if the background service stops when you log out, run `loginctl enable-linger $USER`.
 
 ## Development

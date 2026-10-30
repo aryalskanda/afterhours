@@ -95,3 +95,15 @@ describe('desktop bits', () => {
     if (isMac) expect(installHint('tmux')).toBe('brew install tmux')
   })
 })
+
+import { createTaskArgs, keepTaskCommand, KEEP_TASK } from '../src/platform/wsl'
+
+describe('keeping Ubuntu running on Windows', () => {
+  test('the sign-in task holds this distro open with a hidden PowerShell', () => {
+    expect(keepTaskCommand('Ubuntu')).toBe('powershell.exe -WindowStyle Hidden -Command wsl.exe -d Ubuntu --exec sleep infinity')
+    const args = createTaskArgs('Ubuntu-24.04')
+    expect(args.slice(0, 4)).toEqual(['/Create', '/F', '/TN', KEEP_TASK])
+    expect(args).toContain('ONLOGON')
+    expect(args.at(-1)).toContain('-d Ubuntu-24.04 --exec sleep infinity')
+  })
+})

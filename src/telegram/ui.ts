@@ -274,6 +274,8 @@ function summaryLines(d: Draft, ctx: UiContext, chat: Chat | null): string[] {
     ...(split ? [`Plan: <b>${esc(modelEffort(d.model, d.effort))}</b>`, `Work: <b>${esc(work)}</b>`] : [`Model: <b>${esc(modelEffort(d.model, d.effort))}</b>`]),
     `Starts: <b>${esc(startText(d, ctx))}</b>`,
     ...(extras.length > 0 ? [`Also: ${extras.join(' · ')}`] : []),
+    // Nothing starts until Queue is tapped: say so, once the card could be queued.
+    ...(!d.editJob && d.folder && d.prompt ? ['<i>Tap Queue to start it.</i>'] : []),
   ]
 }
 
@@ -925,6 +927,8 @@ export interface StatusInfo {
   /** Requests waiting on you. */
   approvals: Approval[]
   queued: Job[]
+  /** Cards with a folder and a prompt that were never queued: nothing starts from them until Queue is tapped. */
+  unqueued?: number
   paused: boolean
   limits: LimitState
 }
@@ -986,6 +990,7 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   const stale = read && ctx.now - read > 30 * 60_000 ? `<i>Usage as of ${esc(formatClock(read, ctx.now))}; it updates while a task runs.</i>` : ''
   if (limits.length > 0) lines.push('', '<b>Usage</b>', ...limits, ...(stale ? [stale] : []))
   else if (read) lines.push('', `<i>No usage reading since the last reset; it updates while a task runs.</i>`)
+  if (s.unqueued) lines.push('', `<b>${s.unqueued === 1 ? 'A task card was' : `${s.unqueued} task cards were`} never queued.</b> Tap Queue on ${s.unqueued === 1 ? 'it' : 'them'} to start.`)
   if (s.paused && s.running.length > 0) lines.push('', '<i>Paused: nothing new starts until you resume.</i>')
   if (s.running.length > 0) lines.push('', '<i>Stop pauses a task (Continue picks it up). Kill ends it, with everything it started.</i>')
 
