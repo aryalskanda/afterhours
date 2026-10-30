@@ -29,6 +29,7 @@ You can also do it by hand: `wsl --install -d Ubuntu`, turn on systemd (put `[bo
 ## Tips
 
 - Keep your projects in the Linux file system (`~/code`), not under `/mnt/c`: Claude Code and git are much faster there.
+- Projects on a Windows drive work too. When `cq setup` asks for your folders, type the Windows path (`D:\Projects`, or `"D:\My Projects"` with spaces); Ubuntu sees that drive as `/mnt/d`.
 - VS Code's WSL extension works with Afterhours's chats; they live in `~/.claude` inside WSL.
 - If Windows restarts, Ubuntu and Afterhours start again when you sign in (the scheduled task).
 - Not working? `wsl --update`, then run the installer line again; it is safe to repeat.

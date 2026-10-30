@@ -21,20 +21,50 @@ function isDir(p: string): boolean {
   }
 }
 
-/** "1, 3" or "1 ~/work" → folders; a string is what to tell the person instead. */
-export function parseFolderChoice(answer: string, candidates: string[]): string[] | string {
-  const tokens = answer.split(/[\s,]+/).filter(Boolean)
-  if (tokens.length === 0) return 'Pick at least one folder.'
+/**
+ * What a person types for a folder, as a path here: quotes and a trailing slash dropped, "\\ " read
+ * as a space, and (inside WSL) a Windows path such as D:\\IT Works turned into /mnt/d/IT Works.
+ */
+export function folderPath(typed: string, wsl = isWsl()): string {
+  let t = typed.trim()
+  if (t.length > 1 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) t = t.slice(1, -1).trim()
+  t = t.replace(/\\ /g, ' ')
+  const drive = /^([A-Za-z]):(?:[\\/]+(.*))?$/.exec(t)
+  if (drive && wsl) t = `/mnt/${drive[1]!.toLowerCase()}/${(drive[2] ?? '').replace(/\\/g, '/')}`
+  t = t.replace(/\/+$/, '')
+  return resolve(expandHome(t || '/'))
+}
+
+/**
+ * "1, 3", "1 ~/work" or a path (spaces and Windows paths included) → folders; a string is what to
+ * tell the person instead. Commas separate; inside a piece, numbers separate by spaces, but a piece
+ * that is a folder as it stands (D:\IT Works) is taken whole.
+ */
+export function parseFolderChoice(answer: string, candidates: string[], wsl = isWsl()): string[] | string {
+  const pieces = answer.split(',').map(x => x.trim()).filter(Boolean)
+  if (pieces.length === 0) return 'Pick at least one folder.'
   const out: string[] = []
-  for (const t of tokens) {
-    if (/^\d+$/.test(t)) {
-      const p = candidates[Number(t) - 1]
-      if (!p) return `There's no option ${t}.`
-      out.push(p)
-    } else {
-      const p = resolve(expandHome(t))
-      if (!isDir(p)) return `Not a folder: ${t}`
-      out.push(p)
+  for (const piece of pieces) {
+    const whole = /^[\d\s]+$/.test(piece) ? null : folderPath(piece, wsl)
+    if (whole && isDir(whole)) {
+      out.push(whole)
+      continue
+    }
+    // Not a folder as a whole: numbers and paths without spaces, separated by spaces.
+    for (const t of piece.split(/\s+/)) {
+      if (/^\d+$/.test(t)) {
+        const p = candidates[Number(t) - 1]
+        if (!p) return `There's no option ${t}.`
+        out.push(p)
+      } else {
+        const p = folderPath(t, wsl)
+        if (!isDir(p)) {
+          // A path with spaces is reported whole, not as the word that stopped it.
+          const shown = /^\d/.test(piece) ? t : piece
+          return `Not a folder: ${shown}${wsl && /^[A-Za-z]:/.test(shown) ? ` (looked for ${folderPath(shown, wsl)})` : ''}`
+        }
+        out.push(p)
+      }
     }
   }
   return [...new Set(out)]
@@ -206,6 +236,7 @@ export async function setup(): Promise<void> {
   const candidates = detectCodeFolders()
   candidates.forEach((p, i) => console.log(`    ${i + 1}) ${tilde(p)}`))
   if (candidates.length === 0) console.log('    (none of the usual places exist; type a path)')
+  if (isWsl()) console.log('    (Windows folders work too: type D:\\Projects or "D:\\My Projects", and it finds them under /mnt/d)')
   for (;;) {
     const parsed = parseFolderChoice(ask('  Which hold your projects? Numbers or paths, separated by commas', candidates.length ? '1' : ''), candidates)
     if (typeof parsed === 'string') {
