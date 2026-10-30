@@ -10,6 +10,16 @@ export function shq(s: string): string {
 export interface ScriptPaths {
   hook: string
   status: string
+  /**
+   * Windows: how to run cq itself, which takes the scripts' place (`cq hook <event>`, `cq statusline`):
+   * there's no sh or curl to run them with.
+   */
+  program?: string[]
+}
+
+/** Double-quotes a path for the shell Claude Code runs hooks with on Windows (Git Bash, or cmd). */
+export function dq(s: string): string {
+  return `"${s.replace(/\\/g, '/')}"`
 }
 
 /**
@@ -17,9 +27,10 @@ export interface ScriptPaths {
  * user's own settings and never touch ~/.claude/settings.json.
  */
 export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths): Record<string, unknown> {
+  const program = scripts.program?.map(dq).join(' ')
   const command = (event: string, timeout: number) => ({
     type: 'command',
-    command: `${shq(scripts.hook)} ${event}`,
+    command: program ? `${program} hook ${event}` : `${shq(scripts.hook)} ${event}`,
     timeout,
   })
   const on = (event: string, timeout = 15) => [{ hooks: [command(event, timeout)] }]
@@ -27,7 +38,7 @@ export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths):
     autoContinueAtUsageLimit: true,
     // Safety net only: the PreToolUse hook below answers questions before Claude shows them.
     askUserQuestionTimeout: '10m',
-    statusLine: { type: 'command', command: shq(scripts.status), refreshInterval: 60 },
+    statusLine: { type: 'command', command: program ? `${program} statusline` : shq(scripts.status), refreshInterval: 60 },
     hooks: {
       SessionStart: on('SessionStart'),
       UserPromptSubmit: on('UserPromptSubmit'),

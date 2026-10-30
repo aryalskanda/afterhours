@@ -27,6 +27,8 @@
   },
   "dependencies": {
     "@afterhours/protocol": "workspace:*",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
     "uqr": "0.1.3"
   },
   "devDependencies": {

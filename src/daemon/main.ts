@@ -1,8 +1,8 @@
-import { realpathSync, statSync } from 'node:fs'
+import { readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import hookScript from '../../bin/cq-hook.sh' with { type: 'text' }
 import statusScript from '../../bin/cq-statusline.sh' with { type: 'text' }
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import pkg from '../../package.json' with { type: 'json' }
 import { BRAND } from '../shared/brand'
 import {
@@ -11,6 +11,7 @@ import {
   CQ_HOME,
   ensureHome,
   ensureToken,
+  findClaude,
   findExecutable,
   loadConfig,
   paths,
@@ -37,9 +38,10 @@ import { Store } from './store'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
 import { powerSystem, systemSleepSwitch } from '../platform/power'
-import { isMac, osLabel } from '../platform/os'
+import { isMac, isWindows, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
-import { Tmux, TMUX_CONF } from './tmux'
+import { Tmux, TMUX_CONF, type TmuxDriver } from './tmux'
+import { WinTerm } from './winterm'
 import { SessionWatcher } from './watch'
 
 /** From package.json, which a release tag must match. */
@@ -51,7 +53,7 @@ export function log(line: string): void {
 
 /** How to run this program again: `bun src/cli/cq.ts` while developing, the binary once installed. */
 export function selfCommand(): string[] {
-  return /(^|\/)bun(-debug)?$/.test(process.execPath) ? [process.execPath, Bun.main] : [process.execPath]
+  return /(^|[\\/])bun(-debug)?(\.exe)?$/i.test(process.execPath) ? [process.execPath, Bun.main] : [process.execPath]
 }
 
 export interface Health {
@@ -79,16 +81,23 @@ export async function runDaemon(): Promise<void> {
     configMtime = mtime(paths.config)
   }
 
-  writeFileAtomic(paths.hookScript, hookScript, 0o755)
-  writeFileAtomic(paths.statusScript, statusScript, 0o755)
-  writeFileAtomic(paths.tmuxConf, TMUX_CONF)
+  // Windows has no sh or tmux: hooks run `cq hook`, and tasks run in cq's own terminal host.
+  if (!isWindows) {
+    writeFileAtomic(paths.hookScript, hookScript, 0o755)
+    writeFileAtomic(paths.statusScript, statusScript, 0o755)
+    writeFileAtomic(paths.tmuxConf, TMUX_CONF)
+  } else {
+    removeOldBinaries()
+  }
 
-  const claudePath = findExecutable('claude', config.claudePath)
-  const tmuxPath = findExecutable('tmux', config.tmuxPath)
+  const claudePath = findClaude(config.claudePath)
+  const tmuxPath = isWindows ? 'conpty' : findExecutable('tmux', config.tmuxPath)
   if (!claudePath || !tmuxPath) {
-    log(`can't start: ${claudePath ? 'tmux' : 'claude'} not found (set ${claudePath ? 'tmuxPath' : 'claudePath'} in ${paths.config})`)
+    const what = !claudePath ? (isWindows ? 'claude.exe' : 'claude') : 'tmux'
+    log(`can't start: ${what} not found (set ${claudePath ? 'tmuxPath' : 'claudePath'} in ${paths.config})`)
     process.exit(1)
   }
+  const terminals: TmuxDriver = isWindows ? new WinTerm(selfCommand(), cleanEnv()) : new Tmux(tmuxPath, TMUX_SOCKET, paths.tmuxConf, cleanEnv())
 
   const store = new Store(paths.db)
   store.pruneEvents(Date.now() - 30 * 24 * 3600_000)
@@ -102,7 +111,7 @@ export async function runDaemon(): Promise<void> {
   let onActivity: (a: ToolActivity) => void = () => {}
   const runner = new Runner({
     store,
-    tmux: new Tmux(tmuxPath, TMUX_SOCKET, paths.tmuxConf, cleanEnv()),
+    tmux: terminals,
     notify: notice => notifier.send(notice),
     config: getConfig,
     saveConfig: putConfig,
@@ -112,7 +121,7 @@ export async function runDaemon(): Promise<void> {
     port: config.port,
     home: CQ_HOME,
     jobsDir: paths.jobs,
-    scripts: { hook: paths.hookScript, status: paths.statusScript },
+    scripts: { hook: paths.hookScript, status: paths.statusScript, ...(isWindows ? { program: selfCommand() } : {}) },
     writeFile: (path, text) => writeFileAtomic(path, text, 0o600),
     sessionHolders,
     git,
@@ -310,6 +319,8 @@ export async function runDaemon(): Promise<void> {
     return new Response('not found', { status: 404 })
   }
 
+  // Windows: right after a restart, the daemon before this one can still hold the port for a moment.
+  if (isWindows) await portFree(config.port, 10_000)
   let server: ReturnType<typeof Bun.serve>
   try {
     server = Bun.serve({
@@ -425,7 +436,38 @@ export async function runDaemon(): Promise<void> {
   process.on('SIGTERM', () => shutdown())
   process.on('SIGINT', () => shutdown())
 
-  log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · ${osLabel()} · claude ${claudePath} · tmux -L ${TMUX_SOCKET} · state ${CQ_HOME}`)
+  const where = isWindows ? 'terminal host (ConPTY)' : `tmux -L ${TMUX_SOCKET}`
+  log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · ${osLabel()} · claude ${claudePath} · ${where} · state ${CQ_HOME}`)
+}
+
+/** Waits up to `ms` for nothing to be listening on the port; false if something still is. */
+async function portFree(port: number, ms: number): Promise<boolean> {
+  for (const end = Date.now() + ms; ; await Bun.sleep(500)) {
+    try {
+      Bun.serve({ hostname: '127.0.0.1', port, fetch: () => new Response() }).stop(true)
+      return true
+    } catch {
+      if (Date.now() > end) return false
+    }
+  }
+}
+
+/** Windows: an update renames the running cq.exe aside (it can't be replaced); once nothing runs it, it goes. */
+function removeOldBinaries(): void {
+  let names: string[] = []
+  try {
+    names = readdirSync(paths.bin)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.startsWith(`${basename(paths.binary)}.old-`)) continue
+    try {
+      rmSync(join(paths.bin, name), { force: true })
+    } catch {
+      // still in use by a process that hasn't ended yet: next time
+    }
+  }
 }
 
 function mtime(path: string): number {

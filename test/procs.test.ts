@@ -11,7 +11,8 @@ test('the tree below a process, parents first, from ps', () => {
   expect(descendants(new Map([[0, 0], [5, 0]]), 0)).toEqual([0, 5])
 })
 
-test('a real process tree ends: what ignores SIGTERM gets SIGKILL', async () => {
+// POSIX signals (Windows has no SIGTERM to ignore: the next test is its version).
+test.skipIf(process.platform === 'win32')('a real process tree ends: what ignores SIGTERM gets SIGKILL', async () => {
   // A shell with two children, one of which ignores SIGTERM.
   const shell = Bun.spawn(['sh', '-c', "sleep 30 & (trap '' TERM; sleep 30) & wait"], { stdout: 'ignore', stderr: 'ignore' })
   try {
@@ -30,5 +31,25 @@ test('a real process tree ends: what ignores SIGTERM gets SIGKILL', async () => 
   } finally {
     for (const pid of await systemProcs.tree(shell.pid).catch(() => [])) systemProcs.signal(pid, 'SIGKILL')
     shell.kill('SIGKILL')
+  }
+})
+
+test.skipIf(process.platform !== 'win32')('Windows: a real process tree, from the system process list, ends', async () => {
+  // cmd with a child (ping waits about 30 s).
+  const shell = Bun.spawn(['cmd.exe', '/d', '/c', 'ping -n 30 127.0.0.1 >nul'], { stdout: 'ignore', stderr: 'ignore' })
+  try {
+    let tree: number[] = []
+    for (let i = 0; i < 100 && tree.length < 2; i++) {
+      await Bun.sleep(20)
+      tree = await systemProcs.tree(shell.pid)
+    }
+    expect(tree[0]).toBe(shell.pid)
+    expect(tree.length).toBeGreaterThanOrEqual(2)
+    await endProcesses(tree, { procs: systemProcs, graceMs: 500 })
+    await shell.exited
+    await Bun.sleep(50)
+    expect(tree.filter(pid => systemProcs.alive(pid))).toEqual([])
+  } finally {
+    shell.kill()
   }
 })

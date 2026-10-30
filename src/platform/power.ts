@@ -7,15 +7,16 @@
 //   `pmset sleepnow`.
 // - Linux: a systemd-inhibit lock holds off idle sleep, and the lid switch too when asked (no root
 //   needed). Sleeping is `systemctl suspend`.
-// - Windows (WSL2): Windows' own SetThreadExecutionState holds off sleep while there's work; sleeping
-//   is SetSuspendState. Both go through powershell.exe, which WSL can run.
+// - Windows (natively, or from WSL2): Windows' own SetThreadExecutionState holds off sleep while there's work; sleeping
+//   is SetSuspendState. Both go through powershell.exe, which WSL can run too.
 //
 // The system calls sit behind PowerSystem, so tests use a fake and never sleep the computer.
 
 import { readFileSync } from 'node:fs'
 import { parseBattery } from '../daemon/health'
-import { inContainer, isLinux, isMac, isWsl } from './os'
+import { inContainer, isLinux, isMac, isWindows, isWsl } from './os'
 
+/** 'wsl' is Windows' power, whether Afterhours runs natively on Windows or inside WSL. */
 export type PowerKind = 'mac' | 'linux' | 'wsl'
 
 export interface PowerSystem {
@@ -138,7 +139,7 @@ export const wslPower: PowerSystem = {
   },
   async sleepNow() {
     const ps = powershell()
-    if (!ps) return { ok: false, error: 'powershell.exe isn’t reachable from WSL' }
+    if (!ps) return { ok: false, error: isWindows ? 'powershell.exe isn’t on the Path' : 'powershell.exe isn’t reachable from WSL' }
     const r = await output([ps, '-NoProfile', '-NonInteractive', '-Command', WINDOWS_SLEEP])
     return r.code === 0 ? { ok: true } : { ok: false, error: r.err.trim() || 'Windows didn’t sleep' }
   },
@@ -147,6 +148,7 @@ export const wslPower: PowerSystem = {
 /** This computer's power controls; null where there's nothing to sleep (a container). */
 export function powerSystem(): PowerSystem | null {
   if (isMac) return macPower
+  if (isWindows) return wslPower
   if (!isLinux || inContainer()) return null
   return isWsl() ? wslPower : linuxPower
 }

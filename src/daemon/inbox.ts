@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { join } from 'node:path'
 import { CLAUDE_DIR, type LiveSession } from './sessions'
 
@@ -49,6 +50,21 @@ export function deliverToInbox(
       resolve(d)
     }
     const answered = () => ({ ok: true, ...(reply.trim() ? { reply: reply.trim().slice(0, 500) } : {}) })
+    // Windows: the inbox is a named pipe (\\.\pipe\…), which node:net reaches and Bun.connect doesn't.
+    if (process.platform === 'win32') {
+      const sock = connect(path)
+      sock.on('connect', () => {
+        sock.write(payload)
+        setTimeout(() => {
+          sock.end()
+          finish(answered())
+        }, o.waitMs ?? 1000)
+      })
+      sock.on('data', data => (reply += data.toString('utf8')))
+      sock.on('close', () => finish(answered()))
+      sock.on('error', err => finish({ ok: false, error: err.message }))
+      return
+    }
     Bun.connect({
       unix: path,
       socket: {

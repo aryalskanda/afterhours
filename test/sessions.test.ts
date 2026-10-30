@@ -41,7 +41,9 @@ const claudeDir = () => mkdtempSync(join(tmpdir(), 'cq-claude-'))
 
 describe('reading a conversation', () => {
   test('its store folder is the path with every other character as "-"', () => {
-    expect(projectStoreDir('/Users/me/code/my.app', '/c')).toBe('/c/projects/-Users-me-code-my-app')
+    expect(projectStoreDir('/Users/me/code/my.app', '/c')).toBe(join('/c', 'projects', '-Users-me-code-my-app'))
+    // Windows: what Claude Code names d:\IT Works\afterhours's folder.
+    expect(projectStoreDir('d:\\IT Works\\afterhours', '/c')).toBe(join('/c', 'projects', 'd--IT-Works-afterhours'))
   })
 
   test('title: your name for it, then its session name, then its AI title, then the first prompt', () => {

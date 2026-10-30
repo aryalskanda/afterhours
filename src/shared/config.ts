@@ -1,9 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { BRAND } from './brand'
 import type { Effort, ExecMode } from './types'
+
+const WINDOWS = process.platform === 'win32'
 
 export const CQ_HOME = resolve(process.env.CQ_HOME ?? join(homedir(), BRAND.homeDir))
 
@@ -24,10 +26,14 @@ export const paths = {
   /** Photos and files apps attach to tasks (kept 14 days). */
   uploads: join(CQ_HOME, 'uploads'),
   bin: join(CQ_HOME, 'bin'),
-  binary: join(CQ_HOME, 'bin', 'cq'),
+  binary: join(CQ_HOME, 'bin', WINDOWS ? 'cq.exe' : 'cq'),
   hookScript: join(CQ_HOME, 'bin', 'cq-hook'),
   statusScript: join(CQ_HOME, 'bin', 'cq-statusline'),
   tmuxConf: join(CQ_HOME, 'tmux.conf'),
+  /** Windows: where the terminal host (what tmux is elsewhere) listens. */
+  termHost: join(CQ_HOME, 'term.json'),
+  /** Windows: the background service's supervisor. */
+  servicePid: join(CQ_HOME, 'service.pid'),
 }
 
 export const TMUX_SOCKET = process.env.CQ_TMUX_SOCKET ?? BRAND.slug
@@ -202,9 +208,9 @@ export function loadConfig(): Config {
   }
 }
 
-/** "~/x" → "/Users/me/x". */
+/** "~/x" → "/Users/me/x" (and "~\x" on Windows). */
 export function expandHome(path: string): string {
-  return path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path
+  return path === '~' ? homedir() : path.startsWith('~/') || (WINDOWS && path.startsWith('~\\')) ? join(homedir(), path.slice(2)) : path
 }
 
 /** Where people usually keep code, in the order `cq setup` suggests them. */
@@ -222,6 +228,8 @@ export const COMMON_CODE_FOLDERS = [
   '~/git',
   '~/Documents/GitHub',
   '~/Documents/Projects',
+  // Visual Studio's default on Windows.
+  '~/source/repos',
 ]
 
 export function detectCodeFolders(): string[] {
@@ -272,6 +280,7 @@ export function writeFileAtomic(path: string, text: string, mode = 0o644): void 
 /** PATH for the daemon and the sessions it starts: Claude, Homebrew and the system dirs first. */
 export function searchPath(): string {
   const home = homedir()
+  if (WINDOWS) return windowsSearchPath(home)
   const fixed = [
     join(home, '.local', 'bin'),
     join(home, '.bun', 'bin'),
@@ -287,6 +296,44 @@ export function searchPath(): string {
   return [...new Set([...fixed, ...inherited])].join(':')
 }
 
+/** Windows: Claude's own installer, npm's shims, Git (Claude Code needs its bash) and the system. */
+function windowsSearchPath(home: string): string {
+  const env = process.env
+  const root = env.SystemRoot ?? 'C:\\Windows'
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files'
+  const fixed = [
+    join(home, '.local', 'bin'),
+    join(home, '.bun', 'bin'),
+    join(CQ_HOME, 'bin'),
+    ...(env.APPDATA ? [join(env.APPDATA, 'npm')] : []),
+    join(programFiles, 'Git', 'cmd'),
+    join(root, 'System32'),
+    root,
+    join(root, 'System32', 'Wbem'),
+    join(root, 'System32', 'WindowsPowerShell', 'v1.0'),
+  ]
+  const inherited = (env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean)
+  const seen = new Set<string>()
+  return [...fixed, ...inherited]
+    .filter(dir => {
+      const key = dir.toLowerCase().replace(/[\\/]+$/, '')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .join(delimiter)
+}
+
+/** What Windows programs (Claude Code, git, PowerShell) expect to find in their environment. */
+const WINDOWS_ENV = [
+  ...['SystemRoot', 'windir', 'SystemDrive', 'ComSpec', 'PATHEXT', 'OS', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'],
+  ...['APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432'],
+  ...['TEMP', 'TMP', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'PUBLIC', 'ALLUSERSPROFILE'],
+  ...['PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS'],
+  // Where Claude Code finds Git Bash, if it isn't in the usual place.
+  'CLAUDE_CODE_GIT_BASH_PATH',
+]
+
 /**
  * Environment for tmux and the Claude sessions inside it. Built from an allowlist so that
  * variables from the shell that launched cq (VS Code, another Claude session) never leak in:
@@ -299,10 +346,17 @@ export function cleanEnv(extra: Record<string, string> = {}): Record<string, str
     // (claude setup-token), and the way out to the internet.
     ...['CLAUDE_CODE_OAUTH_TOKEN', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'],
   ]
+  if (WINDOWS) keep.push(...WINDOWS_ENV)
   const env: Record<string, string> = {}
   for (const key of keep) {
     const value = process.env[key]
     if (value) env[key] = value
+  }
+  if (WINDOWS) {
+    // No SHELL or LANG: Claude Code finds Git Bash itself, and a POSIX shell path would mislead it.
+    env.PATH = searchPath()
+    env.TERM = 'xterm-256color'
+    return { ...env, ...extra }
   }
   env.HOME ??= homedir()
   // C.UTF-8 exists on every current Linux; en_US.UTF-8 often isn't generated on servers.
@@ -316,4 +370,33 @@ export function cleanEnv(extra: Record<string, string> = {}): Record<string, str
 export function findExecutable(name: string, configured?: string): string | null {
   if (configured && existsSync(configured)) return configured
   return Bun.which(name, { PATH: searchPath() })
+}
+
+/** Windows: Git for Windows' bash, which Claude Code needs there (it runs its commands with it). */
+export function findGitBash(): string | null {
+  const candidates = [process.env.CLAUDE_CODE_GIT_BASH_PATH]
+  for (const root of [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs')]) {
+    if (root) candidates.push(join(root, 'Git', 'bin', 'bash.exe'))
+  }
+  // git.exe in <Git>\cmd: bash.exe is in <Git>\bin.
+  const git = findExecutable('git')
+  if (git) candidates.push(join(dirname(dirname(git)), 'bin', 'bash.exe'))
+  return candidates.find(c => c && existsSync(c)) ?? null
+}
+
+/**
+ * The `claude` program. On Windows that has to be a real claude.exe: npm installs `claude.cmd`
+ * and `claude.ps1` shims, and cmd.exe would mangle a prompt with quotes or line breaks in it.
+ */
+export function findClaude(configured?: string): string | null {
+  if (!WINDOWS) return findExecutable('claude', configured)
+  const candidates = [configured, join(homedir(), '.local', 'bin', 'claude.exe')]
+  for (const dir of searchPath().split(delimiter)) {
+    candidates.push(join(dir, 'claude.exe'))
+    // npm: the shims sit next to node_modules, which holds the real program.
+    if (['claude.cmd', 'claude.ps1', 'claude'].some(shim => existsSync(join(dir, shim)))) {
+      candidates.push(join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'))
+    }
+  }
+  return candidates.find(c => c && c.toLowerCase().endsWith('.exe') && existsSync(c)) ?? null
 }

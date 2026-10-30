@@ -6,7 +6,8 @@ import { launchdPlist, noServiceHelp, serviceEnvFile, systemdUnit } from '../src
 import { cleanEnv, CQ_HOME } from '../src/shared/config'
 
 describe('the background service', () => {
-  test('systemd: restarts after a crash or an update, but stopping it leaves the Claude sessions running', () => {
+  // A unit file is for Linux: its paths (CQ_HOME, PATH) are this machine's, so it's checked where it runs.
+  test.skipIf(process.platform === 'win32')('systemd: restarts after a crash or an update, but stopping it leaves the Claude sessions running', () => {
     const unit = systemdUnit('/home/me/.afterhours/bin/cq')
     expect(unit).toContain('ExecStart="/home/me/.afterhours/bin/cq" daemon')
     expect(unit).toContain('Restart=on-failure')
@@ -40,6 +41,9 @@ describe('updates', () => {
     expect(releaseAsset('darwin', 'x64')).toBe('cq-darwin-x64')
     expect(releaseAsset('linux', 'arm64')).toBe('cq-linux-arm64')
     expect(releaseAsset('linux', 'x64')).toBe('cq-linux-x64')
+    // One Windows build: Windows on Arm runs x64 programs as they are.
+    expect(releaseAsset('win32', 'x64')).toBe('cq-windows-x64.exe')
+    expect(releaseAsset('win32', 'arm64')).toBe('cq-windows-x64.exe')
   })
 
   test('checksums are read from a SHA256SUMS file', () => {
@@ -75,6 +79,13 @@ describe('what Claude sessions get from the environment', () => {
       delete process.env.SHELL
       delete process.env.LANG
       const env = cleanEnv()
+      if (process.platform === 'win32') {
+        // Claude Code finds Git Bash itself; a POSIX shell path would mislead it. Windows' own variables stay.
+        expect(env.SHELL).toBeUndefined()
+        expect(env.SystemRoot).toBeTruthy()
+        expect(env.PATH).toContain('System32')
+        return
+      }
       expect(await Bun.file(env.SHELL!).exists()).toBe(true)
       expect(env.LANG).toBe(process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8')
     } finally {
@@ -87,6 +98,8 @@ describe('desktop bits', () => {
   test('staying awake ends with the daemon', () => {
     const argv = keepAwakeCommand(4242)
     if (isMac) expect(argv).toEqual(['caffeinate', '-i', '-w', '4242'])
+    // Windows: it holds while powershell's input is open, which closes when the daemon ends.
+    else if (process.platform === 'win32') expect(argv?.join(' ')).toContain('SetThreadExecutionState')
     else if (argv) expect(argv.join(' ')).toContain('kill -0 4242')
   })
 

@@ -45,6 +45,8 @@ export function descendants(parents: Map<number, number>, root: number): number[
 
 export const systemProcs: Procs = {
   async tree(root) {
+    // Windows has no ps: the system's own process list (Toolhelp32).
+    if (process.platform === 'win32') return descendants((await import('../platform/win32')).processParents(), root)
     const ps = Bun.spawn(['ps', '-A', '-o', 'pid=,ppid='], { stdout: 'pipe', stderr: 'ignore' })
     const timer = setTimeout(() => ps.kill(), 5000)
     const out = await new Response(ps.stdout).text()

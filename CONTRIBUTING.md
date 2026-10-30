@@ -14,7 +14,7 @@ Problems with the engine or the bot belong here.
 [Open an issue](https://github.com/aryalskanda/afterhours/issues/new) and include:
 
 - what you did, what you expected, and what happened instead;
-- your system (macOS, Linux distribution, or Windows with WSL) and its version;
+- your system (macOS, Linux distribution, or Windows) and its version;
 - `cq --version` and `claude --version`;
 - the output of `cq doctor`;
 - if you can, the file from `cq report`. Read it first and remove anything you'd rather not share.
@@ -30,8 +30,8 @@ For anything bigger than a small fix (a new feature, a new command or setting, a
 You need:
 
 - [Bun](https://bun.sh) 1.3.3 (the version CI uses);
-- `git` and `tmux` (some tests start a real tmux server);
-- macOS or Linux. On Windows, work inside WSL ([docs/windows.md](docs/windows.md));
+- `git`, and on macOS and Linux `tmux` (some tests start a real tmux server);
+- macOS, Linux or Windows 10 1809+/11. On Windows the tests run natively (with Git for Windows); the ones for tmux, install.sh and other macOS/Linux-only parts are skipped, and `test/winterm.test.ts` runs real programs in pseudo consoles instead;
 - [Claude Code](https://claude.com/claude-code), signed in, only if you want to run the engine for real or run the compatibility check.
 
 Fork the repository, then:

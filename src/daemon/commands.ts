@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+import { within } from '../shared/paths'
 import { BRAND } from '../shared/brand'
 import { expandHome, type Config } from '../shared/config'
 import type { Approval, Effort, ExecMode, JobSpec, SessionPolicy } from '../shared/types'
@@ -155,19 +156,30 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
     out.project = alias
     return true
   }
-  if ((token.startsWith('/') || token.startsWith('~/')) && isDir(expandHome(token))) {
+  // A path: /x, ~/x, and on Windows C:\x, C:/x or ~\x.
+  const looksLikePath = token.startsWith('/') || token.startsWith('~/') || (process.platform === 'win32' && /^([A-Za-z]:[\\/]|~\\)/.test(token))
+  if (looksLikePath && isDir(expandHome(token))) {
     out.project = resolve(expandHome(token))
     return true
   }
   return false
 }
 
+/** The colon that ends the options. On Windows a drive's colon (q D:\Code\app plan: …) is part of a path, not it. */
+function optionsEnd(text: string, windows: boolean): number {
+  for (let i = text.indexOf(':'); i >= 0; i = text.indexOf(':', i + 1)) {
+    const drive = windows && /[A-Za-z]/.test(text[i - 1] ?? '') && (i === 1 || /\s/.test(text[i - 2]!)) && /[\\/]/.test(text[i + 1] ?? '')
+    if (!drive) return i
+  }
+  return -1
+}
+
 /**
  * "nacho plan opus max: add CSV export" → options + prompt. The words before the first
  * colon count as options only if every one of them is an option; otherwise it's all prompt.
  */
-export function parseQueueText(text: string, config: Config): { options: QueueOptions; prompt: string } {
-  const colon = text.indexOf(':')
+export function parseQueueText(text: string, config: Config, windows = process.platform === 'win32'): { options: QueueOptions; prompt: string } {
+  const colon = optionsEnd(text, windows)
   if (colon > 0) {
     const tokens = text.slice(0, colon).trim().split(/\s+/).filter(Boolean)
     const options: QueueOptions = {}
@@ -438,7 +450,7 @@ function answerQuestion(rest: string, ctx: CommandContext): string {
 }
 
 function trustedLabel(config: Config, dir: string): string {
-  const ours = config.trustedDirs.some(d => dir === d || dir.startsWith(d + '/'))
+  const ours = config.trustedDirs.some(d => within(d, dir))
   return ours || isTrusted(dir) ? ' (trusted)' : ''
 }
 

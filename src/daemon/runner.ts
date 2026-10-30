@@ -1,6 +1,7 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { samePath, within } from '../shared/paths'
 import { BRAND } from '../shared/brand'
 import type { Config } from '../shared/config'
 import type { ExecMode, Job, JobSpec, LaunchSpec, LimitState } from '../shared/types'
@@ -178,8 +179,7 @@ function realOf(path: string): string {
 }
 
 function inside(path: string, dir: string): boolean {
-  const d = realOf(dir)
-  return path === d || path.startsWith(d.endsWith(sep) ? d : d + sep)
+  return within(realOf(dir), path)
 }
 
 /** Whether a tool changes something: the edit tools, and anything from an MCP server. */
@@ -313,8 +313,8 @@ export class Runner {
       const b = theirs.dir
       if (!a || !b) continue
       // A worktree is a checkout of its own (it sits inside its project's folder): only the same one collides.
-      const nested = !mine.worktree && !theirs.worktree && (a.startsWith(`${b}/`) || b.startsWith(`${a}/`))
-      if (a === b || nested) return { job: other.id, why: 'folder' }
+      const nested = !mine.worktree && !theirs.worktree && (within(b, a) || within(a, b))
+      if (samePath(a, b) || nested) return { job: other.id, why: 'folder' }
     }
     return null
   }
@@ -741,7 +741,7 @@ export class Runner {
     const now = this.d.now()
     const config = this.d.config()
     rt.trust ??= { since: now }
-    const trusted = config.trustedDirs.some(d => job.projectDir === d || job.projectDir.startsWith(d.endsWith('/') ? d : d + '/'))
+    const trusted = config.trustedDirs.some(d => within(d, job.projectDir))
     if (!trusted && !rt.trust.approved) {
       if (!rt.trust.code) {
         rt.trust.code = this.newCode()

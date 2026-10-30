@@ -1,6 +1,6 @@
 # Push a tag that matches package.json (git tag v0.1.0 && git push origin v0.1.0) to publish a
-# release: after the type check and the tests, binaries for macOS (Apple Silicon, Intel) and
-# Linux (arm64, x64) are built, attested, and attached to a GitHub release with their checksums,
+# release: after the type check and the tests, binaries for macOS (Apple Silicon, Intel), Linux
+# (arm64, x64) and Windows (x64) are built, attested, and attached to a GitHub release with their checksums,
 # the install scripts (install.sh, install.ps1) and the Homebrew formula. With a HOMEBREW_TAP_TOKEN secret (write access to
 # <owner>/homebrew-tap), the tap is updated too. Run `bun run compat` before you tag: it needs a
 # Claude sign-in, so it isn't part of this workflow.
@@ -33,7 +33,7 @@ jobs:
         run: |
           version="$(jq -r .version package.json)"
           test "v$version" = "$GITHUB_REF_NAME" || { echo "Tag $GITHUB_REF_NAME doesn't match package.json ($version)."; exit 1; }
-      - name: Build for macOS and Linux
+      - name: Build for macOS, Linux and Windows
         run: |
           mkdir -p dist
           for arch in arm64 x64; do
@@ -41,8 +41,10 @@ jobs:
             codesign --force --sign - "dist/cq-darwin-$arch"
             bun build src/cli/cq.ts --compile --target="bun-linux-$arch" --outfile "dist/cq-linux-$arch"
           done
+          # One Windows build: Windows on Arm runs x64 programs as they are.
+          bun build src/cli/cq.ts --compile --target=bun-windows-x64 --outfile dist/cq-windows-x64.exe
           dist/cq-darwin-arm64 version
-          (cd dist && shasum -a 256 cq-darwin-arm64 cq-darwin-x64 cq-linux-arm64 cq-linux-x64 > SHA256SUMS && cat SHA256SUMS)
+          (cd dist && shasum -a 256 cq-darwin-arm64 cq-darwin-x64 cq-linux-arm64 cq-linux-x64 cq-windows-x64.exe > SHA256SUMS && cat SHA256SUMS)
           sed -e "s|{{repo}}|$GITHUB_REPOSITORY|g" install.sh > dist/install.sh
           if grep -n '{{' dist/install.sh; then echo "The install script still has placeholders."; exit 1; fi
           sed -e "s|{{repo}}|$GITHUB_REPOSITORY|g" install.ps1 > dist/install.ps1
@@ -65,7 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/cq-darwin-arm64 dist/cq-darwin-x64 dist/cq-linux-arm64 dist/cq-linux-x64 \
+          gh release create "$GITHUB_REF_NAME" dist/cq-darwin-arm64 dist/cq-darwin-x64 dist/cq-linux-arm64 dist/cq-linux-x64 dist/cq-windows-x64.exe \
             dist/SHA256SUMS dist/install.sh dist/install.ps1 dist/afterhours.rb \
             --title "Afterhours $GITHUB_REF_NAME" --generate-notes --verify-tag
       - name: Update the Homebrew tap

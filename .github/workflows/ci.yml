@@ -13,8 +13,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, so every step reads the same.
+        shell: bash
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -28,6 +32,7 @@ jobs:
       - run: bun test
       - name: Build the binary
         run: |
+          # On Windows bun adds .exe, which Git Bash finds by itself.
           bun build src/cli/cq.ts --compile --outfile dist/cq
           dist/cq version
       - name: Build the launcher (macOS)
@@ -35,3 +40,10 @@ jobs:
         run: clang -O2 -Wall -Werror -o dist/cq-launcher bin/cq-launcher.c
       - name: Check the install script
         run: sh -n install.sh
+      - name: Check the Windows install script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path install.ps1), [ref]$null, [ref]$errors)
+          if ($errors) { $errors; exit 1 }

@@ -1,7 +1,7 @@
 // One line saying what a tool call does, for a phone: the command, the file, the search. Paths
 // inside the task's folder are shown relative to it.
 
-import { relative } from 'node:path'
+import { isAbsolute, relative } from 'node:path'
 
 function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
@@ -16,7 +16,7 @@ function firstLine(text: string, max = 200): string {
 function shortPath(path: string, cwd?: string | null): string {
   if (!cwd) return path
   const rel = relative(cwd, path)
-  return rel && !rel.startsWith('..') && !rel.startsWith('/') ? rel : path
+  return rel && !rel.startsWith('..') && !isAbsolute(rel) ? rel.replace(/\\/g, '/') : path
 }
 
 /** `mcp__github__create_issue` → `github · create_issue`. */

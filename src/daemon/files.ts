@@ -54,7 +54,8 @@ export function resolveInside(root: string, rel: string): { abs: string; rel: st
   const target = real(join(top, rel || '.'))
   if (!target) return null
   if (target !== top && !target.startsWith(top.endsWith(sep) ? top : top + sep)) return null
-  const inside = relative(top, target)
+  // Apps get forward slashes, whatever system this is.
+  const inside = relative(top, target).replace(/\\/g, '/')
   if (isSecretPath(inside)) return null
   return { abs: target, rel: inside }
 }

@@ -220,7 +220,7 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       return `▶️ #${n.jobId} continues your chat ${name} after the usage limit (it was closed in ${n.where}).`
     }
     case 'recovered':
-      return `🔁 #${n.job.id}'s window was gone (the Mac restarted?), so it continues where it left off.`
+      return `🔁 #${n.job.id}'s window was gone (the ${process.platform === 'darwin' ? 'Mac' : process.platform === 'win32' ? 'PC' : 'computer'} restarted?), so it continues where it left off.`
     case 'killed':
       return `🛑 #${n.job.id} killed${n.by ? ` by ${n.by}` : ''} · ${projectLabel(n.job.projectDir, aliases)}`
     case 'link':

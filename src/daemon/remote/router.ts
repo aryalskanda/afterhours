@@ -4,7 +4,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { within } from '../../shared/paths'
 import type {
   AuditEntryInfo,
   ClaudeInfo,
@@ -232,7 +233,7 @@ export function allowedRoots(config: Config): string[] {
 /** Whether `path` is one of `roots` or inside one, after following symlinks. */
 export function isAllowed(path: string, roots: string[]): boolean {
   const p = realPath(resolve(expandHome(path)))
-  return roots.some(r => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep))
+  return roots.some(r => within(r, p))
 }
 
 /**

@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { pathKey, samePath, within } from '../shared/paths'
 
 export const CLAUDE_DIR = process.env.CQ_CLAUDE_DIR ?? join(homedir(), '.claude')
 export const CLAUDE_JSON = process.env.CQ_CLAUDE_JSON ?? join(homedir(), '.claude.json')
@@ -61,8 +62,10 @@ export function isTrusted(dir: string): boolean {
   } catch {
     return false
   }
+  // On Windows Claude Code keys these as it was given the folder ("D:/Code/app", "d:/Code/app").
+  const trusted = new Set(Object.entries(projects).flatMap(([path, p]) => (p?.hasTrustDialogAccepted ? [pathKey(path)] : [])))
   for (let d = dir; ; d = dirname(d)) {
-    if (projects[d]?.hasTrustDialogAccepted) return true
+    if (trusted.has(pathKey(d))) return true
     if (d === dirname(d)) return false
   }
 }
@@ -301,7 +304,7 @@ export function listConversations(dirs: string[], limit: number, claudeDir = CLA
     for (const f of files.slice(0, limit)) {
       const c = readConversation(f.path)
       // Different folders can map to the same store name; the recorded folder decides.
-      if (c && (c.cwd === dir || c.cwd === null)) found.push({ ...c, cwd: c.cwd ?? dir })
+      if (c && (c.cwd === null || samePath(c.cwd, dir))) found.push({ ...c, cwd: c.cwd ?? dir })
     }
   }
   return found.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
@@ -309,6 +312,7 @@ export function listConversations(dirs: string[], limit: number, claudeDir = CLA
 
 /** Scratch and system temp folders: chats there are test runs, not your work. */
 const TEMP_DIRS = /^\/(private\/)?(tmp|var\/folders)\//
+const inTemp = (cwd: string) => TEMP_DIRS.test(cwd) || (process.platform === 'win32' && within(tmpdir(), cwd))
 
 /**
  * Your most recent conversations across every project, newest first: `limit` of them after skipping
@@ -344,7 +348,7 @@ export function listRecentConversations(skip: number, limit: number, claudeDir =
   let usable = 0
   for (const f of files) {
     const c = readConversation(f.path)
-    if (!c?.cwd || TEMP_DIRS.test(c.cwd) || !existsSync(c.cwd)) continue
+    if (!c?.cwd || inTemp(c.cwd) || !existsSync(c.cwd)) continue
     if (usable++ < skip) continue
     if (chats.length === limit) return { chats, more: true }
     chats.push(c)

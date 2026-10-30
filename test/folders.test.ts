@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { FolderMap, kindOf, listChildren, parentWithin, relativeToRoots, scanFolders, searchFolders, skipFolder, walkFolders, within } from '../src/daemon/folders'
 import { Store } from '../src/daemon/store'
@@ -32,7 +32,7 @@ describe('scan and search', () => {
     const index = await scanFolders([root], 6, 1)
     const rel = index.folders.map(f => relativeToRoots(f.path, [root])).sort()
     expect(rel).toEqual(
-      ['alpha', 'alpha/src', 'alpha/src/components', 'beta', 'beta/docs', 'gamma-web', 'gamma-web/web', 'gamma-web/web/app', root.split('/').pop()!].sort(),
+      ['alpha', 'alpha/src', 'alpha/src/components', 'beta', 'beta/docs', 'gamma-web', 'gamma-web/web', 'gamma-web/web/app', basename(root)].sort(),
     )
     const shallow = await scanFolders([root], 1, 1)
     expect(shallow.folders.map(f => f.depth)).toEqual([0, 1, 1, 1])
