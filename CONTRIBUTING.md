@@ -112,7 +112,7 @@ Then restart the daemon and run `bun src/cli/cq.ts telegram` in the same shell. 
   bun run compat
   ```
 
-  It uses your Claude sign-in, runs three small Haiku tasks, and costs a few cents. If you can't run it, say so in the pull request. The check also runs every night in CI.
+  It uses your Claude sign-in, runs three small Haiku tasks, and costs a few cents. If you can't run it, say so in the pull request. Maintainers also run it before every release.
 
 - **Anything system-specific** (`src/platform/`, `install.sh`, `install.ps1`): say in the pull request which systems you tested on.
 

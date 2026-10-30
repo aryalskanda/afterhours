@@ -1,8 +1,9 @@
 # Push a tag that matches package.json (git tag v0.1.0 && git push origin v0.1.0) to publish a
-# release: the compatibility check runs first, then binaries for macOS (Apple Silicon, Intel) and
+# release: after the type check and the tests, binaries for macOS (Apple Silicon, Intel) and
 # Linux (arm64, x64) are built, attested, and attached to a GitHub release with their checksums,
 # the install scripts (install.sh, install.ps1) and the Homebrew formula. With a HOMEBREW_TAP_TOKEN secret (write access to
-# <owner>/homebrew-tap), the tap is updated too.
+# <owner>/homebrew-tap), the tap is updated too. Run `bun run compat` before you tag: it needs a
+# Claude sign-in, so it isn't part of this workflow.
 name: Release
 
 on:
@@ -16,13 +17,7 @@ permissions:
   attestations: write
 
 jobs:
-  compat:
-    uses: ./.github/workflows/compat.yml
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-
   release:
-    needs: compat
     runs-on: macos-latest
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

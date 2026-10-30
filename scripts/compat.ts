@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Compatibility check against the real Claude Code: run it before every release, and nightly
-// in CI. Afterhours answers a few Claude Code screens by their wording, so a Claude Code update
+// Compatibility check against the real Claude Code: run it before every release (and nightly
+// in CI, when the repository has an ANTHROPIC_API_KEY secret). Afterhours answers a few Claude Code screens by their wording, so a Claude Code update
 // can break it; this catches that. It starts a private daemon (throwaway home, port and tmux
 // socket) on a scratch git repo and pushes three small Haiku tasks through it:
 //   1. plan mode: the folder trust prompt and the plan dialog get answered, the work gets done
