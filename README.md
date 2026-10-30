@@ -110,6 +110,8 @@ bun install
 bun src/cli/cq.ts setup
 ```
 
+`cq setup` builds `cq` from the code, installs the background service and links `cq` into `~/.local/bin`. To update later, `git pull` and run `bun src/cli/cq.ts install`.
+
 ### Updating and uninstalling
 
 - **Update:** `cq update` (Homebrew installs: `brew upgrade afterhours`). The background service restarts into the new version by itself.
@@ -284,10 +286,11 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq setup` | Guided setup (safe to run again) |
 | `cq doctor` | Check Claude Code, tmux, the background service, Full Disk Access (Mac) and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
-| `cq folders` · `cq folders add <path>` | The project folders the bot searches · add or remove one |
+| `cq folders` · `cq folders add\|remove <path>` | The project folders the bot searches · add or remove one |
 | `cq awake` · `cq awake on\|off` · `cq awake lid on\|off` | Whether the computer stays awake while tasks run · turn that on or off · with the lid closed too |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
-| `cq update` | Update (Homebrew installs: `brew upgrade afterhours`) |
+| `cq install` · `cq daemon` | Install the background service again · run Afterhours in this terminal instead |
+| `cq update` · `cq --version` | Update to the latest release (Homebrew installs: `brew upgrade afterhours`) · the version you have |
 | `cq report` | Write a support file to your Desktop. It holds no prompts, code or tokens; read it before you send it. |
 | `cq uninstall` | Stop it and remove it from login items (keeps `~/.afterhours`) |
 
@@ -327,6 +330,7 @@ The words before the first colon count as options only if every one of them is a
 | `ls` · `st` · `peek [lines]` · `plan [#]` | Queue · status · screen · latest plan |
 | `chats [project]` | The folder's recent Claude Code chats from anywhere, with the ids `q @<id>:` takes |
 | `pause` / `go` | Stop starting new tasks / resume. `go` also retries a paused task |
+| `parallel 1\|2\|3` | How many tasks may run at once ([more](#run-tasks-side-by-side)) |
 | `sleep` · `sleep done` · `sleep cancel` | Put the computer to sleep now · once the queue is done · never mind |
 | `awake 2h` · `awake stop` | Stay awake that long (30m to 24h), tasks or not · sleep as usual again |
 | `stop` · `kill [#]` · `rm <#>` · `top <#>` | Interrupt (pauses it) · end a task now, with what it started (`skip` too) · remove one · run one next |
@@ -344,7 +348,7 @@ The words before the first colon count as options only if every one of them is a
 
 | Key | Default | |
 | --- | --- | --- |
-| `folders.roots` | chosen in `cq setup` | The project folders the folder browser and search cover. Change them with `cq folders add\|remove <path>`, . The map stays current: a watch updates it within seconds of a folder being made, renamed or removed, and the whole tree is checked every 15 minutes. It goes as deep as your folders do, and two levels inside a project (a git repo, a package…) |
+| `folders.roots` | chosen in `cq setup` | The project folders the folder browser and search cover. Change them with `cq folders add\|remove <path>`. The map stays current: a watch updates it within seconds of a folder being made, renamed or removed, and the whole tree is checked every 15 minutes. It goes as deep as your folders do, and two levels inside a project (a git repo, a package…) |
 | `defaults` | plan → auto, `sonnet`, `high` | Used for your first task; after that, new cards start with your last choices |
 | `isolate` | `true` | New conversations run on their own branch |
 | `models` | `opus`, `sonnet`, `haiku` | Model buttons |

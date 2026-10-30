@@ -183,10 +183,6 @@ export async function update(): Promise<void> {
     console.log('Running from source: pull the latest code, then run  bun src/cli/cq.ts install')
     return
   }
-  if (!BRAND.repo) {
-    console.log(`Updates will come from ${BRAND.name}'s GitHub releases once they're published.`)
-    return
-  }
   const res = await fetch(`https://api.github.com/repos/${BRAND.repo}/releases/latest`, { headers: { accept: 'application/vnd.github+json' } })
   if (!res.ok) throw new Error(`GitHub answered ${res.status}`)
   const release = (await res.json()) as { tag_name: string; assets: { name: string; browser_download_url: string }[] }
