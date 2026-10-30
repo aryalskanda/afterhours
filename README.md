@@ -61,13 +61,13 @@ curl -fsSL https://github.com/aryalskanda/afterhours/releases/latest/download/in
 
 ### Windows 10 or 11
 
-Afterhours runs inside **WSL**, Linux built into Windows, which the installer turns on for you. Right-click the Start button, choose **Terminal (Admin)** or **Windows PowerShell (Admin)**, and paste:
+Afterhours runs natively on Windows: no WSL, and no administrator rights. Open **PowerShell** or **Windows Terminal** and paste:
 
 ```powershell
 irm https://github.com/aryalskanda/afterhours/releases/latest/download/install.ps1 | iex
 ```
 
-Windows may ask you to restart once (Ubuntu opens afterwards and asks you to pick a username and password). Run the same line again after that to finish. More in [docs/windows.md](docs/windows.md).
+It installs Git for Windows and Claude Code if they're missing (it asks first), puts `cq` on your Path and runs `cq setup`. More in [docs/windows.md](docs/windows.md).
 
 ### Linux, and servers in the cloud
 
@@ -79,10 +79,10 @@ Works on Ubuntu 22.04+, Debian 12+, Fedora, Arch, Amazon Linux 2023 and the like
 
 ### What the installer does
 
-1. Installs `tmux`, `git` and `curl` with your system's package manager if they're missing (Homebrew on a Mac; it asks first).
+1. Installs `tmux`, `git` and `curl` with your system's package manager if they're missing (Homebrew on a Mac; it asks first). On Windows it needs only Git for Windows (with `winget`): tasks run in Windows' own terminals instead of tmux.
 2. Installs Claude Code with Anthropic's own installer if it isn't there.
 3. Downloads Afterhours, checks it against the release's checksums, and puts `cq` on your PATH.
-4. Starts it in the background, so it runs whenever you're signed in (a LaunchAgent on a Mac, a systemd service on Linux).
+4. Starts it in the background, so it runs whenever you're signed in (a LaunchAgent on a Mac, a systemd service on Linux, a startup app on Windows).
 5. Runs **`cq setup`**, which walks you through:
    - signing Claude Code in, if you haven't;
    - choosing your code folders;
@@ -268,7 +268,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 
 ### Watching and taking over
 
-- `cq attach` shows the running task live, read-only. Detach with `Ctrl-b d`.
+- `cq attach` shows the running task live, read-only. Detach with `Ctrl-b d` (on Windows, `Ctrl-C`).
 - Finished tasks are ordinary Claude Code conversations named `Afterhours: <prompt>`, so you can pick one up in VS Code or the terminal.
 - **Don't** open a conversation elsewhere while Afterhours is running it: two Claude processes writing one conversation will fork it. If the conversation a task needs is already open elsewhere, Afterhours waits until you close it. You can also tap **Take over** (close it there and continue here) or **Use a copy**.
 
@@ -277,7 +277,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | Command | What it does |
 | --- | --- |
 | `cq setup` | Guided setup (safe to run again) |
-| `cq doctor` | Check Claude Code, tmux, the background service, Full Disk Access (Mac) and Telegram |
+| `cq doctor` | Check Claude Code, tmux (Git Bash and the terminal host on Windows), the background service, Full Disk Access (Mac) and Telegram |
 | `cq telegram <token>` · `cq telegram off` | Connect a different bot · stop using Telegram |
 | `cq folders` · `cq folders add\|remove <path>` | The project folders the bot searches · add or remove one |
 | `cq awake` · `cq awake on\|off` · `cq awake lid on\|off` | Whether the computer stays awake while tasks run · turn that on or off · with the lid closed too |
@@ -366,7 +366,7 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
 
 ## How it works
 
-- **The real Claude Code.** Each task runs the unmodified `claude` command in a private tmux session (`tmux -L afterhours`). It starts with `--model`, `--effort` and `--permission-mode`, and follow-ups use `--resume`. Claude Code signs in as it always does on your computer; Afterhours never sees your credentials.
+- **The real Claude Code.** Each task runs the unmodified `claude` command in a private tmux session (`tmux -L afterhours`); on Windows, in a pseudo console in Afterhours's own terminal host ([more](docs/windows.md#how-it-runs-on-windows)). It starts with `--model`, `--effort` and `--permission-mode`, and follow-ups use `--resume`. Claude Code signs in as it always does on your computer; Afterhours never sees your credentials.
 - **Hooks for everything else.** Afterhours passes per-session settings with `--settings`, so your own `~/.claude/settings.json` is never touched. These settings add hooks that report to Afterhours on `127.0.0.1`: the end of a turn, usage-limit stops, permission requests and Claude's questions. They also add a status line that carries your limit windows.
 - **Two dialogs answered with keystrokes.** Claude Code doesn't let hooks approve a plan or trust a folder, so Afterhours reads those dialogs and presses the option for the task. It accepts the folder-trust dialog only for folders you've approved: the first time a task runs in a new folder, your phone asks you. A [compatibility check](scripts/compat.ts) runs all of this against the newest Claude Code release before each Afterhours release.
 - **Your other chats.** To list chats and spot usage-limit stops, Afterhours reads Claude Code's own records: running sessions in `~/.claude/sessions` and transcripts in `~/.claude/projects`. To continue an open chat after a limit, it posts one message into that session's inbox, Claude Code's own messaging between sessions on this computer. Taking a chat over sends that window's Claude process a normal quit signal (SIGTERM), then resumes the conversation with `--resume`.
@@ -391,7 +391,7 @@ Next to it: `state.db` (queue and history), the folder map (in `state.db`), `log
 - Still stuck? Open an issue with the file from `cq report` attached.
 
 - `cq: command not found` right after installing: open a **new** terminal (the installer added `~/.local/bin` to your PATH), or run `~/.afterhours/bin/cq doctor`.
-- Windows: if Afterhours stops when you close the Ubuntu window, run `cq doctor` in Ubuntu and see [docs/windows.md](docs/windows.md).
+- Windows: `cq: not recognized` right after installing means the window predates the new Path: open a new one. More in [docs/windows.md](docs/windows.md#troubleshooting).
 - Linux over SSH: if the background service stops when you log out, run `loginctl enable-linger $USER`.
 
 ## Development
@@ -409,7 +409,7 @@ For an isolated instance, set `CQ_HOME=/tmp/ah-dev CQ_TMUX_SOCKET=ah-dev` and se
 Releases: bump `version` in `package.json`, run `bun run compat`, then push a matching tag (`git tag v0.6.0 && git push origin v0.6.0`). The release workflow:
 
 1. runs the type check and the tests;
-2. builds the macOS (Apple Silicon, Intel) and Linux (arm64, x64) binaries, with checksums and build attestations;
+2. builds the macOS (Apple Silicon, Intel), Linux (arm64, x64) and Windows (x64) binaries, with checksums and build attestations;
 3. publishes them with `install.sh`, `install.ps1` and a filled-in Homebrew formula (macOS and Linux);
 4. updates the tap when a `HOMEBREW_TAP_TOKEN` secret is set (write access to `<owner>/homebrew-tap`).
 
@@ -422,7 +422,8 @@ Where things are:
 - `src/daemon/screens.ts`: the screens answered with keystrokes.
 - `src/daemon/commands.ts`: the text commands.
 - `src/telegram/`: the bot.
-- `src/platform/`: what differs by system: the background service, staying awake and sleeping, Full Disk Access.
+- `src/platform/`: what differs by system: the background service, staying awake and sleeping, Full Disk Access, and Windows' own APIs (`win32.ts`: pseudo consoles, the process list).
+- `src/daemon/winterm.ts`: on Windows, the terminal host the tasks run in (what tmux is elsewhere).
 - `src/cli/`: `cq` and `cq setup`.
 - `bin/cq-launcher.c`: the launcher that holds Full Disk Access.
 

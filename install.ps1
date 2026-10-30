@@ -1,21 +1,26 @@
-# Installs Afterhours on Windows. Afterhours runs inside WSL (Linux on Windows), which this sets up.
+# Installs Afterhours on Windows 10 (1809 or newer) and Windows 11, natively: no WSL, no
+# administrator rights.
 #
 #   irm https://github.com/{{repo}}/releases/latest/download/install.ps1 | iex
 #
-# What it does, asking before each step:
-#   1. turns on WSL with Ubuntu, if it isn't (Windows may ask you to restart; run this again after);
-#   2. turns on systemd inside Ubuntu, which Afterhours runs as a background service;
-#   3. runs the Linux installer inside Ubuntu (tmux, Claude Code, Afterhours, then `cq setup`);
-#   4. adds a sign-in task so Ubuntu, and so Afterhours, is running whenever you are signed in.
+# What it does, asking before it installs anything:
+#   1. Git for Windows, if it's missing (Claude Code runs its commands with Git Bash), with winget;
+#   2. Claude Code, if it's missing, with Anthropic's own installer;
+#   3. cq.exe, checked against the release's checksums, in %USERPROFILE%\.afterhours\bin, and that
+#      folder on your Path;
+#   4. `cq setup`: signing Claude in, your code folders, the defaults, starting Afterhours in the
+#      background whenever you sign in to Windows, and your Telegram bot.
 #
 # Settings, as environment variables:
-#   AFTERHOURS_REPO=owner/repo  where releases come from
-#   AFTERHOURS_VERSION=v0.6.0   install that release instead of the latest
-#   AFTERHOURS_YES=1            answer yes to every question
+#   AFTERHOURS_REPO=owner/repo      where releases come from
+#   AFTERHOURS_VERSION=v0.6.0       install that release instead of the latest
+#   AFTERHOURS_YES=1                answer yes to every question
+#   AFTERHOURS_BINARY=C:\...\cq.exe install this file instead of downloading one (for testing a build)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is many times slower with its progress bar
 
 $repo = if ($env:AFTERHOURS_REPO) { $env:AFTERHOURS_REPO } else { '{{repo}}' }
-$distro = 'Ubuntu'
+$asset = 'cq-windows-x64.exe'
 
 function Say($text) { Write-Host $text }
 function Step($text) { Write-Host ""; Write-Host $text -ForegroundColor Cyan }
@@ -25,86 +30,122 @@ function Ask($question) {
   $answer = Read-Host "$question [Y/n]"
   return ($answer -eq '' -or $answer -match '^(y|yes)$')
 }
-function IsAdmin {
-  $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# This window's Path again from the registry, so programs just installed are found.
+function Refresh-Path {
+  $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
 }
-# The Ubuntu distro, if it's installed (wsl.exe prints UTF-16, hence the replace).
-function HasDistro {
-  $list = (& wsl.exe --list --quiet 2>$null) -join "`n"
-  return (($list -replace "`0", '') -split "`n" | ForEach-Object { $_.Trim() }) -contains $distro
+function Find-GitBash {
+  $candidates = @($env:CLAUDE_CODE_GIT_BASH_PATH)
+  foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, "$env:LOCALAPPDATA\Programs")) {
+    if ($root) { $candidates += Join-Path $root 'Git\bin\bash.exe' }
+  }
+  $git = Get-Command git.exe -ErrorAction SilentlyContinue
+  if ($git) { $candidates += Join-Path (Split-Path (Split-Path $git.Source)) 'bin\bash.exe' }
+  return $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
-function InUbuntu([string]$command) {
-  & wsl.exe -d $distro -- bash -lc $command
-  return $LASTEXITCODE
+# The real claude.exe: Anthropic's installer puts it in ~\.local\bin; npm keeps it under node_modules.
+function Find-Claude {
+  $native = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
+  if (Test-Path $native) { return $native }
+  $found = Get-Command claude.exe, claude.cmd, claude -ErrorAction SilentlyContinue | Select-Object -First 1
+  return $found
 }
 
 function Install-Afterhours {
-if ($repo -like '*{*') { Fail 'Set $env:AFTERHOURS_REPO to owner/repo: this copy of the script did not come with a release.' }
+if ($repo -like '*{*' -and -not $env:AFTERHOURS_BINARY) { Fail 'Set $env:AFTERHOURS_REPO to owner/repo: this copy of the script did not come with a release.' }
 Say 'Afterhours: line up Claude Code tasks from Telegram; they run on this PC while you are away.'
 
-# --- 1. WSL with Ubuntu -------------------------------------------------------------------------
-$wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
-if (-not $wsl -or -not (HasDistro)) {
-  Step '1. WSL and Ubuntu'
-  Say 'Afterhours runs in Ubuntu, inside Windows (WSL). Windows installs it for you.'
-  if (-not (IsAdmin)) { Fail 'Installing WSL needs administrator rights. Close this window, open PowerShell with "Run as administrator", and run the command again.' }
-  if (-not (Ask 'Install WSL and Ubuntu now?')) { Fail 'Afterhours needs WSL. Run this again when you are ready.' }
-  & wsl.exe --install -d $distro
+# --- Windows itself ------------------------------------------------------------------------------
+$build = [Environment]::OSVersion.Version.Build
+if ($build -lt 17763) { Fail "This is Windows build $build. Afterhours needs Windows 10 version 1809 (build 17763) or newer: update Windows, then run this again." }
+if (-not [Environment]::Is64BitOperatingSystem) { Fail 'Afterhours needs 64-bit Windows.' }
+
+# --- 1. Git for Windows ----------------------------------------------------------------------------
+Step '1. Git for Windows'
+if (-not (Find-GitBash)) {
+  Say 'Claude Code on Windows runs its commands with Git Bash, which comes with Git for Windows.'
+  $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+  if (-not $winget) { Fail 'Install Git for Windows from https://git-scm.com/downloads/win, open a new PowerShell window, and run this again.' }
+  if (-not (Ask 'Install Git for Windows now (winget install Git.Git)?')) { Fail 'Afterhours needs Git for Windows. Run this again when you are ready.' }
+  & winget.exe install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+  Refresh-Path
+  if (-not (Find-GitBash)) { Fail 'Git did not install. Install it from https://git-scm.com/downloads/win, then run this again.' }
+}
+Say "Git Bash: $(Find-GitBash)"
+
+# --- 2. Claude Code ----------------------------------------------------------------------------------
+Step '2. Claude Code'
+if (-not (Find-Claude)) {
+  Say 'Afterhours runs Claude Code, Anthropic''s coding assistant, with your own Claude account.'
+  if (-not (Ask 'Install Claude Code now (its official installer, from claude.ai)?')) { Fail 'Install Claude Code (https://claude.com/claude-code), then run this again.' }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command 'irm https://claude.ai/install.ps1 | iex'
+  Refresh-Path
+  if (-not (Find-Claude)) { Fail 'Claude Code did not install. See https://claude.com/claude-code, then run this again.' }
+}
+Say 'Claude Code is installed.'
+
+# --- 3. cq.exe -----------------------------------------------------------------------------------
+Step '3. Afterhours'
+$home_ = if ($env:CQ_HOME) { $env:CQ_HOME } else { Join-Path $env:USERPROFILE '.afterhours' }
+$bin = Join-Path $home_ 'bin'
+$cq = Join-Path $bin 'cq.exe'
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+# Ends in .exe, so Windows runs it for the check below.
+$new = Join-Path $bin "cq.$PID.new.exe"
+if ($env:AFTERHOURS_BINARY) {
+  Say "Using $($env:AFTERHOURS_BINARY)"
+  Copy-Item -LiteralPath $env:AFTERHOURS_BINARY -Destination $new -Force
+} else {
+  $base = if ($env:AFTERHOURS_VERSION) { "https://github.com/$repo/releases/download/$($env:AFTERHOURS_VERSION)" } else { "https://github.com/$repo/releases/latest/download" }
+  Say "Downloading $asset from $base"
+  Invoke-WebRequest -UseBasicParsing -Uri "$base/$asset" -OutFile $new
+  $sums = (Invoke-WebRequest -UseBasicParsing -Uri "$base/SHA256SUMS").Content
+  if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+  $expected = ($sums -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?$([regex]::Escape($asset))$" } | ForEach-Object { $Matches[1] } | Select-Object -First 1)
+  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $new).Hash
+  if (-not $expected -or $actual -ne $expected.ToUpper()) {
+    Remove-Item -LiteralPath $new -Force
+    Fail "The download of $asset does not match the release's checksum; nothing was installed."
+  }
+  Say 'Checked it against the release''s checksums.'
+}
+Unblock-File -LiteralPath $new -ErrorAction SilentlyContinue
+& $new version | Out-Null
+if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $new -Force; Fail 'The downloaded cq.exe does not run on this PC.' }
+# A cq.exe that is running can't be replaced, but it can be moved aside; Afterhours deletes it later.
+if (Test-Path -LiteralPath $cq) { Move-Item -LiteralPath $cq -Destination "$cq.old-$([DateTimeOffset]::Now.ToUnixTimeMilliseconds())" -Force }
+Move-Item -LiteralPath $new -Destination $cq
+Say "Installed $cq ($(& $cq version))"
+
+# On your Path (new windows see it), through the registry so your other %VARIABLES% stay as they are.
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$parts = @(([string]$key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')) -split ';' | Where-Object { $_ })
+if (-not ($parts | Where-Object { $_.TrimEnd('\') -eq $bin })) {
+  $key.SetValue('Path', (($parts + $bin) -join ';'), 'ExpandString')
+  # Tells Windows (and new windows) the Path changed.
+  [Environment]::SetEnvironmentVariable('AFTERHOURS_PATH_CHANGED', '1', 'User')
+  [Environment]::SetEnvironmentVariable('AFTERHOURS_PATH_CHANGED', $null, 'User')
+  Say "Added $bin to your Path."
+}
+if (-not (($env:Path -split ';') -contains $bin)) { $env:Path = "$env:Path;$bin" }
+
+# The old way (Afterhours inside WSL) kept Ubuntu running with a scheduled task; it isn't needed now.
+$old = Get-ScheduledTask -TaskName 'Afterhours' -ErrorAction SilentlyContinue
+if ($old -and $old.Actions.Execute -match 'wsl') {
   Say ''
-  Say 'Windows may need to restart now. After that, Ubuntu opens and asks you to choose a username and password.'
-  Say 'When it is done, close it, and run the same command again to finish.'
-  return
+  Say 'An earlier Afterhours ran inside WSL (Ubuntu), with a scheduled task that keeps Ubuntu running.'
+  Say 'Afterhours now runs on Windows itself. Stop the one in Ubuntu (run "cq uninstall" there) so only one uses your Telegram bot.'
+  if (Ask 'Remove the scheduled task that keeps Ubuntu running?') { Unregister-ScheduledTask -TaskName 'Afterhours' -Confirm:$false }
 }
 
-# Ubuntu has a user (first start done)?
-$user = "$(& wsl.exe -d $distro -- bash -c 'id -un' 2>$null)".Trim()
-if (-not $user -or $user -eq 'root') {
-  Fail "Open Ubuntu once from the Start menu and choose a username and password, then run this command again."
-}
-
-# --- 2. systemd inside Ubuntu ---------------------------------------------------------------------
-Step '2. Background service support (systemd)'
-$hasSystemd = (InUbuntu 'test -d /run/systemd/system') -eq 0
-if (-not $hasSystemd) {
-  Say 'Turning on systemd in Ubuntu (it needs your Ubuntu password once).'
-  if (-not (Ask 'Turn it on and restart Ubuntu?')) { Fail 'Afterhours needs systemd. Run this again when you are ready.' }
-  [void](& wsl.exe -d $distro -u root -- bash -c "grep -qs '^systemd=true' /etc/wsl.conf || printf '[boot]\nsystemd=true\n' >> /etc/wsl.conf")
-  & wsl.exe --shutdown
-  Start-Sleep -Seconds 3
-  [void](& wsl.exe -d $distro -- true)
-  Start-Sleep -Seconds 5
-  if ((InUbuntu 'test -d /run/systemd/system') -ne 0) { Fail 'systemd did not start. Update WSL (run "wsl --update" in PowerShell) and run this again.' }
-}
-Say 'systemd is on.'
-
-# --- 3. The Linux installer, inside Ubuntu -------------------------------------------------------
-Step '3. Afterhours, in Ubuntu'
-$version = if ($env:AFTERHOURS_VERSION) { "AFTERHOURS_VERSION=$($env:AFTERHOURS_VERSION) " } else { '' }
-$yes = if ($env:AFTERHOURS_YES -eq '1') { 'AFTERHOURS_YES=1 ' } else { '' }
-$url = "https://github.com/$repo/releases/latest/download/install.sh"
-if ($env:AFTERHOURS_VERSION) { $url = "https://github.com/$repo/releases/download/$($env:AFTERHOURS_VERSION)/install.sh" }
-$code = InUbuntu "curl -fsSL $url | ${version}${yes}AFTERHOURS_REPO=$repo sh"
-if ($code -ne 0) { Fail 'The installer inside Ubuntu did not finish. Read what it said above, fix that, and run this command again.' }
-
-# --- 4. Keep Ubuntu running while you are signed in --------------------------------------------
-# WSL stops Ubuntu when nothing is using it, which would stop Afterhours. A task at sign-in holds it open.
-Step '4. Keeping Afterhours running'
-try {
-  $action = New-ScheduledTaskAction -Execute 'wsl.exe' -Argument "-d $distro --exec /bin/sh -c ""exec sleep infinity"""
-  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
-  Register-ScheduledTask -TaskName 'Afterhours' -Action $action -Trigger $trigger -Settings $settings -Description 'Keeps Ubuntu (and Afterhours in it) running while you are signed in.' -Force | Out-Null
-  Start-ScheduledTask -TaskName 'Afterhours'
-  Say 'Done: Afterhours keeps running whenever you are signed in to Windows.'
-} catch {
-  Say "Could not add the sign-in task ($($_.Exception.Message))."
-  Say 'Afterhours still runs while an Ubuntu window is open. To keep it running without one, run "wsl -d Ubuntu --exec sleep infinity" in a hidden window at sign-in.'
-}
-
+# --- 4. cq setup -------------------------------------------------------------------------------------
+Step '4. Setting it up (cq setup)'
+& $cq setup
 Say ''
-Say 'All set. To check anything later, open Ubuntu and run: cq doctor'
-Say 'To keep working with the lid closed: Control Panel > Power Options > "Choose what closing the lid does" > Do nothing.'
+Say 'To check anything later, open PowerShell or Windows Terminal and run: cq doctor'
+Say "(In a window that was already open, run it as: & `"$cq`" doctor)"
 }
 
 # Inside a function, so that an error (or `return`) never closes the window this was pasted into.

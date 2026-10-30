@@ -4,7 +4,7 @@ Afterhours runs the same on Linux as on a Mac: the queue, plans, permissions, us
 
 ## What you need
 
-- Linux on x64 or arm64: Ubuntu 22.04 or newer, Debian 12 or newer, Fedora, Amazon Linux 2023, and the like. Windows 11 works through WSL2 (see below).
+- Linux on x64 or arm64: Ubuntu 22.04 or newer, Debian 12 or newer, Fedora, Amazon Linux 2023, and the like. On Windows, Afterhours runs natively: see [windows.md](windows.md). It also still runs inside WSL2 as on any Linux.
 - tmux, git and curl: `sudo apt-get install -y tmux git curl` (or `dnf`, `pacman`…).
 - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`, then sign in (see below).
 
@@ -74,7 +74,7 @@ To skip the SSH sign-in, put the `claude setup-token` token in `/home/ubuntu/.af
 
 ## Windows
 
-Windows runs Afterhours inside WSL2. The one-line installer sets that up: see [windows.md](windows.md).
+Afterhours runs natively on Windows, with its own installer: see [windows.md](windows.md). Inside WSL2 it is the Linux version: install it there as above, with systemd turned on (`[boot]` and `systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown`).
 
 ## Docker
 
