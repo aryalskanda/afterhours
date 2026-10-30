@@ -5,9 +5,3 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Afterhours runs Claude Code, which is made by Anthropic and used under each person's own
 Claude account and terms. Afterhours is not made by, affiliated with, or endorsed by Anthropic.
-
-src/imessage/chatdb.ts and src/imessage/bridge.ts adapt code from the iMessage channel plugin
-in anthropics/claude-plugins-official (external_plugins/imessage/server.ts): reading chat.db,
-decoding attributedBody, detecting your own addresses, filtering self-chat echoes, and sending
-through Messages.app with osascript. That code is licensed under the Apache License, Version 2.0:
-http://www.apache.org/licenses/LICENSE-2.0

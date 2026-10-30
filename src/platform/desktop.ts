@@ -73,7 +73,7 @@ export function keepAwakeCommand(pid: number, o: { lid?: boolean } = {}): string
 export function hasFullDiskAccess(): boolean {
   if (!isMac) return true
   try {
-    // chat.db is protected, and checking it never pops up a prompt.
+    // A file macOS protects with Full Disk Access; reading it never pops up a prompt.
     closeSync(openSync(join(homedir(), 'Library', 'Messages', 'chat.db'), 'r'))
     return true
   } catch {

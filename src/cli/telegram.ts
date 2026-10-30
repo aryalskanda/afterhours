@@ -47,10 +47,8 @@ export async function telegramCommand(args: string[]): Promise<boolean> {
     ownerId: sameBot ? config.telegram.ownerId : null,
     ownerName: sameBot ? config.telegram.ownerName : null,
   }
-  const turnedOffIMessage = config.imessage.enabled
-  config.imessage.enabled = false
   saveConfig(config)
-  console.log(`Connected to ${bot}.${turnedOffIMessage ? ' iMessage is now off (Telegram replaces it).' : ''}`)
+  console.log(`Connected to ${bot}.`)
 
   if (agentLoaded()) restartAgent()
   else console.log(`(${BRAND.name} isn't running in the background; if \`cq daemon\` is running, it picks this up in a few seconds.)`)

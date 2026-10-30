@@ -57,9 +57,8 @@ export interface Config {
   /** Run each new conversation on its own git branch (a worktree), so your checkout is never touched. */
   isolate: boolean
   notify: 'all' | 'important' | 'off'
-  imessage: { enabled: boolean; allowSms: boolean }
   timeouts: {
-    /** How long a permission request waits for your iMessage reply before it is denied. */
+    /** How long a permission request waits for your answer before it is denied. */
     approvalSec: number
     /** How long one of Claude's questions waits for your answer. */
     questionSec: number
@@ -151,7 +150,6 @@ export const DEFAULT_CONFIG: Config = {
   trustedDirs: [],
   isolate: true,
   notify: 'all',
-  imessage: { enabled: false, allowSms: false },
   timeouts: {
     approvalSec: 900,
     questionSec: 900,
@@ -196,7 +194,6 @@ export function loadConfig(): Config {
     defaults: { ...DEFAULT_CONFIG.defaults, ...raw.defaults },
     aliases: { ...raw.aliases },
     trustedDirs: [...(raw.trustedDirs ?? [])],
-    imessage: { ...DEFAULT_CONFIG.imessage, ...raw.imessage },
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...raw.timeouts },
     telegram: { ...DEFAULT_CONFIG.telegram, ...raw.telegram },
     folders: { ...DEFAULT_CONFIG.folders, ...raw.folders, roots: [...(raw.folders?.roots ?? DEFAULT_CONFIG.folders.roots)] },

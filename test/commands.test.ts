@@ -157,7 +157,7 @@ describe('sleeping, in text', () => {
     const mac = sys
       ? new PowerControl({ system: sys, store, runner, config: () => config, saveConfig: () => {}, notify: n => notices.push(n.type), now: Date.now, log: () => {}, later: () => {} })
       : null
-    return { notices, ctx: { runner, store, config: () => config, saveConfig: () => {}, now: Date.now, source: 'imessage' as const, mac } }
+    return { notices, ctx: { runner, store, config: () => config, saveConfig: () => {}, now: Date.now, source: 'cli' as const, mac } }
   }
 
   test('sleep, sleep done and sleep cancel; with nothing to sleep, a plain no', async () => {
