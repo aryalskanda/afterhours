@@ -2,13 +2,16 @@
 // queue is done, and a Mac kept awake with its lid closed. Nothing really sleeps.
 
 import { describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { LidAwake } from '../src/daemon/awake'
 import { PowerControl } from '../src/daemon/power'
 import type { Notice } from '../src/daemon/notify'
 import type { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
 import { keepAwakeCommand } from '../src/platform/desktop'
-import { machineWord, parseIdle, parseLoginctlIdle, sleepDisabled, type PowerKind } from '../src/platform/power'
+import { lidActionSwitch, machineWord, parseIdle, parseLidAction, parseLoginctlIdle, parseWindowsBattery, sleepDisabled, type PowerKind, type PowercfgRun } from '../src/platform/power'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { FakePower, FakeSleepSwitch } from './fakes'
 
@@ -295,5 +298,116 @@ describe('awake with the lid closed', () => {
     expect(t.sleep.calls).toEqual([true, false])
     await t.power.lidClosed(false)
     expect(t.config().keepAwakeLidClosed).toBe(false)
+  })
+})
+
+describe('Windows: the lid action of the power plan', () => {
+  const query = (ac: number, dc: number) =>
+    `Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\n  Subgroup GUID: 4f971e89-eebd-4455-a8de-9e59040e7347  (Power buttons and lid)\n    Power Setting GUID: 5ca83367-6e45-459f-a27b-476b1d01c936  (Lid close action)\n    Possible Setting Index: 000\n    Current AC Power Setting Index: 0x${ac.toString(16).padStart(8, '0')}\n    Current DC Power Setting Index: 0x${dc.toString(16).padStart(8, '0')}\n`
+
+  /** powercfg, faked: the lid values it holds, and every call it got. */
+  function powercfg(ac: number, dc: number, o: { refuse?: boolean } = {}) {
+    const state = { ac, dc, calls: [] as string[] }
+    const run: PowercfgRun = args => {
+      state.calls.push(args.join(' '))
+      if (o.refuse) return { code: 1, out: '' }
+      if (args[0] === '/query') return { code: 0, out: query(state.ac, state.dc) }
+      if (args[0] === '/setacvalueindex') state.ac = Number(args.at(-1))
+      if (args[0] === '/setdcvalueindex') state.dc = Number(args.at(-1))
+      return { code: 0, out: '' }
+    }
+    return { state, run }
+  }
+  const file = () => join(mkdtempSync(join(tmpdir(), 'cq-lid-')), 'lid.json')
+
+  test('the values are read from powercfg in any language, and the battery from Windows', () => {
+    expect(parseLidAction(query(1, 3))).toEqual({ ac: 1, dc: 3 })
+    expect(parseLidAction('Aktueller Wechselstromeinstellungsindex: 0x00000001\nAktueller Gleichstromeinstellungsindex: 0x00000002')).toEqual({ ac: 1, dc: 2 })
+    expect(parseLidAction('nothing')).toBeNull()
+    expect(parseWindowsBattery('85 2\r\n')).toEqual({ pct: 85, charging: true })
+    expect(parseWindowsBattery('15 1')).toEqual({ pct: 15, charging: false })
+    expect(parseWindowsBattery('')).toBeNull()
+  })
+
+  test('held: the lid does nothing; released: what it was comes back', async () => {
+    const f = file()
+    const p = powercfg(1, 1)
+    const sw = lidActionSwitch(p.run, f)
+    expect(await sw.allowed()).toBe(true)
+    expect(await sw.set(true)).toBe(true)
+    expect([p.state.ac, p.state.dc]).toEqual([0, 0])
+    expect(p.state.calls.at(-1)).toBe('/setactive SCHEME_CURRENT')
+    expect(await sw.set(false)).toBe(true)
+    expect([p.state.ac, p.state.dc]).toEqual([1, 1])
+    expect(existsSync(f)).toBe(false)
+  })
+
+  test('a crash while holding: a new switch still puts the values back, and holding twice keeps the first values', async () => {
+    const f = file()
+    const p = powercfg(1, 2)
+    await lidActionSwitch(p.run, f).set(true)
+    const again = lidActionSwitch(p.run, f)
+    expect(await again.set(true)).toBe(true) // would otherwise save the 0s as the values to restore
+    expect(again.setNow(false)).toBe(true)
+    expect([p.state.ac, p.state.dc]).toEqual([1, 2])
+  })
+
+  test('a lid that already does nothing is left as it is', async () => {
+    const f = file()
+    const p = powercfg(0, 0)
+    const sw = lidActionSwitch(p.run, f)
+    expect(await sw.set(true)).toBe(true)
+    expect(existsSync(f)).toBe(false)
+    expect(p.state.calls).toEqual(['/query SCHEME_CURRENT SUB_BUTTONS LIDACTION'])
+    expect(await sw.set(false)).toBe(true)
+    expect(p.state.calls).toHaveLength(1)
+  })
+
+  test('a PC that refuses: nothing is held, and nothing is saved', async () => {
+    const f = file()
+    const sw = lidActionSwitch(powercfg(1, 1, { refuse: true }).run, f)
+    expect(await sw.allowed()).toBe(false)
+    expect(await sw.set(true)).toBe(false)
+    expect(existsSync(f)).toBe(false)
+  })
+
+  test('PowerControl: the PC can hold the lid like a Mac, with its own wording when it cannot', async () => {
+    const sys = new FakePower('wsl')
+    const sleep = new FakeSleepSwitch(sys)
+    const mk = () => {
+      const store = new Store(':memory:')
+      const awake = new LidAwake({ system: sys, sleep, store, now: () => 1_000_000, log: () => {} })
+      let config: Config = { ...DEFAULT_CONFIG }
+      return { config: () => config, power: new PowerControl({ system: sys, store, runner: { paused: false } as Runner, config: () => config, saveConfig: c => (config = c), notify: () => {}, now: () => 1_000_000, log: () => {}, lid: { awake, sleep } }) }
+    }
+    const ok = mk()
+    expect((await ok.power.lidClosed(true)).ok).toBe(true)
+    expect(ok.config().keepAwakeLidClosed).toBe(true)
+    expect((await ok.power.status()).lidClosed).toEqual({ on: true, ready: true, holding: false })
+    sleep.allowedNow = false
+    const no = mk()
+    expect(await no.power.lidClosed(true)).toMatchObject({ ok: false })
+    expect((await no.power.lidClosed(true)).text).toContain('When I close the lid: Do nothing')
+  })
+
+  test('not set up: the person is told once, and it is tried again only now and then', async () => {
+    const sys = new FakePower('mac')
+    const sleep = new FakeSleepSwitch(sys)
+    sleep.allowedNow = false
+    let now = 1_000_000
+    let told = 0
+    let attempts = 0
+    const counting = { allowed: () => sleep.allowed(), set: (off: boolean) => (attempts++, sleep.set(off)), setNow: (off: boolean) => sleep.setNow(off) }
+    const awake = new LidAwake({ system: sys, sleep: counting, store: new Store(':memory:'), now: () => now, log: () => {}, needsSetup: () => told++ })
+    await awake.tick(true)
+    expect(told).toBe(1)
+    expect(attempts).toBe(1)
+    now += 61_000
+    await awake.tick(true)
+    expect(attempts).toBe(1) // 5 minutes between tries, not 1
+    now += 5 * 60_000
+    await awake.tick(true)
+    expect(attempts).toBe(2)
+    expect(told).toBe(1)
   })
 })

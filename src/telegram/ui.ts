@@ -1210,17 +1210,18 @@ export const AWAKE_HOURS = [1, 4, 12]
 /** This computer: staying awake (while tasks run, with the lid closed, for a while) and sleeping. */
 export function macView(s: PowerStatus, now: number): View {
   const word = machineWord(s.kind)
-  const lid = s.kind === 'wsl' ? null : s.lidClosed
+  const lid = s.lidClosed
   const until = s.awake ? esc(formatClock(s.awake.until, now)) : null
   const state = until ? `awake until ${until}` : s.keepAwake && s.running !== null ? `awake while #${s.running} runs` : s.sleepWhenDone.on ? 'sleeps once the queue is done' : 'sleeps when idle, as usual'
-  const lidText = !lid
-    ? '<i>With the lid closed, Windows decides: set “When I close the lid: Do nothing” in its power settings.</i>'
-    : `With the lid closed: <b>${onOff(lid.on)}</b>. ` +
+  const lidText =
+    `With the lid closed: <b>${onOff(lid.on)}</b>. ` +
       (lid.on && lid.ready
-        ? `Closing the lid doesn’t sleep it while it stays awake${s.kind === 'mac' ? ' (below 20% battery it may)' : ''}${lid.holding ? '; doing so now' : ''}.`
+        ? `Closing the lid doesn’t sleep it while it stays awake${s.kind !== 'linux' ? ' (below 20% battery it may)' : ''}${lid.holding ? '; doing so now' : ''}.`
         : s.kind === 'mac' && !lid.ready
           ? 'It needs a one-time setup at the Mac: in Terminal, run <code>cq awake lid on</code> (it asks for your password once).'
-          : 'Closing the lid sleeps it, tasks or not.')
+          : s.kind === 'wsl' && !lid.ready
+            ? 'Windows wouldn’t let Afterhours change this: set “When I close the lid: Do nothing” in its power settings.'
+            : 'Closing the lid sleeps it, tasks or not.')
   const sections = [
     [`<b>This ${word}</b> · ${state}`],
     [
@@ -1241,10 +1242,10 @@ export function macView(s: PowerStatus, now: number): View {
   return {
     html,
     keyboard: [
-      [btn(`While tasks run: ${onOff(s.keepAwake)}`, 'm:k'), ...(lid ? [btn(`Lid closed: ${onOff(lid.on)}`, 'm:l')] : [])],
+      [btn(`While tasks run: ${onOff(s.keepAwake)}`, 'm:k'), ...(s.kind === 'wsl' && !lid.ready ? [] : [btn(`Lid closed: ${onOff(lid.on)}`, 'm:l')])],
       AWAKE_HOURS.map(h => btn(chosen(s.awake?.hours === h, `Awake ${h}h`), `m:a:${s.awake?.hours === h ? 0 : h}`)),
       [btn(`Sleep when done: ${onOff(s.sleepWhenDone.on)}`, 'm:d'), btn('Sleep now', 'm:s')],
-      [btn('Refresh', 'm:r'), ...(lid && s.kind === 'mac' && !lid.ready ? [{ text: 'Copy the command', copy_text: { text: 'cq awake lid on' } }] : [])],
+      [btn('Refresh', 'm:r'), ...(s.kind === 'mac' && !lid.ready ? [{ text: 'Copy the command', copy_text: { text: 'cq awake lid on' } }] : [])],
     ],
   }
 }

@@ -74,7 +74,7 @@ export interface PowerDeps {
   now: () => number
   log: (line: string) => void
   later?: (run: () => void, ms: number) => void
-  /** macOS: awake with the lid closed, through the sudo rule. */
+  /** macOS (through the sudo rule) and Windows (the power plan's lid action): awake with the lid closed. */
   lid?: { awake: LidAwake; sleep: SleepSwitch }
   /** Linux: whether systemd-inhibit is there to hold off the lid switch. */
   canInhibitLid?: boolean
@@ -113,11 +113,11 @@ export class PowerControl {
 
   /** Whether "awake with the lid closed" can be done here, set up or not. */
   get lidSupported(): boolean {
-    return this.d.system.kind === 'mac' ? Boolean(this.d.lid) : this.d.system.kind === 'linux' ? Boolean(this.d.canInhibitLid) : false
+    return this.d.system.kind === 'linux' ? Boolean(this.d.canInhibitLid) : Boolean(this.d.lid)
   }
 
   private async lidReady(): Promise<boolean> {
-    if (this.d.system.kind === 'mac') return (await this.d.lid?.sleep.allowed()) ?? false
+    if (this.d.system.kind !== 'linux') return (await this.d.lid?.sleep.allowed()) ?? false
     return this.lidSupported
   }
 
@@ -125,7 +125,7 @@ export class PowerControl {
     const config = this.d.config()
     const [disabled, idle, ready] = await Promise.all([this.d.system.sleepDisabled(), this.d.system.idleSeconds(), this.lidReady()])
     const plan = this.plan()
-    const holding = this.d.system.kind === 'mac' ? (this.d.lid?.awake.holds ?? false) : config.keepAwakeLidClosed && (this.d.holdingAwake?.() ?? false)
+    const holding = this.d.system.kind !== 'linux' ? (this.d.lid?.awake.holds ?? false) : config.keepAwakeLidClosed && (this.d.holdingAwake?.() ?? false)
     return {
       kind: this.d.system.kind,
       apps: [],
@@ -179,8 +179,8 @@ export class PowerControl {
         text: this.d.system.kind === 'wsl' ? 'Windows sleeps when the lid closes. Set "When I close the lid: Do nothing" in Windows’ power settings.' : `This ${this.word} can’t do that.`,
       }
     }
-    if (on && this.d.system.kind === 'mac' && !(await this.lidReady())) {
-      return { ok: false, text: 'It needs your password once, at the Mac. In Terminal: cq awake lid on' }
+    if (on && this.d.system.kind !== 'linux' && !(await this.lidReady())) {
+      return { ok: false, text: this.d.system.kind === 'mac' ? 'It needs your password once, at the Mac. In Terminal: cq awake lid on' : `Windows wouldn’t let Afterhours change what closing the lid does. Set “When I close the lid: Do nothing” in Windows’ power settings.` }
     }
     const config = this.d.config()
     this.d.saveConfig({ ...config, keepAwakeLidClosed: on, ...(on ? { keepAwake: true } : {}) })
@@ -188,7 +188,7 @@ export class PowerControl {
     return {
       ok: true,
       text: on
-        ? `While tasks run, the ${this.word} stays awake with its lid closed too.${this.d.system.kind === 'mac' ? ' Below 20% battery it may sleep.' : ''}`
+        ? `While tasks run, the ${this.word} stays awake with its lid closed too.${this.d.system.kind !== 'linux' ? ' Below 20% battery it may sleep.' : ''}`
         : `Closing the lid sleeps the ${this.word} again, tasks or not.`,
     }
   }

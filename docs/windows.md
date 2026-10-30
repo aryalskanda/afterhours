@@ -79,7 +79,7 @@ Use **PowerShell** or **Windows Terminal**:
 
 - **Folders.** Setup lets you browse for the folder, your other drives included. To change it later, use the bot's **Settings → Project folders** (**Change folder** or **Add another**, with Up, Next and Previous to move around), or type a Windows path anywhere: `cq folders add "D:\My Projects"`, or `q D:\Code\shop plan: …` in the bot or the terminal.
 - **Staying awake.** While tasks run, Afterhours asks Windows not to sleep. When the work is done, the PC sleeps as usual.
-- **Lid closed (laptops).** Windows decides this, not Afterhours. In Control Panel → Power Options → "Choose what closing the lid does", pick **Do nothing** for plugged in (and on battery, if you like).
+- **Lid closed (laptops).** Run `cq awake lid on` (or switch **Lid closed** on in the bot). While tasks run, Afterhours sets Windows' "When I close the lid" to **Do nothing**, for plugged in and on battery, and puts your own setting back when they're done, when you turn it off, or when the battery is below 20%. It needs no administrator rights. If your PC is managed and refuses, set **Do nothing** yourself in Control Panel → Power Options → "Choose what closing the lid does".
 - **Sleeping from your phone.** **Sleep now** in the bot (or `/sleep`) puts the PC to sleep. It can't wake it again: open the lid or press a key.
 - **VS Code chats.** **💬 Chats** lists your VS Code and terminal chats too. When Afterhours takes over a chat that's open in VS Code, it ends that window's Claude process. Windows has no polite "please quit" signal for it, so finish what you were typing first.
 

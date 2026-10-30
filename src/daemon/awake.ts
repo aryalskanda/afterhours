@@ -1,8 +1,9 @@
-// A Mac awake with the lid closed. While there are tasks, `caffeinate` (platform/desktop.ts) keeps
+// A Mac (or a Windows PC) awake with the lid closed. While there are tasks, `caffeinate` (platform/desktop.ts) keeps
 // an open Mac from idle sleep, but closing the lid sleeps it through any assertion. With
 // `keepAwakeLidClosed` on, sleep is turned off altogether while there's work (`pmset disablesleep`)
 // and back on when it's done. It needs the sudo rule `cq awake lid on` puts in
 // place. Sleep is only ever turned back on if this turned it off, and a low battery turns it back on.
+// On Windows the same happens to the power plan's lid action (platform/power.ts), which needs no rule.
 
 import type { PowerSystem, SleepSwitch } from '../platform/power'
 import type { Store } from './store'
@@ -13,6 +14,8 @@ const KEY = 'awake.lid'
 export const LOW_BATTERY_PCT = 20
 /** How often to look again after it didn't turn sleep off, or found the battery low. */
 const RETRY_MS = 60_000
+/** After it couldn't turn sleep off (not set up): try again this seldom. */
+const RETRY_FAILED_MS = 5 * 60_000
 
 export interface AwakeDeps {
   system: Pick<PowerSystem, 'sleepDisabled' | 'battery'>
@@ -20,6 +23,8 @@ export interface AwakeDeps {
   store: Store
   now: () => number
   log: (line: string) => void
+  /** Called when sleep couldn't be turned off, so the person can be told how to fix it. */
+  needsSetup?: () => void
 }
 
 export class LidAwake {
@@ -64,8 +69,12 @@ export class LidAwake {
       if (await this.d.system.sleepDisabled()) return
       if (await this.low()) return
       if (!(await this.d.sleep.set(true))) {
-        if (!this.failed) this.d.log("awake: couldn't turn sleep off for a closed lid; at the Mac, run: cq awake lid on")
+        if (!this.failed) {
+          this.d.log("awake: couldn't turn sleep off for a closed lid; at the computer, run: cq awake lid on")
+          this.d.needsSetup?.()
+        }
         this.failed = true
+        this.retryAt = now + RETRY_FAILED_MS
         return
       }
       this.failed = false

@@ -198,6 +198,7 @@ async function menu(): Promise<void> {
         console.log('Saved. It picks it up within a few seconds.')
       },
     ],
+    ['Keep working with the lid closed', async () => void (await awakeCommand(['lid', 'on']))],
     ['Connect my Telegram bot again', () => telegramStep()],
     ['Update to the newest version', () => update()],
     ['Restart it', () => console.log(restartAgent() ? `Restarted ${BRAND.name}.` : `Couldn't restart: ${BRAND.name} isn't installed. Run cq setup.`)],

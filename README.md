@@ -273,7 +273,7 @@ Nothing extra to install: Afterhours uses what each system already has.
 - **With the lid closed too** (laptops): `cq awake lid on`, or **Lid closed** under **Mac** in the bot.
   - **Mac:** it turns sleep off while tasks run and back on after (and when the battery drops below 20%). That takes your password **once**, to allow exactly two `pmset` commands and nothing else.
   - **Linux:** the same lock also holds off the lid switch. No password.
-  - **Windows:** Windows decides. In Control Panel → Power Options → "Choose what closing the lid does", pick **Do nothing**.
+  - **Windows:** while tasks run, the power plan's "When I close the lid" is set to **Do nothing**, and put back afterwards (also below 20% battery). No password or administrator rights. If a managed PC doesn't allow it, `cq awake lid on` says so; set **Do nothing** by hand in Control Panel → Power Options → "Choose what closing the lid does".
 - **Stay awake for a while, tasks or not** (for a task set for later, or to reach the computer): **Awake 1h**, **Awake 4h** or **Awake 12h** under **Mac** in the bot (tap the ticked one again to stop), or the text commands `awake 2h`, `awake 30m`, `awake stop`. At most a day at a time; then it sleeps as usual. With **Lid closed** on, it stays awake with the lid closed too.
 - **Sleep now, or when the queue is done:** **Sleep now** (it asks twice, on the button) and **Sleep when done** under **Mac** in the bot, `/sleep`, or the text commands `sleep`, `sleep done`, `sleep cancel`. Sleeping says so first, then goes a few seconds later so the message reaches you. "When done" waits for nothing to be running, a quiet minute, and nobody at the computer for 5 minutes. Then the switch turns itself off. Sleeping, now or when done, ends staying awake for a while, and staying awake for a while turns sleeping when done off: the last one you asked for wins.
 - A running task pauses while the computer sleeps, and continues when it wakes. The phone can't wake it: open the lid or press a key.
@@ -379,7 +379,7 @@ The words before the first colon count as options only if every one of them is a
 | `timeouts.limitGraceSec` | 180 | Wait after a reset before Afterhours types `continue` itself |
 | `timeouts.backgroundSec` | 600 | How long to wait for background commands after a turn |
 | `keepAwake` | `true` | Keep the computer from idle-sleeping while tasks are pending (closing the lid still sleeps it unless the next row is on) |
-| `keepAwakeLidClosed` | `false` | And with the lid closed too. On a Mac, sleep is turned off while tasks are pending and back on when they're done or the battery is below 20%; set it up with `cq awake lid on` (asks for your password once). On Linux it's a lock on the lid switch |
+| `keepAwakeLidClosed` | `false` | And with the lid closed too. On a Mac, sleep is turned off while tasks are pending and back on when they're done or the battery is below 20%; set it up with `cq awake lid on` (asks for your password once; until then `cq doctor` says so, and Afterhours tells you on Telegram once a day). On Linux it's a lock on the lid switch. On Windows it sets the power plan's lid action to "do nothing" while tasks are pending |
 | `remoteControl` | `false` | Start sessions with `--remote-control` so they also appear in the Claude app |
 | `watchSessions` | `true` | Message you when one of your other chats (VS Code, a terminal) stops on a usage limit |
 | `autoContinueChats` | `true` | And continue it by itself at the reset: inside the open chat, else through the queue |

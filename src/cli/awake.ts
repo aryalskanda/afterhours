@@ -2,19 +2,20 @@
 // (keepAwake). `cq awake lid on` keeps it awake with the lid closed too: on Linux, a systemd-inhibit
 // lock on the lid switch; on a Mac it takes turning sleep off (pmset disablesleep) and so root: it
 // asks for your password once, to put a sudo rule in place that allows exactly that and nothing else
-// (platform/power.ts). Windows decides about its lid itself.
+// (platform/power.ts). On Windows, the power plan's lid action is set to "do nothing" while tasks run
+// and put back after; no rights needed.
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { LOW_BATTERY_PCT } from '../daemon/awake'
-import { machineWord, powerSystem, SUDOERS_FILE, sudoersRule, systemSleepSwitch } from '../platform/power'
+import { machineWord, powerSystem, SUDOERS_FILE, sudoersRule, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
 import { loadConfig, saveConfig } from '../shared/config'
 
 const USAGE = 'Usage: cq awake [status] | cq awake on|off | cq awake lid on|off'
 
 /** Asks for your password (in this terminal) to put the sudo rule in place; true once it works. */
-async function installRule(): Promise<boolean> {
+export async function installRule(): Promise<boolean> {
   const dir = mkdtempSync(join(tmpdir(), 'cq-awake-'))
   const file = join(dir, 'afterhours')
   try {
@@ -45,7 +46,8 @@ export async function awakeCommand(args: string[]): Promise<boolean> {
     } else if (power?.kind === 'linux') {
       console.log(`With the lid closed: ${config.keepAwakeLidClosed ? 'stays awake too (a systemd-inhibit lock on the lid switch)' : 'sleeps (cq awake lid on to change)'}`)
     } else if (power?.kind === 'wsl') {
-      console.log('With the lid closed: Windows decides. Set "When I close the lid: Do nothing" in Windows’ power settings to keep working.')
+      const ready = await windowsLidSwitch.allowed()
+      console.log(`With the lid closed: ${config.keepAwakeLidClosed ? (ready ? 'stays awake too (the power plan’s lid action is "do nothing" while tasks run)' : 'on, but Windows wouldn’t let Afterhours change it: set "When I close the lid: Do nothing" in Windows’ power settings') : 'sleeps (cq awake lid on to change)'}`)
     }
     return true
   }
@@ -73,8 +75,18 @@ export async function awakeCommand(args: string[]): Promise<boolean> {
     console.log('Done. While tasks run, closing the lid doesn’t sleep the computer; once they’re done, it does again.')
     return true
   }
+  if (power?.kind === 'wsl') {
+    if (!(await windowsLidSwitch.allowed())) {
+      console.error('Windows wouldn’t let Afterhours change what closing the lid does. Set "When I close the lid: Do nothing" in Windows’ power settings (Control Panel → Power Options → Choose what closing the lid does).')
+      return false
+    }
+    saveConfig({ ...config, keepAwake: true, keepAwakeLidClosed: true })
+    console.log('Done. While tasks run, closing the lid doesn’t sleep the PC; once they’re done, Windows’ own setting is put back.')
+    console.log(`On battery below ${LOW_BATTERY_PCT}% it may sleep. Turn it off with: cq awake lid off`)
+    return true
+  }
   if (power?.kind !== 'mac') {
-    console.error(power?.kind === 'wsl' ? 'On Windows, set "When I close the lid: Do nothing" in Windows’ power settings (Control Panel → Power Options → Choose what closing the lid does).' : 'There is no lid to hold here.')
+    console.error('There is no lid to hold here.')
     return false
   }
   if (!(await systemSleepSwitch.allowed()) && !(await installRule())) {
