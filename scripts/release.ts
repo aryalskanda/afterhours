@@ -192,7 +192,13 @@ async function main(): Promise<void> {
   }
   if (!runId) stop(`The Release workflow didn't start for ${tag}. Look at https://github.com/${repo}/actions`)
   if (live(['gh', 'run', 'watch', runId, '--exit-status']) !== 0) {
-    stop(`The Release workflow failed: https://github.com/${repo}/actions/runs/${runId}\nThe tag ${tag} exists. Fix the cause, then delete the tag (git push origin :refs/tags/${tag}) and run this again with ${version}.`)
+    stop(
+      `The Release workflow failed: https://github.com/${repo}/actions/runs/${runId}\n` +
+        `Nothing was published, and main and the tag ${tag} stay as they are.\n` +
+        `- A flaky step (a test that passed before): run it again with  gh run rerun ${runId} --failed\n` +
+        `- A real problem: fix it on main in a pull request, then move the tag to the fixed commit:\n` +
+        `    git fetch origin && git tag -f ${tag} origin/main && git push -f origin ${tag}`,
+    )
   }
 
   step('Checking the release')
