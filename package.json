@@ -1,6 +1,6 @@
 {
   "name": "afterhours",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Queue Claude Code tasks from your phone; they run on your computer while you're away",
   "license": "Apache-2.0",
