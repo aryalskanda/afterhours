@@ -213,14 +213,16 @@ describe('a map that stays true', () => {
       const { map, store } = mapOver(tree, { watch: true, settleMs: 100 })
       await map.refresh()
       map.refreshIfStale() // starts the watch
+      // FSEvents takes a moment to start, and on a busy CI Mac to report: a folder made at once can be missed.
+      await Bun.sleep(500)
       mkdirSync(join(tree, 'plain', 'watched-new'))
       let found: string[] = []
-      for (let i = 0; i < 40 && found.length === 0; i++) {
+      for (let i = 0; i < 150 && found.length === 0; i++) {
         await Bun.sleep(100)
         found = await names(store, map, 'watched-new')
       }
       map.stopWatching()
       expect(found).toEqual(['watched-new'])
-    })
+    }, 20_000)
   }
 })
