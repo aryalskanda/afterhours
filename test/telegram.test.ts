@@ -306,6 +306,21 @@ describe('pairing', () => {
   })
 })
 
+describe('updates', () => {
+  test('a newer release is told to the owner, with what to run; before pairing there is nobody to tell', async () => {
+    const h = setup()
+    expect(await h.bridge.updateAvailable('0.7.0', '0.6.0', 'cq update')).toBe(false)
+    const p = await paired()
+    const before = p.api.sent.length
+    expect(await p.bridge.updateAvailable('0.7.0', '0.6.0', 'brew upgrade afterhours')).toBe(true)
+    expect(p.api.sent).toHaveLength(before + 1)
+    const last = p.api.last()
+    expect(p.api.view(last.id).html).toContain('is out</b> (this computer has 0.6.0)')
+    expect(p.api.view(last.id).html).toContain('<code>brew upgrade afterhours</code>')
+    expect(last.silent).toBe(true)
+  })
+})
+
 describe('the look', () => {
   /** Every button on a message, as its words. */
   const words = (h: Harness, id: number) => labels(h, id).join(' | ')

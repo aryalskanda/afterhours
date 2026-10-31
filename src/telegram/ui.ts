@@ -560,6 +560,17 @@ export function draftCard(d: Draft, ctx: UiContext, x: CardExtras = {}): View {
 export const CHATS_PER_PAGE = 8
 
 /** Your recent chats from every project, newest first. */
+/** Tells the owner a newer release is out and what to type on the computer. */
+export function updateView(latest: string, current: string, command: string, name: string): View {
+  return {
+    html:
+      `<b>${esc(name)} ${esc(latest)} is out</b> (this computer has ${esc(current)}).\n` +
+      `On the computer, run: <code>${esc(command)}</code>\n` +
+      '<i>It restarts itself with the new version; tasks keep going.</i>',
+    silent: true,
+  }
+}
+
 export function recentChatsView(chats: Chat[], page: number, more: boolean, ctx: NoticeContext): View {
   const lines = chats.map((c, i) => {
     const state = chatState(c)

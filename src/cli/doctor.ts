@@ -2,7 +2,8 @@ import { Database } from 'bun:sqlite'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { VERSION } from '../daemon/main'
+import { selfCommand, VERSION } from '../daemon/main'
+import { updateNotice } from '../daemon/updates'
 import { isTrusted } from '../daemon/sessions'
 import { BRAND } from '../shared/brand'
 import { findHost } from '../daemon/winterm'
@@ -14,7 +15,7 @@ import { relayHealth } from './remote'
 import { daemonHealth, run } from './util'
 
 export interface Check {
-  level: 'ok' | 'bad' | 'info'
+  level: 'ok' | 'bad' | 'warn' | 'info'
   text: string
 }
 
@@ -47,6 +48,7 @@ export async function checks(): Promise<Check[]> {
   const ok = (text: string) => out.push({ level: 'ok', text })
   const bad = (text: string) => out.push({ level: 'bad', text })
   const info = (text: string) => out.push({ level: 'info', text })
+  const warn = (text: string) => out.push({ level: 'warn', text })
   const config = loadConfig()
 
   const claude = claudeStatus()
@@ -89,6 +91,9 @@ export async function checks(): Promise<Check[]> {
     else info('Telegram: not set up (cq telegram <token>)')
   }
 
+  const update = updateNotice(selfCommand(), VERSION)
+  if (update) warn(update)
+
   const svc = service()
   if (!svc.installed()) info(svc.kind === 'none' ? `Not started by itself: there's no service manager here, so run cq daemon (cq install says how)` : 'Not set to start by itself: run cq install')
   else if (svc.kind === 'launchd') ok('Starts at login')
@@ -110,7 +115,7 @@ export async function checks(): Promise<Check[]> {
   return out
 }
 
-const SYMBOL = { ok: '✔', bad: '✖', info: '•' }
+const SYMBOL = { ok: '✔', bad: '✖', warn: '▲', info: '•' }
 
 export function formatChecks(list: Check[]): string {
   return list.map(c => `${SYMBOL[c.level]} ${c.text}`).join('\n')
