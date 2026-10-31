@@ -29,7 +29,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - name: Tests
+        run: bun test
+        env:
+          # Windows' default temp folder is spelled with 8.3 short names (RUNNER~1), but git reports
+          # long ones (runneradmin), so the tests' folders would never match git's paths.
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
       - name: Build the binary
         run: |
           # On Windows bun adds .exe, which Git Bash finds by itself.
