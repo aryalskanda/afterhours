@@ -31,6 +31,8 @@ export const paths = {
   binary: join(CQ_HOME, 'bin', WINDOWS ? 'cq.exe' : 'cq'),
   hookScript: join(CQ_HOME, 'bin', 'cq-hook'),
   statusScript: join(CQ_HOME, 'bin', 'cq-statusline'),
+  /** Windows: the lid action to put back after holding it (platform/power.ts). */
+  lidAction: join(CQ_HOME, 'lid.json'),
   tmuxConf: join(CQ_HOME, 'tmux.conf'),
   /** Windows: where the terminal host (what tmux is elsewhere) listens. */
   termHost: join(CQ_HOME, 'term.json'),

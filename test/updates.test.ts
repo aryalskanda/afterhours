@@ -43,6 +43,8 @@ test('the latest release comes from GitHub, and errors are errors', async () => 
 test('what to type: cq update, brew upgrade for Homebrew, nothing from source', () => {
   expect(updateCommand(['/home/me/.afterhours/bin/cq'])).toBe('cq update')
   expect(updateCommand(['/usr/local/bin/bun', '/code/src/cli/cq.ts'])).toBeNull()
+  // Homebrew is macOS and Linux only: its paths have forward slashes.
+  if (process.platform === 'win32') return
   const cellar = mkdtempSync(join(tmpdir(), 'cq-brew-'))
   require('node:fs').mkdirSync(join(cellar, 'bin'), { recursive: true })
   require('node:fs').mkdirSync(join(cellar, 'Cellar', 'afterhours', '0.6.0', 'bin'), { recursive: true })

@@ -9,6 +9,7 @@ import { BRAND } from '../shared/brand'
 import { findHost } from '../daemon/winterm'
 import { codeRoots, findClaude, findExecutable, findGitBash, loadConfig, paths, readToken } from '../shared/config'
 import { installHint, isMac, isWindows, MIN_WINDOWS_BUILD, osLabel, windowsBuild } from '../platform/os'
+import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
 import { service } from '../platform/service'
 import { launcherPath } from './install'
 import { relayHealth } from './remote'
@@ -89,6 +90,13 @@ export async function checks(): Promise<Check[]> {
     else if ('bot' in tg && tg.ok) bad(`Telegram: ${tg.bot} is running but not paired yet (cq telegram shows the code)`)
     else if (config.telegram.enabled) bad(`Telegram: ${tg.error ?? 'not running'}`)
     else info('Telegram: not set up (cq telegram <token>)')
+  }
+
+  const power = config.keepAwakeLidClosed ? powerSystem() : null
+  if (power?.kind === 'mac' || power?.kind === 'wsl') {
+    const ready = await (power.kind === 'mac' ? systemSleepSwitch : windowsLidSwitch).allowed()
+    if (ready) ok('Awake with the lid closed: on, and set up')
+    else bad(power.kind === 'mac' ? 'Awake with the lid closed is on but not set up, so closing the lid sleeps the Mac: run cq awake lid on (asks for your password once)' : 'Awake with the lid closed is on but Windows wouldn’t let Afterhours change it: set "When I close the lid: Do nothing" in Windows’ power settings')
   }
 
   const update = updateNotice(selfCommand(), VERSION)

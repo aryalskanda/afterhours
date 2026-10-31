@@ -38,7 +38,7 @@ import { Store } from './store'
 import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
-import { powerSystem, systemSleepSwitch } from '../platform/power'
+import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
 import { isMac, isWindows, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF, type TmuxDriver } from './tmux'
@@ -170,7 +170,29 @@ export async function runDaemon(): Promise<void> {
   // Staying awake and sleeping, with the system's own tools, from the apps, the bot and text commands.
   const power = powerSystem()
   const keepAwake = new KeepAwake()
-  const lidAwake = power?.kind === 'mac' ? new LidAwake({ system: power, sleep: systemSleepSwitch, store, now: Date.now, log }) : null
+  const lidSwitch = power?.kind === 'mac' ? systemSleepSwitch : power?.kind === 'wsl' ? windowsLidSwitch : null
+  const lidAwake =
+    power && lidSwitch
+      ? new LidAwake({
+          system: power,
+          sleep: lidSwitch,
+          store,
+          now: Date.now,
+          log,
+          // Said where the person will see it, not only in the log: at most once a day.
+          needsSetup: () => {
+            if (Date.now() - (store.kvGet<number>('warned.lid') ?? 0) < 24 * 3600_000) return
+            store.kvSet('warned.lid', Date.now())
+            notifier.send({
+              type: 'setup_warning',
+              message:
+                power.kind === 'mac'
+                  ? 'Closing the lid will put the Mac to sleep, tasks or not: awake with the lid closed isn’t set up. At the Mac, in Terminal, run: cq awake lid on (it asks for your password once).'
+                  : 'Closing the lid will put the PC to sleep: Windows wouldn’t let Afterhours change what closing the lid does. In Windows’ power settings, set “When I close the lid: Do nothing”.',
+            })
+          },
+        })
+      : null
   const mac = power
     ? new PowerControl({
         system: power,
@@ -181,7 +203,7 @@ export async function runDaemon(): Promise<void> {
         notify: notice => notifier.send(notice),
         now: Date.now,
         log,
-        lid: lidAwake ? { awake: lidAwake, sleep: systemSleepSwitch } : undefined,
+        lid: lidAwake && lidSwitch ? { awake: lidAwake, sleep: lidSwitch } : undefined,
         canInhibitLid: power.kind === 'linux' && Bun.which('systemd-inhibit') !== null,
         holdingAwake: () => keepAwake.holding,
       })

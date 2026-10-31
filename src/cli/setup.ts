@@ -177,10 +177,6 @@ async function fullDiskAccess(result: InstallResult): Promise<void> {
 async function awakeStep(): Promise<void> {
   const where = isMac ? 'Mac' : isWindows || isWsl() ? 'PC' : 'computer'
   console.log(`  While tasks run, the ${where} stays awake by itself, and sleeps as usual once they're done.`)
-  if (isWindows || isWsl()) {
-    console.log('  With the lid closed, Windows decides: set "When I close the lid: Do nothing" in Control Panel → Power Options.')
-    return
-  }
   if (!confirmYes('  Is this a laptop you want to keep working with its lid closed?')) {
     console.log('  Skipped. Turn it on later with: cq awake lid on')
     return
