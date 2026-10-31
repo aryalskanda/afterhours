@@ -265,7 +265,6 @@ function summaryLines(d: Draft, ctx: UiContext, chat: Chat | null): string[] {
   const extras = [
     d.wantLink ? 'a live link at the end' : '',
     d.maxMinutes ? `stops after ${limitText(d.maxMinutes)} of work` : '',
-    d.attachments.length > 0 ? `${d.attachments.length} file${d.attachments.length === 1 ? '' : 's'} for Claude to read` : '',
   ].filter(Boolean)
   return [
     `Folder: ${d.folder ? `<b>${esc(ctx.label(d.folder))}</b>` : '<i>pick one</i>'}`,
@@ -274,7 +273,17 @@ function summaryLines(d: Draft, ctx: UiContext, chat: Chat | null): string[] {
     ...(split ? [`Plan: <b>${esc(modelEffort(d.model, d.effort))}</b>`, `Work: <b>${esc(work)}</b>`] : [`Model: <b>${esc(modelEffort(d.model, d.effort))}</b>`]),
     `Starts: <b>${esc(startText(d, ctx))}</b>`,
     ...(extras.length > 0 ? [`Also: ${extras.join(' · ')}`] : []),
+    ...(d.editJob ? [] : [attachLine(d.attachments.length)]),
   ]
+}
+
+/** Most screenshots and files one task can have. */
+export const MAX_ATTACHMENTS = 10
+
+/** Screenshots on the card, or how to add them: Telegram's 📎 is all it takes, but nothing says so otherwise. */
+function attachLine(n: number): string {
+  if (n === 0) return '📎 Screenshots: <i>send them here (📎 → Photo or File), up to 10, then tap Queue.</i>'
+  return `📎 Screenshots and files: <b>${n} attached</b>${n < MAX_ATTACHMENTS ? '. Send more here, or remove them below.' : ' (the most a task can have).'}`
 }
 
 /** The card's tabs, each with what it shows above them. */
@@ -501,14 +510,12 @@ function moreSection(d: Draft, ctx: UiContext): Section {
       '<b>More</b>',
       `Live link: <b>${onOff(d.wantLink)}</b>. It ends with a claude.ai page showing the result, to open on your phone.`,
       `Time limit: <b>${d.maxMinutes ? limitText(d.maxMinutes) : 'none'}</b>. It stops after that much work; you can let it go on.`,
-      d.editJob ? '' : `Files: <b>${d.attachments.length > 0 ? d.attachments.length : 'none'}</b>. Send a photo or file in this chat to attach it.`,
     ]
       .filter(Boolean)
       .join('\n'),
     rows: [
       [btn(`Live link: ${onOff(d.wantLink)}`, `d:${id}:l`)],
       TIME_LIMITS.map(m => btn(chosen((d.maxMinutes ?? 0) === m, m === 0 ? 'None' : m < 60 ? `${m}m` : `${m / 60}h`), `d:${id}:tl:${m}`)),
-      ...(d.attachments.length > 0 ? [[btn(`Remove the file${d.attachments.length === 1 ? '' : 's'}`, `d:${id}:at:x`)]] : []),
     ],
   }
 }
@@ -523,7 +530,11 @@ export function draftCard(d: Draft, ctx: UiContext, x: CardExtras = {}): View {
   const v = parseView(d.view)
   const tab = v.tab && (editing ? EDIT_TABS : TABS).includes(v.tab) ? v.tab : null
   const chat = d.sessionId ? ctx.chat(d.sessionId) : null
-  const prompt = d.prompt ? quote(d.prompt, 1500) : d.folder ? '<i>Now send the prompt as your next message.</i>' : '<i>Pick a folder, then send the prompt as your next message.</i>'
+  const prompt = d.prompt
+    ? quote(d.prompt, 1500)
+    : d.folder
+      ? '<i>Now send the prompt as your next message.</i>'
+      : '<i>Pick a folder, then send the prompt as your next message.</i>'
   const section =
     tab === 'folder'
       ? folderSection(d, ctx, x, v)
@@ -551,7 +562,12 @@ export function draftCard(d: Draft, ctx: UiContext, x: CardExtras = {}): View {
       ]
   return {
     html,
-    keyboard: [...(section?.rows ?? []), ...tabs, editing ? [btn('Save', `d:${id}:q`), btn('Cancel', `d:${id}:x`)] : [btn('Queue', `d:${id}:q`), btn('Discard', `d:${id}:x`)]],
+    keyboard: [
+      ...(section?.rows ?? []),
+      ...tabs,
+      ...(!editing && d.attachments.length > 0 ? [[btn(`📎 Remove the ${d.attachments.length === 1 ? 'attached file' : `${d.attachments.length} attached`}`, `d:${id}:at:x`)]] : []),
+      editing ? [btn('Save', `d:${id}:q`), btn('Cancel', `d:${id}:x`)] : [btn('Queue', `d:${id}:q`), btn('Discard', `d:${id}:x`)],
+    ],
   }
 }
 
@@ -560,6 +576,17 @@ export function draftCard(d: Draft, ctx: UiContext, x: CardExtras = {}): View {
 export const CHATS_PER_PAGE = 8
 
 /** Your recent chats from every project, newest first. */
+/** Tells the owner a newer release is out and what to type on the computer. */
+export function updateView(latest: string, current: string, command: string, name: string): View {
+  return {
+    html:
+      `<b>${esc(name)} ${esc(latest)} is out</b> (this computer has ${esc(current)}).\n` +
+      `On the computer, run: <code>${esc(command)}</code>\n` +
+      '<i>It restarts itself with the new version; tasks keep going.</i>',
+    silent: true,
+  }
+}
+
 export function recentChatsView(chats: Chat[], page: number, more: boolean, ctx: NoticeContext): View {
   const lines = chats.map((c, i) => {
     const state = chatState(c)
@@ -1279,7 +1306,8 @@ export function helpHtml(machine: string): string {
     `<b>${KEYS.settings}</b>: notifications, tasks at once, your other chats.`,
     '',
     'Lists are numbered: every line is written out in full in the message, and the buttons are only the numbers. A ✓ marks what is chosen.',
-    'A photo or file you send is attached to the task card. Kill, Sleep now and Clear ask for a second tap on the same button.',
+    '<b>Screenshots.</b> Send them here with 📎 (Photo or File), one or several at once, before or after the prompt. They go on the task card you have open (or a new one; a caption becomes the prompt), up to 10, and Claude sees them. Inside a chat (Write here) they go into that chat.',
+    'Kill, Sleep now and Clear ask for a second tap on the same button.',
     '',
     "I message you when a plan is ready, when Claude needs permission or asks something, when a usage limit pauses work, and when a task ends. News that needs nothing from you arrives silently.",
     '',

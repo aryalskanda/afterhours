@@ -165,7 +165,7 @@ Starts: now
 | **Model** | The model and the effort. With a plan, **Plan** and **Work** pick which side you're setting: plan with Opus at Max, then tap **Work** and set Sonnet at Low. Both show on the card ([more](#plan-with-one-model-work-with-another)). |
 | **When** | **Now**, **Next** (before everything waiting), **At the reset** of the 5-hour limit, **In an hour**, **Tonight** (23:00), **Morning** (07:00), **Type a time** (`23:00`, `11pm`, `in 2h`, `tomorrow 9am`), **Every day at…** a time, or after one of the tasks ahead (by number) has finished well. |
 | **More** | **Live link: on/off** (a claude.ai page showing the result, [more](#live-links)), and a **time limit** (30m to 4h). |
-| **Files** | Send a photo or file in the chat (with a caption as the prompt, if you like): it's kept on the computer and Claude is told to read it. Up to 10, 5 MB each. The card comes down to where you are. |
+| **Screenshots and files** | Tap 📎 in Telegram and send them, one or several at once, before or after the prompt (a caption becomes the prompt). They go on the task card you have open, or a new one; the card shows how many are attached and has **📎 Remove**. They're kept on the computer and Claude is told to look at them. Up to 10, 5 MB each. |
 
 When the bot asks you to type something (a time, a folder name, an answer), the text box opens as a reply with a hint in it. After you type, the card comes down to where you are and the old one goes.
 
@@ -310,7 +310,7 @@ Follow-ups continue in the same worktree and branch. Review a branch with `git l
 | `cq awake` · `cq awake on\|off` · `cq awake lid on\|off` | Whether the computer stays awake while tasks run · turn that on or off · with the lid closed too |
 | `cq restart` · `cq logs [-f]` · `cq attach` | Restart the background service · its log · watch the running task |
 | `cq install` · `cq daemon` | Install the background service again · run Afterhours in this terminal instead |
-| `cq update` · `cq --version` | Update to the latest release · the version you have |
+| `cq update` · `cq --version` | Update to the latest release · the version you have. When a newer release is out, Afterhours tells you once on Telegram and shows a line in `cq` and `cq doctor`; it checks GitHub every few hours (set `CQ_NO_UPDATE_CHECK=1` for the daemon to stop) |
 | `cq report` | Write a support file to your Desktop. It holds no prompts, code or tokens; read it before you send it. |
 | `cq uninstall` | Stop it and remove it from login items (keeps `~/.afterhours`) |
 
@@ -433,7 +433,7 @@ bun src/cli/cq.ts daemon    # run in the foreground (Ctrl-C to stop; tasks keep 
 
 For an isolated instance, set `CQ_HOME=/tmp/ah-dev CQ_TMUX_SOCKET=ah-dev` and set a different `port` in that home's `config.json`.
 
-Releases: bump `version` in `package.json`, run `bun run compat`, then push a matching tag (`git tag v0.6.0 && git push origin v0.6.0`). The release workflow:
+Releases: run `bun run compat`, then `bun run release` (`patch`, `minor`, `major` or an exact version; `--dry-run` shows the steps without doing them). It opens a pull request that bumps `version`, waits for its required checks, merges it, tags the merge commit and watches the workflow below, then checks that the release has all its files and that `releases/latest` (what the install commands download) is the new one. One tag builds every system, so macOS, Linux and Windows get the same version. By hand: bump `version` in `package.json`, merge it, and push a matching tag (`git tag v0.6.0 && git push origin v0.6.0`). The release workflow:
 
 1. runs the type check and the tests;
 2. builds the macOS (Apple Silicon, Intel), Linux (arm64, x64) and Windows (x64) binaries, with checksums and build attestations;

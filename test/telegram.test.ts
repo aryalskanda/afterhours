@@ -306,6 +306,21 @@ describe('pairing', () => {
   })
 })
 
+describe('updates', () => {
+  test('a newer release is told to the owner, with what to run; before pairing there is nobody to tell', async () => {
+    const h = setup()
+    expect(await h.bridge.updateAvailable('0.7.0', '0.6.0', 'cq update')).toBe(false)
+    const p = await paired()
+    const before = p.api.sent.length
+    expect(await p.bridge.updateAvailable('0.7.0', '0.6.0', 'brew upgrade afterhours')).toBe(true)
+    expect(p.api.sent).toHaveLength(before + 1)
+    const last = p.api.last()
+    expect(p.api.view(last.id).html).toContain('is out</b> (this computer has 0.6.0)')
+    expect(p.api.view(last.id).html).toContain('<code>brew upgrade afterhours</code>')
+    expect(last.silent).toBe(true)
+  })
+})
+
 describe('the look', () => {
   /** Every button on a message, as its words. */
   const words = (h: Harness, id: number) => labels(h, id).join(' | ')
@@ -856,7 +871,7 @@ describe('every session from your phone', () => {
     expect([first.prompt, first.sessionId, first.attachments?.length]).toEqual(['The button is misaligned here', SID, 1])
     expect(readFileSync(first.attachments![0]!, 'utf8')).toBe('png bytes')
     // No card was made for it.
-    expect(h.api.sent.some(m => m.html.includes('file for Claude to read'))).toBe(false)
+    expect(h.api.sent.some(m => m.html.includes('attached</b>'))).toBe(false)
 
     // Two photos sent together: gathered, then one message with both.
     await h.sendFile('a1', 'one.png', 'one', undefined, 'album-1')
@@ -1792,17 +1807,52 @@ describe('everything the app has, in the bot', () => {
     expect(h.store.queued()[0]!.notBefore).toBe(h.now() + 2 * 3_600_000)
   })
 
+  test('several screenshots sent at once: the card comes back once, with all of them; Remove takes them off', async () => {
+    const h = await paired()
+    await h.say('Why does this crash?')
+    const card1 = h.api.last().id
+    const before = h.api.sent.length
+    await h.sendFile('s1', 'a.png', 'one', undefined, 'album-9')
+    await h.sendFile('s2', 'b.png', 'two', undefined, 'album-9')
+    await h.sendFile('s3', 'c.png', 'three', undefined, 'album-9')
+    expect(h.api.sent).toHaveLength(before) // still gathering
+    h.later.forEach(run => run())
+    await Bun.sleep(0)
+    expect(h.api.sent).toHaveLength(before + 1)
+    const card = h.api.last().id
+    expect(h.api.deleted).toContain(card1)
+    expect(h.api.view(card).html).toContain('Why does this crash?')
+    expect(h.api.view(card).html).toContain('<b>3 attached</b>')
+    await press(h, card, '📎 Remove the 3 attached')
+    expect(h.api.view(card).html).toContain('📎 Screenshots: <i>send them here')
+  })
+
+  test('a card holds 10 screenshots at most, and says which did not fit', async () => {
+    const h = await paired()
+    await h.say('Compare these')
+    for (let i = 0; i < 12; i++) await h.sendFile(`m${i}`, `${i}.png`, String(i), undefined, 'album-big')
+    h.later.forEach(run => run())
+    await Bun.sleep(0)
+    expect(h.api.sent.at(-2)!.html).toContain('<b>10 attached</b> (the most a task can have)')
+    expect(h.api.last().html).toContain('Only 10 of the 12 fit')
+  })
+
   test('a photo or file goes on the card as an attachment, and its caption is the prompt', async () => {
     const h = await paired()
+    // A card says how to add screenshots, before any are there.
+    await h.say('Fix the login page')
+    expect(h.api.last().html).toContain('📎 Screenshots: <i>send them here')
+    await press(h, h.api.last().id, 'Discard')
     await h.sendFile('f1', 'notes.txt', 'remember this', 'Summarise the notes')
     const id = h.api.last().id
     expect(h.api.view(id).html).toContain('Summarise the notes')
-    expect(h.api.view(id).html).toContain('1 file for Claude to read')
+    expect(h.api.view(id).html).toContain('<b>1 attached</b>')
+    expect(labels(h, id)).toContain('📎 Remove the attached file')
     // A second file lands on the same card, which comes down to where you are.
     await h.sendFile('f2', 'more.txt', 'and this')
     const again = h.api.last().id
     expect(h.api.deleted).toContain(id)
-    expect(h.api.view(again).html).toContain('2 files for Claude to read')
+    expect(h.api.view(again).html).toContain('<b>2 attached</b>')
     await pickFolder(h, again, 'beta')
     await press(h, again, 'Queue')
     const job = h.store.queued()[0]!

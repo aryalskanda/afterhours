@@ -18,6 +18,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "compat": "bun scripts/compat.ts",
+    "release": "bun scripts/release.ts",
     "build": "bun build src/cli/cq.ts --compile --outfile dist/cq",
     "relay": "bun relay/src/main.ts",
     "e2e:remote": "bun scripts/e2e-remote.ts",

@@ -35,6 +35,7 @@ import { deliverToInbox } from './inbox'
 import { CLAUDE_DIR, CLAUDE_JSON, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { pruneUploads } from './uploads'
 import { Store } from './store'
+import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
 import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
@@ -303,6 +304,15 @@ export async function runDaemon(): Promise<void> {
     })
   }, 20_000)
 
+  // A newer release: say so on Telegram once per version, and save it for the terminal to mention.
+  const stopUpdateChecks = startUpdateChecks({
+    current: VERSION,
+    command: updateCommand(selfCommand()),
+    announced: { get: () => store.kvGet<string>('update.announced'), set: v => store.kvSet('update.announced', v) },
+    announce: async (latest, command) => (await telegram?.updateAvailable(latest, VERSION, command)) ?? false,
+    log,
+  })
+
   /** What `cq pair`, `cq devices`, `cq remote` and `cq audit` ask the daemon. */
   async function remoteApi(req: Request, url: URL): Promise<Response> {
     const body = req.method === 'POST' ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {}
@@ -445,6 +455,7 @@ export async function runDaemon(): Promise<void> {
   function shutdown(code = 0): void {
     log('stopping (Claude sessions in tmux keep running and are picked up on the next start)')
     clearInterval(timer)
+    stopUpdateChecks()
     keepAwake.set(false)
     // Sleep turned off for tasks goes back on; started again with work, it goes off again.
     lidAwake?.releaseNow()

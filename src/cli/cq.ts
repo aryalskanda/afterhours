@@ -2,7 +2,8 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { HELP } from '../daemon/commands'
-import { runDaemon, VERSION } from '../daemon/main'
+import { runDaemon, selfCommand, VERSION } from '../daemon/main'
+import { updateNotice } from '../daemon/updates'
 import { findHost, runTermHost } from '../daemon/winterm'
 import { BRAND } from '../shared/brand'
 import { CQ_HOME, expandHome, findExecutable, loadConfig, paths, readToken, saveConfig, TMUX_SESSION, TMUX_SOCKET } from '../shared/config'
@@ -187,6 +188,9 @@ async function tailWindows(path: string, lines: number, follow: boolean): Promis
 /** Just `cq`, at a terminal: the few things people do after setup, by number, so no command has to be remembered. */
 async function menu(): Promise<void> {
   console.log(`${BRAND.name} ${VERSION}\n`)
+  const news = updateNotice(selfCommand(), VERSION)
+  // Yellow, where the terminal does colors.
+  if (news) console.log(`${process.stdout.isTTY && !process.env.NO_COLOR ? `\x1b[33m${news}\x1b[0m` : news}\n`)
   const items: [string, () => Promise<void> | void][] = [
     ['Check that everything works', () => doctor()],
     [
