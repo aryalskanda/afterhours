@@ -704,23 +704,29 @@ export class TelegramBridge {
     // Inside a chat, a photo or file goes into that conversation, like what you type.
     const focus = this.focus()
     if (focus) return this.fileToChat(chat, focus, saved.path, caption, m.media_group_id)
+    if (!m.media_group_id) return this.attachToDraft(chat, [saved.path], caption)
+    // Several sent at once arrive one by one: gathered, so the card comes back once with all of them.
+    this.gather(m.media_group_id, saved.path, caption, (files, text) => this.attachToDraft(chat, files, text))
+  }
+
+  /** Screenshots and files onto the task card you're on (or a new one, with the caption as its prompt). */
+  private async attachToDraft(chat: number, files: string[], caption: string): Promise<void> {
     let d = this.state.latestOpenDraft(this.o.now() - 24 * 3600_000)
     if (!d) {
       d = this.state.addDraft({ ...this.choices(), prompt: caption }, this.o.now())
     } else if (caption && !d.prompt) {
       d = this.state.updateDraft(d.id, { prompt: caption })
     }
-    if (d.attachments.length >= 10) return void (await this.sendText(chat, 'That card has 10 files already.'))
-    d = this.state.updateDraft(d.id, { attachments: [...d.attachments, saved.path] })
+    const room = ui.MAX_ATTACHMENTS - d.attachments.length
+    if (room <= 0) return void (await this.sendText(chat, `That card has ${ui.MAX_ATTACHMENTS} files already, the most a task can have.`))
+    d = this.state.updateDraft(d.id, { attachments: [...d.attachments, ...files.slice(0, room)] })
     await this.showDraft(chat, d)
+    if (files.length > room) await this.sendText(chat, `Only ${room} of the ${files.length} fit: a task can have ${ui.MAX_ATTACHMENTS} files.`)
     if (!d.prompt && d.folder) this.setPending({ kind: 'prompt', draftId: d.id })
   }
 
-  /** Photos of one album, gathered for a moment so they go into the chat together. */
-  private albums = new Map<string, { files: string[]; caption: string }>()
-
-  private async fileToChat(chat: number, f: Focus, path: string, caption: string, album: string | undefined): Promise<void> {
-    if (!album) return this.sendToChat(chat, f, caption, [path])
+  /** Photos of one album (sent together), collected for a moment and then handled together. */
+  private gather(album: string, path: string, caption: string, done: (files: string[], caption: string) => Promise<void>): void {
     const gathering = this.albums.get(album)
     if (gathering) {
       gathering.files.push(path)
@@ -731,8 +737,16 @@ export class TelegramBridge {
     ;(this.o.later ?? setTimeout)(() => {
       const a = this.albums.get(album)
       this.albums.delete(album)
-      if (a) void this.sendToChat(chat, f, a.caption, a.files).catch(err => this.o.log(`telegram: sending an album to a chat failed: ${errorText(err)}`))
+      if (a) void done(a.files, a.caption).catch(err => this.o.log(`telegram: handling photos sent together failed: ${errorText(err)}`))
     }, ALBUM_MS)
+  }
+
+  /** Photos of one album, gathered for a moment so they go into the chat together. */
+  private albums = new Map<string, { files: string[]; caption: string }>()
+
+  private async fileToChat(chat: number, f: Focus, path: string, caption: string, album: string | undefined): Promise<void> {
+    if (!album) return this.sendToChat(chat, f, caption, [path])
+    this.gather(album, path, caption, (files, text) => this.sendToChat(chat, f, text, files))
   }
 
   private async tryPair(m: TgMessage, text: string): Promise<void> {
