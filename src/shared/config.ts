@@ -110,6 +110,11 @@ export interface Config {
   keepAwake: boolean
   /** And on a Mac, with the lid closed too: sleep turned off while jobs are pending (cq awake lid on). */
   keepAwakeLidClosed: boolean
+  /**
+   * Tasks on their own branch in a project build on the last unmerged task's branch there, so their
+   * work stacks into one line instead of conflicting (`cq stack off`: each starts from your checkout).
+   */
+  stack: boolean
   /** Remote access from the Afterhours apps, through a relay. Set up with `cq pair`. */
   remote: RemoteConfig
   claudePath?: string
@@ -180,6 +185,7 @@ export const DEFAULT_CONFIG: Config = {
   parallel: 1,
   keepAwake: true,
   keepAwakeLidClosed: false,
+  stack: true,
   remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
 }
 

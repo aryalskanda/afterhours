@@ -158,6 +158,7 @@ const COLUMNS = {
   attachments: 'attachments',
   group: 'job_group',
   onHold: 'on_hold',
+  stackedOn: 'stacked_on',
   workModel: 'work_model',
   workEffort: 'work_effort',
   wantLink: 'want_link',
@@ -197,6 +198,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'links', 'TEXT'],
   ['jobs', 'link_note', 'TEXT'],
   ['jobs', 'link_for', 'INTEGER'],
+  ['jobs', 'stacked_on', 'INTEGER'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links'])
 
@@ -346,6 +348,22 @@ export class Store {
       .query<Row, []>(`SELECT * FROM jobs WHERE status IN ('running', 'held') ORDER BY id LIMIT 1`)
       .get()
     return row ? toJob(row) : null
+  }
+
+  /**
+   * Finished tasks whose own branch is still there to build on (not merged, sent as a pull request
+   * or thrown away), newest first.
+   */
+  openBranches(): Job[] {
+    return this.db
+      .query<Row, []>(`SELECT * FROM jobs WHERE status = 'done' AND branch IS NOT NULL AND branch_note IS NULL ORDER BY finished_at DESC, id DESC LIMIT 50`)
+      .all()
+      .map(toJob)
+  }
+
+  /** The tasks that build on task `id`'s branch. */
+  stackedOnto(id: number): Job[] {
+    return this.db.query<Row, [number]>('SELECT * FROM jobs WHERE stacked_on = ?').all(id).map(toJob)
   }
 
   recentFinished(limit: number): Job[] {

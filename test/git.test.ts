@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { branchSlug, git, parseDiffLists } from '../src/daemon/system'
@@ -44,6 +44,42 @@ test('a task gets its own branch and worktree, and its work is committed there',
   expect(sh(root, 'log', '-1', '--format=%s', 'afterhours/7-add-dark-mode')).toBe('Afterhours #7: Add dark mode')
   expect(await git.commitAll(wt!.dir, 'nothing new')).toBe(false)
   expect(await git.diffStat(wt!.dir, base)).toBe('1 file changed, 1 insertion(+)')
+})
+
+describe('stacked tasks: the next one builds on the last one’s branch', () => {
+  // Two tasks change the same line: started from main, they'd conflict; stacked, they don't.
+  async function two(root: string) {
+    const a = (await git.worktree(join(root, 'web'), 1, 'Make it blue'))!
+    writeFileSync(join(a.dir, 'app.js'), 'console.log("blue")\n')
+    await git.commitAll(a.dir, 'Afterhours #1: Make it blue')
+    const b = (await git.worktree(join(root, 'web'), 2, 'Make it bold', a.branch))!
+    expect(readFileSync(join(b.dir, 'app.js'), 'utf8')).toBe('console.log("blue")\n') // B starts with A's work
+    writeFileSync(join(b.dir, 'app.js'), 'console.log("bold blue")\n')
+    await git.commitAll(b.dir, 'Afterhours #2: Make it bold')
+    return { a, b }
+  }
+
+  test('merging the newest brings in both, with no conflict', async () => {
+    const root = repo()
+    const { a, b } = await two(root)
+    expect(await git.mergeBranch(root, b.branch, b.dir, 'Merge #1–#2')).toMatchObject({ ok: true })
+    expect(readFileSync(join(root, 'web', 'app.js'), 'utf8')).toBe('console.log("bold blue")\n')
+    expect(sh(root, 'log', '--format=%s')).toContain('Afterhours #1: Make it blue')
+    void a
+  })
+
+  test('merging the first one alone, then the next, has no conflict either', async () => {
+    const root = repo()
+    const { a, b } = await two(root)
+    expect(await git.mergeBranch(root, a.branch, a.dir, 'Merge #1')).toMatchObject({ ok: true })
+    expect(await git.mergeBranch(root, b.branch, b.dir, 'Merge #2')).toMatchObject({ ok: true })
+    expect(readFileSync(join(root, 'web', 'app.js'), 'utf8')).toBe('console.log("bold blue")\n')
+  })
+
+  test('a base branch that is gone gives no worktree, so the task starts from the checkout instead', async () => {
+    const root = repo()
+    expect(await git.worktree(join(root, 'web'), 3, 'x', 'afterhours/99-gone')).toBeNull()
+  })
 })
 
 test('no worktree outside git or before the first commit', async () => {
