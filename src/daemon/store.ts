@@ -158,6 +158,9 @@ const COLUMNS = {
   attachments: 'attachments',
   group: 'job_group',
   onHold: 'on_hold',
+  waitingSince: 'waiting_since',
+  waitingFor: 'waiting_for',
+  waitingUntil: 'waiting_until',
   workModel: 'work_model',
   workEffort: 'work_effort',
   wantLink: 'want_link',
@@ -197,8 +200,11 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'links', 'TEXT'],
   ['jobs', 'link_note', 'TEXT'],
   ['jobs', 'link_for', 'INTEGER'],
+  ['jobs', 'waiting_since', 'INTEGER'],
+  ['jobs', 'waiting_for', 'TEXT'],
+  ['jobs', 'waiting_until', 'INTEGER'],
 ]
-const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links'])
+const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links', 'waitingFor'])
 
 type Row = Record<string, string | number | null>
 type SqlValue = string | number | null

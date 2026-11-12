@@ -209,6 +209,14 @@ const ACTIVITY_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse'
 
 /** Background work that always finishes and wakes the session; shells and monitors may run forever. */
 const FINITE_TASKS = new Set(['subagent', 'workflow'])
+/** Background work that always ends (subagents, workflows) is waited on this many times longer than commands. */
+const UNBOUNDED_WAIT = 3
+
+/** What a background task is, in a few words: its description, else its kind. */
+function backgroundLabel(t: { type?: string; description?: string }): string {
+  const d = (t.description ?? '').trim()
+  return d ? excerpt(d, 60) : t.type === 'subagent' ? 'a subagent' : t.type === 'workflow' ? 'a workflow' : 'a background command'
+}
 
 /** From when a task's own runs of its conversation count (a little before it started, for clocks). */
 export function taskStart(job: Pick<Job, 'startedAt'>): number {
@@ -700,7 +708,7 @@ export class Runner {
     // rt.plan alone: Claude entered plan mode by itself in a non-plan job.
     if ((job.plan && !job.planApproved) || rt.plan) await this.handlePlan(job, rt)
 
-    if (rt.background?.bounded && now - rt.background.since > config.timeouts.backgroundSec * 1000) {
+    if (rt.background && now - rt.background.since > config.timeouts.backgroundSec * 1000 * (rt.background.bounded ? 1 : UNBOUNDED_WAIT)) {
       const since = rt.background.since
       rt.background = undefined
       // The work is done but wants a live link it hasn't been asked for: ask now, as a message.
@@ -726,7 +734,8 @@ export class Runner {
     }
 
     const quietFor = now - rt.lastActivity
-    if (quietFor > config.timeouts.stuckSec * 1000 && this.d.store.pendingApprovals(job.id).length === 0) {
+    // Answered and waiting on its background work is quiet by design: the wait above decides, not this.
+    if (quietFor > config.timeouts.stuckSec * 1000 && !(rt.background && this.d.store.getJob(job.id)?.waitingSince) && this.d.store.pendingApprovals(job.id).length === 0) {
       const busy = job.sessionId ? this.d.sessionHolders(job.sessionId).some(h => h.status === 'busy') : false
       if (busy) {
         rt.lastActivity = now // a long tool call; check again later
@@ -919,7 +928,29 @@ export class Runner {
     this.d.notify({ type: 'resumed', job, how })
   }
 
+  /** Claude is at work again (or done waiting): the task isn't waiting on background commands now. */
+  private notWaiting(job: Job): void {
+    if ((this.d.store.getJob(job.id) ?? job).waitingSince !== null) this.d.store.updateJob(job.id, { waitingSince: null, waitingFor: null, waitingUntil: null })
+  }
+
+  /**
+   * Finish now: a task whose answer is in but which waits on background commands it started ends as
+   * done (its commands stop with it), instead of being killed. Refused while Claude is still working.
+   */
+  finishNow(id: number, by?: string): { ok: boolean; text: string } {
+    const job = this.d.store.getJob(id)
+    const rt = this.runtimes.get(id)
+    if (!job || job.status !== 'running' || !rt) return { ok: false, text: `#${id} isn't running.` }
+    if (rt.finishing) return { ok: true, text: `#${id} is finishing.` }
+    if (job.waitingSince === null) return { ok: false, text: `Claude is still working on #${id}: use Stop or Kill.` }
+    this.d.log(`#${id}: finished now${by ? ` by ${by}` : ''}, leaving the background commands`)
+    rt.background = undefined
+    this.beginFinish(job, rt)
+    return { ok: true, text: `#${id} is done; its background commands stop with it.` }
+  }
+
   private beginFinish(job: Job, rt: Runtime): void {
+    this.notWaiting(job)
     // A live link is read whichever way the task gets here (a Stop, or background work timing out).
     const now = this.d.store.getJob(job.id) ?? job
     if ((now.wantLink || now.linkFor !== null) && !rt.linksRead) {
@@ -1005,6 +1036,7 @@ export class Runner {
       }
       case 'UserPromptSubmit': {
         rt.sessionStarted = true
+        this.notWaiting(job)
         // An ask task runs in plan mode too, but it's answering, not planning.
         const patch: Partial<Job> = { phase: payload.permission_mode === 'plan' && job.plan ? 'planning' : 'working' }
         if (payload.transcript_path) patch.transcriptPath = payload.transcript_path
@@ -1013,6 +1045,7 @@ export class Runner {
         return {}
       }
       case 'ToolStart':
+        this.notWaiting(job)
         this.toolActivity(job, 'start', payload)
         return {}
       case 'PostToolUse':
@@ -1160,9 +1193,13 @@ export class Runner {
         since: rt.background?.since ?? this.d.now(),
         bounded: !tasks.some(t => FINITE_TASKS.has(String(t.type))),
       }
+      // Said on the phone, so a task that looks done but stays open says why (and can be finished).
+      const limit = this.d.config().timeouts.backgroundSec * 1000 * (rt.background.bounded ? 1 : UNBOUNDED_WAIT)
+      this.d.store.updateJob(job.id, { waitingSince: this.d.now(), waitingFor: tasks.map(backgroundLabel), waitingUntil: rt.background.since + limit })
       return {}
     }
     rt.background = undefined
+    this.notWaiting(job)
     // A live link: once the work is done, Claude is asked for one before the task ends.
     if (job.wantLink && !rt.linkAsked && !payload.stop_hook_active) {
       rt.linkAsked = { at: this.d.now(), answer: payload.last_assistant_message ?? job.lastMessage }

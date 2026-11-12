@@ -94,6 +94,7 @@ const COMMANDS = [
   { command: 'sleep', description: 'Put this computer to sleep' },
   { command: 'settings', description: 'Notifications, tasks at once, other chats' },
   { command: 'kill', description: 'End the running task now, and what it started' },
+  { command: 'finish', description: 'End a task that has answered but waits on background commands' },
   { command: 'peek', description: "The running task's screen" },
   { command: 'pause', description: 'Stop starting new tasks' },
   { command: 'resume', description: 'Resume the queue or a paused task' },
@@ -815,6 +816,15 @@ export class TelegramBridge {
         if (!arg && running.length > 1) return void (await this.send(chat, ui.killPickerView(running, this.noticeContext())))
         const id = arg ? Number(arg) : running[0]?.id
         await this.sendText(chat, id === undefined ? 'Nothing is running.' : await this.o.runner.kill(id, { by: 'Telegram' }))
+        return
+      }
+      case 'finish': {
+        // /finish ends a task that has answered but stays open for its background commands; /finish 14 names it.
+        const arg = /^\/finish(?:@\S+)?\s+#?(\d+)\s*$/.exec(text)?.[1]
+        const waiting = this.o.store.running().filter(j => j.waitingSince !== null)
+        const id = arg ? Number(arg) : waiting.length === 1 ? waiting[0]!.id : undefined
+        if (id === undefined) return void (await this.sendText(chat, waiting.length === 0 ? 'No task is waiting on background commands.' : `Say which: ${waiting.map(j => `/finish ${j.id}`).join(', ')}`))
+        await this.sendText(chat, this.o.runner.finishNow(id, 'Telegram').text)
         return
       }
       case 'pause':
@@ -1697,6 +1707,11 @@ export class TelegramBridge {
         const asked = this.o.runner.requestLink(id, 'telegram')
         if (asked.ok && message) await this.settle(chat, message, asked.text)
         return asked.text
+      }
+      case 'fin': {
+        const done = this.o.runner.finishNow(id, 'Telegram')
+        if (done.ok) await this.afterJobTap(chat, message, done.text)
+        return done.text
       }
       case 'kill': {
         if (job.status !== 'running' && job.status !== 'held' && job.status !== 'queued') return `#${id} has already ended.`
