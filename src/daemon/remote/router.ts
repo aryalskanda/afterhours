@@ -49,6 +49,7 @@ import { findSessions } from '../sessions'
 import type { Store } from '../store'
 import type { git as gitModule } from '../system'
 import { transcriptPage } from '../transcript'
+import { setupLine } from '../../telegram/ui'
 import type { DeviceRow, RemoteDb } from './db'
 import type { Feed } from './feed'
 import { approvalInfo, chatInfo, jobInfo, limitsInfo } from './wire'
@@ -1137,6 +1138,7 @@ export class Router {
       takeover: chat.where !== null,
       source: 'remote',
       prompt: text,
+      mode: { plan: config.defaults.plan, review: config.defaults.review, execMode: config.defaults.execMode },
     })
     // A chat continues in its own mode, which may be one that skips permission prompts.
     const refusal = this.guard(spec, role)
@@ -1145,7 +1147,8 @@ export class Router {
     if (twin) return { ok: true, text: `Already sent to ${title} as #${twin.id}.`, data: { job: jobInfo(twin) } }
     const job = this.d.runner.enqueue(spec)
     this.d.log(`${name} sent a message to chat ${chat.sessionId.slice(0, 8)} as #${job.id}`)
-    return { ok: true, text: `Sent to ${title} as #${job.id}.`, data: { job: jobInfo(job) } }
+    // Says how it runs, so a reply is never in a mode or model you didn't expect.
+    return { ok: true, text: `Sent to ${title} as #${job.id} · ${setupLine(job)}.`, data: { job: jobInfo(job) } }
   }
 }
 

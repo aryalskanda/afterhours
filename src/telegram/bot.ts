@@ -124,6 +124,8 @@ const WORDS: Record<string, string> = {
 }
 
 const PENDING_TTL = 30 * 60_000
+/** What Do it sends after an answer-only task. */
+const DO_IT = 'Go ahead and do what you proposed.'
 /** Without a message's buttons at hand, the second tap of something that asks twice comes within this. */
 const CONFIRM_MS = 15_000
 /** How long the photos of one album are gathered before they go into a chat together. */
@@ -1753,6 +1755,28 @@ export class TelegramBridge {
         if (!job.planText) return 'No plan yet.'
         await this.send(chat, ui.planView(job, this.uiContext()))
         return
+      case 'do': {
+        // Do it: an answer-only task proposed something; the next task carries it out, in the same conversation.
+        if (!job.sessionId) return 'That task has no conversation to continue.'
+        const d = this.o.config().defaults
+        const next = this.o.runner.enqueue({
+          projectDir: job.projectDir,
+          prompt: DO_IT,
+          plan: d.plan,
+          review: d.review,
+          execMode: d.execMode,
+          model: job.model,
+          effort: job.effort,
+          sessionPolicy: 'session',
+          sessionId: job.sessionId,
+          isolate: false,
+          front: true,
+          source: 'telegram',
+        })
+        reply = `Queued #${next.id}: it does what #${id} proposed · ${ui.setupLine(next)}.`
+        if (message) await this.settle(chat, message, reply)
+        return reply
+      }
       case 'fu':
         if (!job.sessionId) return 'That task has no conversation to continue.'
         this.setPending({ kind: 'followup', jobId: id })
@@ -1897,11 +1921,14 @@ export class TelegramBridge {
     }
     const choices = this.choices()
     const job = this.o.runner.enqueue({
-      ...continueSpec({ ...c, cwd: c.cwd }, { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text }),
+      ...continueSpec(
+        { ...c, cwd: c.cwd },
+        { model: choices.model, effort: choices.effort, takeover: c.where !== null, source: 'telegram', prompt: text, mode: { plan: choices.plan, review: choices.review, execMode: choices.execMode === 'plan' ? this.o.config().defaults.execMode : choices.execMode } },
+      ),
       ...(files.length ? { attachments: files } : {}),
     })
     const take = c.where && !c.running ? ` It's open in ${c.where}: it closes there first.` : ''
-    await this.sendText(chat, `Sent to ${name} as #${job.id}. ${this.whenText(job)}${take}`)
+    await this.sendText(chat, `Sent to ${name} as #${job.id} · ${ui.setupLine(job)}. ${this.whenText(job)}${take}`)
   }
 
   /** Buttons on "your chat in VS Code hit a usage limit". */

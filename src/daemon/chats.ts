@@ -100,12 +100,24 @@ export function chatState(c: Chat): string {
  */
 export function continueSpec(
   chat: Pick<Conversation, 'sessionId' | 'cwd' | 'permissionMode' | 'model'> & { cwd: string },
-  o: { model: string; effort: Effort; takeover: boolean; source: string; prompt?: string },
+  o: {
+    model: string
+    effort: Effort
+    takeover: boolean
+    source: string
+    prompt?: string
+    /**
+     * What you send yourself runs in your usual mode (a chat left in plan mode, or an answer-only
+     * task, would otherwise make a reply only plan or answer). A chat that skips prompts keeps that.
+     */
+    mode?: { plan: boolean; review: boolean; execMode: ExecMode }
+  },
 ): JobSpec {
+  const own = chat.permissionMode === 'acceptEdits' || chat.permissionMode === 'bypassPermissions'
   return {
     projectDir: chat.cwd,
     prompt: o.prompt ?? CONTINUE_PROMPT,
-    ...modeFor(chat.permissionMode),
+    ...(o.mode && !own ? o.mode : modeFor(chat.permissionMode)),
     model: modelAlias(chat.model) ?? o.model,
     effort: o.effort,
     sessionPolicy: 'session',

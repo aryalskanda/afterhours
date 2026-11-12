@@ -859,7 +859,9 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       const from = ctx.stackFrom?.(n.job) ?? n.job.stackedOn
       const range = from !== null ? ` #${from}–#${n.job.id}` : ''
       const branch = n.job.branch && !n.job.branchNote ? [[btn(`Merge${range}`, `j:${n.job.id}:merge`), btn(`Pull request${range ? ` for${range}` : ''}`, `j:${n.job.id}:pr`)], [btn('Discard branch', `j:${n.job.id}:discard`)]] : []
-      return longView(head, n.job.lastMessage, [[btn('Follow up', `j:${n.job.id}:fu`), btn('New task here', `j:${n.job.id}:new`)], [linkButton(n.job)], ...branch], {
+      // Answer only (Ask): it couldn't act, so carrying its proposal out is one tap.
+      const doIt = n.job.execMode === 'plan' && !n.job.plan && n.job.sessionId ? [[btn('Do it', `j:${n.job.id}:do`)]] : []
+      return longView(head, n.job.lastMessage, [...doIt, [btn('Follow up', `j:${n.job.id}:fu`), btn('New task here', `j:${n.job.id}:new`)], [linkButton(n.job)], ...branch], {
         name: `answer-${n.job.id}.md`,
         caption: `#${n.job.id}: Claude's full answer`,
       })

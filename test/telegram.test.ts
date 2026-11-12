@@ -1671,6 +1671,22 @@ describe('the menu button', () => {
 })
 
 describe('what the bot does without the app', () => {
+  const ASK_SID = '5d2e7a10-0000-4000-8000-00000000a5c0'
+  test('an answer-only task that proposes something: Do it carries it out in the same conversation, in your usual mode', async () => {
+    const h = await paired()
+    const ask = h.store.addJob({ projectDir: '/p', prompt: 'Can you attach them to Notion?', plan: false, review: false, execMode: 'plan', model: 'haiku', effort: 'medium', sessionPolicy: 'session', sessionId: ASK_SID, source: 'test' }, h.now())
+    const done = h.store.updateJob(ask.id, { status: 'done', finishedAt: h.now(), lastMessage: 'I can upload both files. Want me to?' })
+    await h.bridge.notify({ type: 'done', job: done, diff: null, next: null })
+    const msg = h.api.last().id
+    await press(h, msg, 'Do it')
+    const next = h.store.queued()[0]!
+    expect(next).toMatchObject({ prompt: 'Go ahead and do what you proposed.', sessionId: ASK_SID, model: 'haiku', execMode: h.config().defaults.execMode, plan: h.config().defaults.plan })
+    expect(h.api.answers.at(-1)!.text).toContain(`Queued #${next.id}: it does what #${ask.id} proposed`)
+    // A task that could act anyway has no Do it.
+    await h.bridge.notify({ type: 'done', job: { ...done, execMode: 'auto' }, diff: null, next: null })
+    expect(labels(h, h.api.last().id)).not.toContain('Do it')
+  })
+
   test('Change on a queued task: its choices on a card; Save puts them on the task', async () => {
     const h = await paired()
     await running(h)
