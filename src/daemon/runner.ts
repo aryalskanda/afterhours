@@ -17,6 +17,7 @@ import { tail, type TmuxDriver } from './tmux'
 import { suggestionLabel, usableSuggestions } from './rules'
 import { toolName, toolSummary } from './tools'
 import { withAttachments } from './uploads'
+import { isDiskFull } from './disk'
 import { endProcesses, systemProcs, type Procs } from './procs'
 import { artifactLinks, LINK_REQUEST, LINK_TASK, linksInTranscript } from './links'
 import { costOf, mentionedSince, readTranscript, usageOf } from './transcript'
@@ -56,6 +57,8 @@ export interface RunnerDeps {
   }
   killPid: (pid: number) => void
   log: (line: string) => void
+  /** A write failed because the disk is full: said at once, not only in the log. */
+  diskFull?: () => void
   /** Defaults to Bun.sleep; tests make waiting instant. */
   sleep?: (ms: number) => Promise<void>
   /** Opens a conversation in VS Code again, after a task took it from there. */
@@ -242,6 +245,7 @@ export class Runner {
   private runtimes = new Map<number, Runtime>()
   private waiters = new Map<string, (r: Resolution) => void>()
   private limitNotified = new Set<number>()
+  private diskFullAt = 0
   private ticking = false
   private tickStartedAt = 0
   private stallLoggedAt = 0
@@ -360,7 +364,16 @@ export class Runner {
       // A slot that frees up this tick is filled on the next one; one that was free starts a task now.
       if (running.length < this.parallel) await this.startNext()
     } catch (err) {
-      this.d.log(`tick failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`)
+      if (isDiskFull(err)) {
+        // Every tick fails the same way until there's room: once a minute in the log is enough.
+        if (this.d.now() - this.diskFullAt > 60_000) {
+          this.diskFullAt = this.d.now()
+          this.d.log(`tick failed: the disk is full (${err instanceof Error ? err.message : err})`)
+          this.d.diskFull?.()
+        }
+      } else {
+        this.d.log(`tick failed: ${err instanceof Error ? (err.stack ?? err.message) : err}`)
+      }
     } finally {
       this.ticking = false
     }

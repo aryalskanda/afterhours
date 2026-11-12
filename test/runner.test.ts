@@ -981,6 +981,24 @@ describe('live links', () => {
   })
 })
 
+describe('a full disk', () => {
+  test('every tick failing for lack of space is said at once, and logged once a minute, not every tick', async () => {
+    const h = setup()
+    let told = 0
+    ;(h.runner as unknown as { d: { diskFull?: () => void } }).d.diskFull = () => told++
+    h.store.running = () => {
+      throw Object.assign(new Error('database or disk is full'), { code: 'SQLITE_FULL' })
+    }
+    await h.runner.tick()
+    await h.runner.tick()
+    expect(told).toBe(1)
+    expect(h.logs.filter(l => l.includes('the disk is full'))).toHaveLength(1)
+    h.advance(61_000)
+    await h.runner.tick()
+    expect(told).toBe(2)
+  })
+})
+
 describe('the queue: hold, put back, clear', () => {
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()
