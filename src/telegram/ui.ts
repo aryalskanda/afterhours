@@ -1234,8 +1234,14 @@ export function foldersWelcomeView(roots: { label: string }[]): View {
 /** How long Stay awake keeps it awake, in hours. */
 export const AWAKE_HOURS = [1, 4, 12]
 
+/** Back online after the network dropped: when, for how long, and what brought it back. */
+export function backOnlineView(o: { since: number; how: string | null }, now: number, word: string): View {
+  const how = o.how ? `Afterhours ${esc(o.how)}` : 'it came back by itself'
+  return { html: `<b>Back online.</b> The ${esc(word)} lost the network at ${esc(formatClock(o.since, now))}; ${how} after ${duration(now - o.since)}. Messages from meanwhile arrive now.`, silent: true }
+}
+
 /** This computer: staying awake (while tasks run, with the lid closed, for a while) and sleeping. */
-export function macView(s: PowerStatus, now: number): View {
+export function macView(s: PowerStatus, now: number, o: { reconnect?: boolean } = {}): View {
   const word = machineWord(s.kind)
   const lid = s.lidClosed
   const until = s.awake ? esc(formatClock(s.awake.until, now)) : null
@@ -1264,6 +1270,14 @@ export function macView(s: PowerStatus, now: number): View {
       s.sleepDisabled ? `Sleep is turned off on this ${word} by something else (pmset disablesleep).` : '',
       "<i>It can't be woken from here: open its lid or press a key.</i>",
     ],
+    ...(o.reconnect === undefined
+      ? []
+      : [
+          [
+            '<b>Wi-Fi</b>',
+            `Reconnect by itself: <b>${onOff(o.reconnect)}</b>. ${o.reconnect ? `When the Wi-Fi or a hotspot drops for a minute, it turns the Wi-Fi off and on, then tries the saved networks. Never while someone is using the ${word}.` : `When the Wi-Fi drops, the ${word} stays offline until it rejoins by itself.`}`,
+          ],
+        ]),
   ]
   const html = sections.map(lines => lines.filter(Boolean).join('\n')).join('\n\n')
   return {
@@ -1272,6 +1286,7 @@ export function macView(s: PowerStatus, now: number): View {
       [btn(`While tasks run: ${onOff(s.keepAwake)}`, 'm:k'), ...(s.kind === 'wsl' && !lid.ready ? [] : [btn(`Lid closed: ${onOff(lid.on)}`, 'm:l')])],
       AWAKE_HOURS.map(h => btn(chosen(s.awake?.hours === h, `Awake ${h}h`), `m:a:${s.awake?.hours === h ? 0 : h}`)),
       [btn(`Sleep when done: ${onOff(s.sleepWhenDone.on)}`, 'm:d'), btn('Sleep now', 'm:s')],
+      ...(o.reconnect === undefined ? [] : [[btn(`Reconnect Wi-Fi: ${onOff(o.reconnect)}`, 'm:w')]]),
       [btn('Refresh', 'm:r'), ...(s.kind === 'mac' && !lid.ready ? [{ text: 'Copy the command', copy_text: { text: 'cq awake lid on' } }] : [])],
     ],
   }

@@ -10,6 +10,7 @@ import { findHost } from '../daemon/winterm'
 import { codeRoots, findClaude, findExecutable, findGitBash, loadConfig, paths, readToken } from '../shared/config'
 import { installHint, isMac, isWindows, MIN_WINDOWS_BUILD, osLabel, windowsBuild } from '../platform/os'
 import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
+import { wifiSystem } from '../platform/network'
 import { service } from '../platform/service'
 import { launcherPath } from './install'
 import { relayHealth } from './remote'
@@ -101,6 +102,9 @@ export async function checks(): Promise<Check[]> {
 
   const update = updateNotice(selfCommand(), VERSION)
   if (update) warn(update)
+
+  const wifi = wifiSystem()
+  if (wifi && (await wifi.device())) info(`Wi-Fi: ${config.network.reconnect ? 'reconnected by itself when it drops' : 'left alone when it drops (cq network reconnect on)'}`)
 
   const svc = service()
   if (!svc.installed()) info(svc.kind === 'none' ? `Not started by itself: there's no service manager here, so run cq daemon (cq install says how)` : 'Not set to start by itself: run cq install')

@@ -39,6 +39,8 @@ import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
 import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
+import { reachable, wifiSystem } from '../platform/network'
+import { NetworkWatch } from './network'
 import { isMac, isWindows, osLabel } from '../platform/os'
 import { systemProcs } from './procs'
 import { Tmux, TMUX_CONF, type TmuxDriver } from './tmux'
@@ -169,6 +171,20 @@ export async function runDaemon(): Promise<void> {
 
   // Staying awake and sleeping, with the system's own tools, from the apps, the bot and text commands.
   const power = powerSystem()
+  // Back online by itself when the Wi-Fi or a hotspot drops (never while someone uses the computer).
+  const wifi = wifiSystem()
+  const network = wifi
+    ? new NetworkWatch({
+        wifi,
+        online: () => reachable(['https://api.telegram.org', 'https://github.com']),
+        idleSeconds: () => power?.idleSeconds() ?? Promise.resolve(null),
+        config: () => config.network,
+        backOnline: o => void telegram?.backOnline(o).catch(err => log(`telegram: couldn't say it's back online: ${err instanceof Error ? err.message : err}`)),
+        now: Date.now,
+        log,
+      })
+    : null
+  const networkTimer = network ? setInterval(() => void network.tick(), 30_000) : null
   const keepAwake = new KeepAwake()
   const lidSwitch = power?.kind === 'mac' ? systemSleepSwitch : power?.kind === 'wsl' ? windowsLidSwitch : null
   const lidAwake =
@@ -282,6 +298,7 @@ export async function runDaemon(): Promise<void> {
       saveConfig: putConfig,
       commandContext: () => commandContext('cli'),
       mac,
+      wifi: wifi !== null,
       git,
       uploadsDir: paths.uploads,
       now: Date.now,
@@ -455,6 +472,7 @@ export async function runDaemon(): Promise<void> {
   function shutdown(code = 0): void {
     log('stopping (Claude sessions in tmux keep running and are picked up on the next start)')
     clearInterval(timer)
+    if (networkTimer) clearInterval(networkTimer)
     stopUpdateChecks()
     keepAwake.set(false)
     // Sleep turned off for tasks goes back on; started again with work, it goes off again.
