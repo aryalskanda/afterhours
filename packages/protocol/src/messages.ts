@@ -114,6 +114,8 @@ export const JobInfo = z.object({
   group: z.string().nullable().optional(),
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: z.boolean().optional(),
+  /** Someone is changing it right now: it doesn't start until they save or cancel. */
+  editing: z.boolean().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
   /** Plan with `effort`, work with this one: it carries out the approved plan. Null: `effort` for both. */
@@ -410,11 +412,12 @@ export const Request = z.discriminatedUnion('type', [
   /**
    * A queued task: remove it, run it next, change it (`prompt`, `options`), move it to place `to`
    * (0 = next), `hold` it in its place without starting it, or `release` it. `restore` puts a task
-   * removed in the last ten minutes back in its place.
+   * removed in the last ten minutes back in its place. `lock`: you're changing it, so it doesn't
+   * start (15 minutes, renewed by locking again); `unlock` (or `edit`) lets it start again.
    */
   withId({
     type: z.literal('job'),
-    action: z.enum(['remove', 'top', 'edit', 'move', 'hold', 'release', 'restore']),
+    action: z.enum(['remove', 'top', 'edit', 'move', 'hold', 'release', 'restore', 'lock', 'unlock']),
     job: z.number().int(),
     prompt: z.string().min(1).max(100_000).optional(),
     options: QueueOptions.optional(),

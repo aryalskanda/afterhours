@@ -335,7 +335,7 @@ function list(ctx: CommandContext): string {
     lines.push(`   “${oneLine(active.prompt, 80)}”`)
   }
   ctx.store.queued().forEach((job, i) => {
-    lines.push(`${i + 1}. ${jobLine(job, config.aliases)}${job.onHold ? ' · on hold' : ''}`)
+    lines.push(`${i + 1}. ${jobLine(job, config.aliases)}${job.onHold ? ' · on hold' : ''}${job.editingUntil !== null && job.editingUntil > Date.now() ? ' · being changed' : ''}`)
     lines.push(`   “${oneLine(job.prompt, 80)}”`)
   })
   if (lines.length === 0) lines.push('Queue empty.')

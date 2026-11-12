@@ -132,6 +132,8 @@ interface Runtime {
   linksRead?: boolean
 }
 
+/** How long a task waits for someone changing it, unless they keep at it: a forgotten edit can't hold the queue. */
+export const EDIT_LOCK_MS = 15 * 60_000
 const NUDGE =
   "You're running unattended from a prompt queue and the user can't reply right now. " +
   'Make reasonable assumptions, finish your plan, and call ExitPlanMode to present it.'
@@ -378,6 +380,8 @@ export class Runner {
     for (const job of this.d.store.queued()) {
       // On hold, or scheduled for later: it keeps its place, and the next one may go first.
       if (job.onHold) continue
+      // Being changed: it waits for Save (or Cancel), and the next one may go first.
+      if (job.editingUntil !== null && now < job.editingUntil) continue
       if (job.notBefore && now < job.notBefore) continue
       if (job.afterJob !== null) {
         const before = this.d.store.getJob(job.afterJob)
@@ -1535,6 +1539,16 @@ export class Runner {
     if (!job || job.status !== 'queued') return `#${id} isn't waiting in the queue.`
     this.d.store.updateJob(id, { onHold: on })
     return on ? `#${id} is on hold: it keeps its place and doesn't start.` : `#${id} can start again.`
+  }
+
+  /**
+   * Someone is changing a waiting task: it doesn't start until they save or cancel (`on` false),
+   * or for EDIT_LOCK_MS, renewed by calling this again. Null when it isn't waiting any more.
+   */
+  lockForEdit(id: number, on: boolean): Job | null {
+    const job = this.d.store.getJob(id)
+    if (!job || job.status !== 'queued') return null
+    return this.d.store.updateJob(id, { editingUntil: on ? this.d.now() + EDIT_LOCK_MS : null })
   }
 
   /** Puts a task removed in the last ten minutes (that never started) back in its place in the queue. */

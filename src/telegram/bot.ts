@@ -993,6 +993,8 @@ export class TelegramBridge {
     const at = message?.message_id ?? d.messageId
     if (at === null || at === undefined) return
     if (d.messageId !== at) d = this.state.updateDraft(d.id, { messageId: at })
+    // Changing a waiting task: each tap keeps it from starting a while longer.
+    if (d.editJob !== null) this.o.runner.lockForEdit(d.editJob, true)
     const ctx = this.uiContext()
     /** Changes the card and shows it again, in place. */
     const show = async (patch: Partial<Draft> = {}): Promise<void> => {
@@ -1135,6 +1137,7 @@ export class TelegramBridge {
       case 'q':
         return d.editJob ? this.saveEdit(chat, at, d) : this.queueDraft(chat, at, d)
       case 'x':
+        if (d.editJob !== null) this.o.runner.lockForEdit(d.editJob, false)
         this.state.updateDraft(d.id, { status: 'discarded' })
         if (this.pending && 'draftId' in this.pending && this.pending.draftId === d.id) this.setPending(null)
         await this.drop(chat, at, d.editJob ? `#${d.editJob} stays as it was.` : 'Discarded.')
@@ -1231,6 +1234,7 @@ export class TelegramBridge {
       repeatDaily: d.repeatDaily,
       maxMinutes: d.maxMinutes,
       ...(job.sessionId ? {} : { isolate: d.isolate }),
+      editingUntil: null,
     })
     // Next: it goes to the front, as Run next does.
     if (d.front && !ui.startsLater(d)) this.o.runner.top(job.id)
@@ -1769,6 +1773,8 @@ export class TelegramBridge {
       case 'edit': {
         // Change: a card with the task's choices; Save puts them on the task.
         if (job.status !== 'queued') return `#${id} isn't waiting in the queue any more.`
+        // It doesn't start while you change it: until Save or Cancel, or a while without a tap.
+        this.o.runner.lockForEdit(id, true)
         const d = this.state.addDraft(
           {
             prompt: job.prompt,

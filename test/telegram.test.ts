@@ -1671,6 +1671,52 @@ describe('the menu button', () => {
 })
 
 describe('what the bot does without the app', () => {
+  test('Change keeps a waiting task from starting until Save or Cancel, even when its turn comes', async () => {
+    const h = await paired()
+    const first = await running(h)
+    const id = await card(h, 'Write the docs')
+    await press(h, id, 'Queue')
+    const queued = h.store.queued()[0]!
+    await h.say('/queue')
+    const list = h.api.last().id
+    await h.tap(choice(h.api.view(list), `#${queued.id}</b>`), list)
+    await press(h, list, 'Change')
+    const edit = h.api.last().id
+    expect(h.api.view(edit).html).toContain('It won’t start until you tap Save or Cancel')
+    await h.say('/queue')
+    expect(h.api.last().html).toContain('being changed')
+    // The running task ends: its turn comes, but it waits for you.
+    await h.runner.onHook('Stop', first.id, { permission_mode: 'auto', last_assistant_message: 'Done.' })
+    h.advance(2000)
+    await h.runner.tick()
+    h.tmux.windows.get(windowName(first.id))!.dead = true
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)!.status).toBe('done')
+    await h.runner.tick()
+    expect(h.store.getJob(queued.id)!.status).toBe('queued')
+    await press(h, edit, 'Model')
+    await press(h, edit, 'Haiku')
+    await press(h, edit, 'Save')
+    expect(h.store.getJob(queued.id)).toMatchObject({ model: 'haiku', editingUntil: null })
+    await h.runner.tick()
+    expect(h.store.getJob(queued.id)!.status).toBe('running')
+  })
+
+  test('Cancel on a Change card lets the task start as it was', async () => {
+    const h = await paired()
+    await running(h)
+    const id = await card(h, 'Write the docs')
+    await press(h, id, 'Queue')
+    const queued = h.store.queued()[0]!
+    await h.say('/queue')
+    const list = h.api.last().id
+    await h.tap(choice(h.api.view(list), `#${queued.id}</b>`), list)
+    await press(h, list, 'Change')
+    expect(h.store.getJob(queued.id)!.editingUntil).not.toBeNull()
+    await press(h, h.api.last().id, 'Cancel')
+    expect(h.store.getJob(queued.id)!.editingUntil).toBeNull()
+  })
+
   test('Change on a queued task: its choices on a card; Save puts them on the task', async () => {
     const h = await paired()
     await running(h)

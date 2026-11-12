@@ -472,6 +472,7 @@ describe('remote access', () => {
   })
 
   test('the queue from an app: move, hold and release, remove and put back, clear', async () => {
+    // (Editing has its own test below.)
     const m = machine()
     const { conn } = await pairedApp(m)
     const ids: number[] = []
@@ -491,6 +492,23 @@ describe('remote access', () => {
     expect(cleared).toMatchObject({ ok: true, data: { removed: [ids[2]!, ids[0]!, ids[1]!] } })
     expect(m.store.queued()).toEqual([])
     expect(await conn.request({ type: 'job', action: 'restore', job: ids[1]! })).toMatchObject({ ok: true })
+  })
+
+  test('an app locks a waiting task while you edit it; Save (edit) or unlock lets it start; a started one refuses', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const r = await conn.request({ type: 'queue', folder: m.project, prompt: 'one' })
+    const id = (r.data as { job: { id: number } }).job.id
+    expect(await conn.request({ type: 'job', action: 'lock', job: id })).toMatchObject({ ok: true, data: { job: { id, editing: true } } })
+    expect(m.store.getJob(id)!.editingUntil).not.toBeNull()
+    expect(await conn.request({ type: 'job', action: 'edit', job: id, options: { model: 'haiku' } })).toMatchObject({ ok: true, data: { job: { editing: false, model: 'haiku' } } })
+    expect(m.store.getJob(id)!.editingUntil).toBeNull()
+    await conn.request({ type: 'job', action: 'lock', job: id })
+    expect(await conn.request({ type: 'job', action: 'unlock', job: id })).toMatchObject({ ok: true })
+    expect(m.store.getJob(id)!.editingUntil).toBeNull()
+    expect(await conn.request({ type: 'job', action: 'lock', job: 999 })).toMatchObject({ ok: false, code: 'gone' })
+    const audit = (await conn.request({ type: 'audit', limit: 20 })).data as { entries: { detail: string | null }[] }
+    expect(audit.entries.map(e => e.detail)).toEqual(expect.arrayContaining([`lock #${id}`, `unlock #${id}`]))
   })
 
   test("an app kills the running task, and the other apps hear who did; a viewer can't", async () => {
