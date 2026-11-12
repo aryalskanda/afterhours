@@ -32,6 +32,8 @@ export interface TelegramOptions {
   chats: ChatSource
   config: () => Config
   saveConfig: (config: Config) => void
+  /** There's a Wi-Fi to reconnect here (This Mac shows the switch). */
+  wifi?: boolean
   /** For reusing the text commands' status output. */
   commandContext: () => CommandContext
   /** Staying awake and sleeping; null or missing where there's nothing to sleep (a container). */
@@ -462,6 +464,13 @@ export class TelegramBridge {
     if (chat === null || !this.running) return false
     await this.deliver(chat, ui.updateView(latest, current, command, BRAND.name))
     return true
+  }
+
+  /** The network dropped and came back: said once it's back, so late messages make sense. */
+  async backOnline(o: { since: number; how: string | null }): Promise<void> {
+    const chat = this.owner
+    if (chat === null || !this.running) return
+    await this.deliver(chat, ui.backOnlineView(o, this.o.now(), this.word))
   }
 
   /**
@@ -1416,7 +1425,7 @@ export class TelegramBridge {
   private async showMac(chat: number, messageId?: number): Promise<void> {
     const mac = this.o.mac
     if (!mac) return void (await this.sendText(chat, NO_POWER))
-    const view = ui.macView(await mac.status(), this.o.now())
+    const view = ui.macView(await mac.status(), this.o.now(), { reconnect: this.o.wifi ? this.o.config().network.reconnect : undefined })
     if (messageId) await this.edit(chat, messageId, view)
     else await this.send(chat, view)
   }
@@ -1438,6 +1447,13 @@ export class TelegramBridge {
         const r = mac.keepAwake(!(await mac.status()).keepAwake)
         await refresh()
         return r.text
+      }
+      case 'w': {
+        const config = this.o.config()
+        const on = !config.network.reconnect
+        this.o.saveConfig({ ...config, network: { ...config.network, reconnect: on } })
+        await refresh()
+        return on ? 'It reconnects the Wi-Fi by itself.' : 'It leaves the Wi-Fi alone.'
       }
       case 'l': {
         const r = await mac.lidClosed(!(await mac.status()).lidClosed.on)
