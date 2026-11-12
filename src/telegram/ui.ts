@@ -520,6 +520,11 @@ function moreSection(d: Draft, ctx: UiContext): Section {
   }
 }
 
+/** Someone has the task's Change card (or the app's Edit) open, so it waits. */
+function changing(job: Job, now?: number): boolean {
+  return job.editingUntil !== null && job.editingUntil > (now ?? Date.now())
+}
+
 /**
  * The task card: the prompt and one line per choice, then the tabs that change them and Queue. A tab
  * opens its choices above the tabs; picking one changes the card in place and leaves the tab open.
@@ -549,7 +554,7 @@ export function draftCard(d: Draft, ctx: UiContext, x: CardExtras = {}): View {
               : tab === 'more'
                 ? moreSection(d, ctx)
                 : null
-  const html = [editing ? `<b>Changing #${d.editJob}</b>` : '<b>New task</b>', prompt, ...summaryLines(d, ctx, chat), ...(section ? ['', section.html] : [])].join('\n')
+  const html = [editing ? `<b>Changing #${d.editJob}</b>\n<i>It won’t start until you tap Save or Cancel.</i>` : '<b>New task</b>', prompt, ...summaryLines(d, ctx, chat), ...(section ? ['', section.html] : [])].join('\n')
   const t = (key: Tab, label: string) => btn(opened(tab === key, label), `d:${id}:v:${tab === key ? '-' : key}`)
   const tabs: InlineKeyboard = editing
     ? [
@@ -1043,7 +1048,7 @@ export function queueView(running: Job[], queued: Job[], ctx: UiContext, paused:
   const shown = queued.slice(0, 20)
   shown.forEach((job, i) =>
     lines.push(
-      numbered(i + 1, `<b>#${job.id}</b>${job.onHold ? ' · <i>on hold</i>' : ''} · ${esc(ctx.label(job.projectDir))} · ${esc(setupLine(job))}\n   “${esc(oneLine(job.prompt, 90))}”`),
+      numbered(i + 1, `<b>#${job.id}</b>${job.onHold ? ' · <i>on hold</i>' : ''}${changing(job, ctx.now) ? ' · <i>being changed</i>' : ''} · ${esc(ctx.label(job.projectDir))} · ${esc(setupLine(job))}\n   “${esc(oneLine(job.prompt, 90))}”`),
     ),
   )
   if (queued.length > shown.length) lines.push(`<i>And ${queued.length - shown.length} more.</i>`)

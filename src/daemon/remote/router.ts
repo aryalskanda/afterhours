@@ -92,6 +92,7 @@ export const FEATURES = [
   'folders.set',
   'settings.remote',
   'queue.edit.when',
+  'job.lock',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -511,6 +512,11 @@ export class Router {
           const text = runner.restore(r.job)
           return store.getJob(r.job)?.status === 'queued' ? { ok: true, text } : { ok: false, code: 'gone', error: text }
         }
+        if (r.action === 'lock' || r.action === 'unlock') {
+          const locked = runner.lockForEdit(r.job, r.action === 'lock')
+          if (!locked) return { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue any more: it started or was removed.` }
+          return { ok: true, text: r.action === 'lock' ? `#${r.job} won't start until you save or cancel.` : `#${r.job} can start again.`, data: { job: jobInfo(locked) } }
+        }
         if (r.action === 'hold' || r.action === 'release') {
           if (store.getJob(r.job)?.status !== 'queued') return { ok: false, code: 'gone', error: `#${r.job} isn't waiting in the queue.` }
           return { ok: true, text: runner.holdQueued(r.job, r.action === 'hold') }
@@ -790,7 +796,8 @@ export class Router {
     }
     const refusal = this.guard({ ...job, ...patch, execMode: patch.execMode ?? job.execMode } as JobSpec, role)
     if (refusal) return { ok: false, code: 'policy', error: refusal }
-    this.d.store.updateJob(job.id, patch)
+    // Saved: it may start again.
+    this.d.store.updateJob(job.id, { ...patch, editingUntil: null })
     return { ok: true, text: `Changed #${job.id}.`, data: { job: jobInfo(this.d.store.getJob(job.id)!) } }
   }
 

@@ -86,6 +86,11 @@ export interface Job {
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: boolean
   /**
+   * Someone is changing it (the bot's Change card, the app's Edit): it doesn't start before this
+   * time, so it never starts with the settings being replaced. Saving or cancelling clears it.
+   */
+  editingUntil: number | null
+  /**
    * Plan with one model, work with another: `model` plans, and once the plan is approved this
    * model carries it out (the same conversation, resumed). Null: `model` does both.
    */

@@ -45,6 +45,7 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     attachments: job.attachments?.map(p => p.slice(Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) + 1)) ?? null,
     group: job.group,
     onHold: job.onHold,
+    editing: job.editingUntil !== null && job.editingUntil > Date.now(),
     workModel: job.workModel,
     workEffort: job.workEffort,
     wantLink: job.wantLink,

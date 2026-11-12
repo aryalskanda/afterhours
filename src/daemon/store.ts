@@ -158,6 +158,7 @@ const COLUMNS = {
   attachments: 'attachments',
   group: 'job_group',
   onHold: 'on_hold',
+  editingUntil: 'editing_until',
   workModel: 'work_model',
   workEffort: 'work_effort',
   wantLink: 'want_link',
@@ -197,6 +198,7 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'links', 'TEXT'],
   ['jobs', 'link_note', 'TEXT'],
   ['jobs', 'link_for', 'INTEGER'],
+  ['jobs', 'editing_until', 'INTEGER'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links'])
 

@@ -982,6 +982,25 @@ describe('live links', () => {
 })
 
 describe('the queue: hold, put back, clear', () => {
+  test('a task being changed waits for Save or Cancel; the next one may go first; a forgotten edit runs out', async () => {
+    const h = setup()
+    const a = h.runner.enqueue(h.spec({ plan: false, prompt: 'first' }))
+    const b = h.runner.enqueue(h.spec({ plan: false, prompt: 'second' }))
+    expect(h.runner.lockForEdit(a.id, true)).toMatchObject({ id: a.id })
+    await h.runner.tick()
+    expect(h.store.active()?.id).toBe(b.id)
+    expect(h.store.getJob(a.id)).toMatchObject({ status: 'queued', onHold: false })
+    // Unlocked (saved or cancelled), it can start; it isn't put on hold by the edit.
+    expect(h.runner.lockForEdit(a.id, false)).toMatchObject({ editingUntil: null })
+    expect(h.runner.lockForEdit(b.id, true)).toBeNull() // already started
+    const c = h.runner.enqueue(h.spec({ plan: false, prompt: 'third' }))
+    h.runner.lockForEdit(c.id, true)
+    h.advance(14 * 60_000)
+    expect(h.store.queued().find(j => j.id === c.id)!.editingUntil).toBeGreaterThan(h.now())
+    h.advance(2 * 60_000)
+    expect(h.store.queued().find(j => j.id === c.id)!.editingUntil).toBeLessThan(h.now())
+  })
+
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()
     const a = h.runner.enqueue(h.spec({ plan: false, prompt: 'first' }))
