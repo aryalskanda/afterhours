@@ -493,6 +493,21 @@ describe('remote access', () => {
     expect(await conn.request({ type: 'job', action: 'restore', job: ids[1]! })).toMatchObject({ ok: true })
   })
 
+  test('an app sees a task waiting on its background commands, and finishes it; a viewer can’t', async () => {
+    const m = machine()
+    const phone = await pairedApp(m, { name: 'Phone' })
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'Tablet' })
+    const job = m.runner.enqueue({ projectDir: m.project, prompt: 'x', plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    await m.runner.tick()
+    expect(await phone.conn.request({ type: 'control', action: 'finish', job: job.id })).toMatchObject({ ok: false, code: 'invalid' })
+    await m.runner.onHook('Stop', job.id, { permission_mode: 'auto', background_tasks: [{ type: 'shell', status: 'running', description: 'npm run dev' }] })
+    const snap = (await phone.conn.request({ type: 'snapshot' })).data as { running: { id: number; waiting: { commands: string[]; endsAt: number | null } | null }[] }
+    expect(snap.running.find(j => j.id === job.id)!.waiting).toMatchObject({ commands: ['npm run dev'] })
+    expect(await viewer.conn.request({ type: 'control', action: 'finish', job: job.id })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await phone.conn.request({ type: 'control', action: 'finish', job: job.id })).toMatchObject({ ok: true })
+    expect(m.store.getJob(job.id)!.phase).toBe('finishing')
+  })
+
   test("an app kills the running task, and the other apps hear who did; a viewer can't", async () => {
     const m = machine()
     const phone = await pairedApp(m, { name: 'Phone' })

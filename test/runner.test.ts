@@ -312,7 +312,7 @@ describe('plan → execute → next job', () => {
     await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', background_tasks: [{ type: 'subagent', status: 'running' }] })
     h.advance(15 * 60_000)
     await h.runner.tick()
-    expect(j.window.input).toEqual([]) // subagents always finish: no time limit
+    expect(j.window.input).toEqual([]) // subagents usually finish: a longer wait than for commands
     await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', background_tasks: [] })
     h.advance(2000)
     await h.runner.tick()
@@ -366,6 +366,42 @@ describe('plan → execute → next job', () => {
     expect(j.window.input).toEqual([])
     h.advance(2 * 60_000)
     await h.runner.tick() // wait over: start finishing
+    h.advance(2000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual(['text:/exit', 'Enter'])
+  })
+})
+
+describe('answered, but waiting on background commands', () => {
+  test('the task says what it waits for and until when; Finish now ends it as done; new work clears it', async () => {
+    const h = setup({ backgroundSec: 600 })
+    const j = await startJob(h, { plan: false })
+    // Mid-turn: nothing to finish.
+    expect(h.runner.finishNow(j.id)).toEqual({ ok: false, text: `Claude is still working on #${j.id}: use Stop or Kill.` })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'The site is up.', background_tasks: [{ type: 'shell', status: 'running', description: 'python3 -m http.server 8000' }] })
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'running', waitingFor: ['python3 -m http.server 8000'], waitingUntil: h.now() + 600_000 })
+    // Claude takes another turn: it isn't waiting while it works.
+    await h.runner.onHook('UserPromptSubmit', j.id, { permission_mode: 'auto' })
+    expect(h.store.getJob(j.id)!.waitingSince).toBeNull()
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', last_assistant_message: 'The site is up.', background_tasks: [{ type: 'shell', status: 'running', description: 'python3 -m http.server 8000' }] })
+    expect(h.runner.finishNow(j.id, 'iPhone')).toEqual({ ok: true, text: `#${j.id} is done; its background commands stop with it.` })
+    expect(h.store.getJob(j.id)).toMatchObject({ phase: 'finishing', waitingSince: null })
+    h.advance(2000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual(['text:/exit', 'Enter'])
+    expect(h.runner.finishNow(999).ok).toBe(false)
+  })
+
+  test('subagent work that never ends is given up on too, after three times the wait', async () => {
+    const h = setup({ backgroundSec: 600 })
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('Stop', j.id, { permission_mode: 'auto', background_tasks: [{ type: 'subagent', status: 'running' }] })
+    expect(h.store.getJob(j.id)).toMatchObject({ waitingFor: ['a subagent'], waitingUntil: h.now() + 1_800_000 })
+    h.advance(29 * 60_000)
+    await h.runner.tick()
+    expect(j.window.input).toEqual([])
+    h.advance(2 * 60_000)
+    await h.runner.tick()
     h.advance(2000)
     await h.runner.tick()
     expect(j.window.input).toEqual(['text:/exit', 'Enter'])
