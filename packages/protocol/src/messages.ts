@@ -114,6 +114,8 @@ export const JobInfo = z.object({
   group: z.string().nullable().optional(),
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: z.boolean().optional(),
+  /** Its own branch started from this earlier task's branch: merging it brings that work in too. */
+  stackedOn: z.number().nullable().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
   /** Plan with `effort`, work with this one: it carries out the approved plan. Null: `effort` for both. */

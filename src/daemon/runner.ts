@@ -49,7 +49,9 @@ export interface RunnerDeps {
   git: {
     head(dir: string): Promise<string | null>
     diffStat(dir: string, since: string | null): Promise<string | null>
-    worktree(projectDir: string, jobId: number, prompt: string): Promise<Worktree | null>
+    worktree(projectDir: string, jobId: number, prompt: string, base?: string): Promise<Worktree | null>
+    /** The top of the repo `dir` is in; null outside git. */
+    top?(dir: string): Promise<string | null>
     commitAll(dir: string, message: string): Promise<boolean>
     /** The folder's files as a git tree, without touching the index or refs; null outside git. */
     snapshot(dir: string): Promise<string | null>
@@ -378,6 +380,8 @@ export class Runner {
     for (const job of this.d.store.queued()) {
       // On hold, or scheduled for later: it keeps its place, and the next one may go first.
       if (job.onHold) continue
+      // On its own branch where another task is at work: it waits, to build on that one's finished work.
+      if (job.isolate && this.d.config().stack && running.some(r => r.branch && samePath(r.projectDir, job.projectDir))) continue
       if (job.notBefore && now < job.notBefore) continue
       if (job.afterJob !== null) {
         const before = this.d.store.getJob(job.afterJob)
@@ -512,7 +516,14 @@ export class Runner {
       sessionArgs = ['--session-id', sessionId]
       isNew = true
       if (job.isolate && !workDir) {
-        const wt = await this.d.git.worktree(job.projectDir, job.id, job.prompt)
+        // Build on the last unmerged task's branch in this repo, so their work stacks instead of conflicting.
+        const below = config.stack ? await this.stackBase(job) : null
+        let wt = below ? await this.d.git.worktree(job.projectDir, job.id, job.prompt, below.branch!) : null
+        if (below && wt) {
+          this.d.store.updateJob(job.id, { stackedOn: below.id })
+          this.d.log(`#${job.id}: builds on #${below.id}'s branch (${below.branch})`)
+        }
+        wt ??= await this.d.git.worktree(job.projectDir, job.id, job.prompt)
         if (wt) {
           workDir = wt.dir
           branch = wt.branch
@@ -1535,6 +1546,18 @@ export class Runner {
     if (!job || job.status !== 'queued') return `#${id} isn't waiting in the queue.`
     this.d.store.updateJob(id, { onHold: on })
     return on ? `#${id} is on hold: it keeps its place and doesn't start.` : `#${id} can start again.`
+  }
+
+  /** The newest finished task in the same repo whose branch is still open, to build on; null if none. */
+  private async stackBase(job: Job): Promise<Job | null> {
+    const open = this.d.store.openBranches().filter(j => j.id !== job.id)
+    if (open.length === 0) return null
+    const top = this.d.git.top ? await this.d.git.top(job.projectDir) : null
+    for (const j of open) {
+      if (samePath(j.projectDir, job.projectDir)) return j
+      if (top && this.d.git.top && samePath((await this.d.git.top(j.projectDir)) ?? '', top)) return j
+    }
+    return null
   }
 
   /** Puts a task removed in the last ten minutes (that never started) back in its place in the queue. */

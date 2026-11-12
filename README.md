@@ -290,6 +290,8 @@ Nothing extra to install: Afterhours uses what each system already has.
    - starts the next task.
 6. **Problems.** A crash, an unexpected screen, or 20 minutes of silence pauses the queue and sends you the last lines of the screen.
 
+**Several tasks in one project don't conflict.** A new task on its own branch starts from the branch of the last finished task in that project that you haven't merged, sent as a pull request or thrown away, so each one builds on the one before. Their branches form one line: **Merge** or **Pull request** on the newest task (the button says **Merge #13–#15**) brings in all of them, one commit per task, with no conflicts, whether or not they depend on each other. Merging an earlier one alone works too. A task others build on can't be thrown away until they're settled. While one task works on its own branch in a project, the next one for that project waits for it, even with several tasks at once (other projects go ahead). `cq stack off` starts every task from your checkout instead.
+
 Follow-ups continue in the same worktree and branch. Review a branch with `git log -p main..afterhours/14-…`. Merge it with `git merge`. When you're done with it, remove it with `git worktree remove .claude/worktrees/afterhours-14 && git branch -D afterhours/14-…`.
 
 ### Watching and taking over

@@ -61,8 +61,8 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     git: {
       head: async () => 'abc123',
       diffStat: async () => '1 file changed, 1 insertion(+)',
-      worktree: async (_dir, id) => {
-        gitCalls.push(`worktree #${id}`)
+      worktree: async (_dir, id, _prompt, base) => {
+        gitCalls.push(base ? `worktree #${id} on ${base}` : `worktree #${id}`)
         if (!opts.gitRepo) return null
         const dir = join(project, '.claude', 'worktrees', `afterhours-${id}`)
         mkdirSync(dir, { recursive: true })
@@ -112,6 +112,9 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     logs,
     spec,
     config: () => config,
+    setConfig: (patch: Partial<Config>) => {
+      config = { ...config, ...patch }
+    },
     advance: (ms: number) => {
       now += ms
     },
@@ -386,6 +389,44 @@ describe('own branch (worktree) isolation', () => {
     expect(h.gitCalls).toEqual([`worktree #${j.id}`, `snapshot ${worktree}`, `commit ${worktree} Afterhours #${j.id}: Add dark mode`, `snapshot ${worktree}`])
     expect(h.store.getJob(j.id)).toMatchObject({ startTree: 'tree-1', endTree: 'tree-2' })
     expect(lastNotice(h, 'done').job.branch).toBe(`afterhours/${j.id}-task`)
+  })
+
+  test('the next task in the project builds on the last one’s branch; a merged one isn’t built on', async () => {
+    const h = setup({}, { gitRepo: true })
+    const a = await startJob(h, { plan: false, isolate: true, prompt: 'Make it blue', sessionPolicy: 'new' })
+    await finishTurn(h, a)
+    const b = await startJob(h, { plan: false, isolate: true, prompt: 'Make it bold', sessionPolicy: 'new' })
+    expect(h.gitCalls).toContain(`worktree #${b.id} on afterhours/${a.id}-task`)
+    expect(h.store.getJob(b.id)!.stackedOn).toBe(a.id)
+    expect(h.logs).toContain(`#${b.id}: builds on #${a.id}'s branch (afterhours/${a.id}-task)`)
+    await finishTurn(h, b)
+    // Both settled: the next one starts from the checkout again.
+    h.store.updateJob(a.id, { branchNote: 'Merged with #2' })
+    h.store.updateJob(b.id, { branchNote: 'Merged into main.' })
+    const c = await startJob(h, { plan: false, isolate: true, prompt: 'Fresh', sessionPolicy: 'new' })
+    expect(h.gitCalls).toContain(`worktree #${c.id}`)
+    expect(h.store.getJob(c.id)!.stackedOn).toBeNull()
+  })
+
+  test('two at once: a second task on its own branch in the same project waits for the first; another project goes ahead', async () => {
+    const h = setup({}, { gitRepo: true })
+    h.config().parallel = 2
+    const a = h.runner.enqueue(h.spec({ plan: false, isolate: true, prompt: 'One', sessionPolicy: 'new' }))
+    const b = h.runner.enqueue(h.spec({ plan: false, isolate: true, prompt: 'Two', sessionPolicy: 'new' }))
+    const other = mkdtempSync(join(tmpdir(), 'cq-other-'))
+    const c = h.runner.enqueue(h.spec({ plan: false, isolate: true, prompt: 'Elsewhere', sessionPolicy: 'new', projectDir: other }))
+    await h.runner.tick()
+    await h.runner.tick()
+    expect([a, b, c].map(j => h.store.getJob(j.id)!.status)).toEqual(['running', 'queued', 'running'])
+  })
+
+  test('stack off: every task starts from the checkout', async () => {
+    const h = setup({}, { gitRepo: true })
+    h.setConfig({ stack: false })
+    const a = await startJob(h, { plan: false, isolate: true, prompt: 'One', sessionPolicy: 'new' })
+    await finishTurn(h, a)
+    const b = await startJob(h, { plan: false, isolate: true, prompt: 'Two', sessionPolicy: 'new' })
+    expect(h.store.getJob(b.id)!.stackedOn).toBeNull()
   })
 
   test('a follow-up continues in the same worktree without making another, and commits there', async () => {

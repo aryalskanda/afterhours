@@ -11,7 +11,7 @@ import { browse, browseLabel, canChoose, startNear, THIS_PC, type BrowseEnv } fr
 import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
 import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
-import { settleBranch, type BranchGit } from '../daemon/branches'
+import { settleBranch, stackBelow, type BranchGit } from '../daemon/branches'
 import type { PowerControl } from '../daemon/power'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
@@ -1821,7 +1821,7 @@ export class TelegramBridge {
   }
 
   private noticeContext(): ui.NoticeContext {
-    return { ...this.uiContext(), now: this.o.now() }
+    return { ...this.uiContext(), now: this.o.now(), stackFrom: job => stackBelow(this.o.store, job).at(-1)?.id ?? null }
   }
 
   private async showChats(chat: number, page: number, messageId?: number): Promise<void> {

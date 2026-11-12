@@ -124,13 +124,14 @@ export const git = {
 
   /**
    * A new branch in its own worktree under <repo>/.claude/worktrees (where Claude Code keeps its
-   * own), starting from your last commit. Null when the folder isn't a git repo with a commit.
+   * own), starting from your last commit, or from `base` (an earlier task's branch, to build on
+   * it). Null when the folder isn't a git repo with a commit, or `base` is gone.
    */
-  async worktree(projectDir: string, jobId: number, prompt: string): Promise<Worktree | null> {
+  async worktree(projectDir: string, jobId: number, prompt: string, base?: string): Promise<Worktree | null> {
     const top = await run(['git', '-C', projectDir, 'rev-parse', '--show-toplevel'])
     if (top.code !== 0) return null
     const root = top.out.trim()
-    const head = await run(['git', '-C', root, 'rev-parse', 'HEAD'])
+    const head = await run(['git', '-C', root, 'rev-parse', '--verify', '--quiet', `${base ?? 'HEAD'}^{commit}`])
     if (head.code !== 0) return null // no commits yet
     const parent = join(root, '.claude', 'worktrees')
     mkdirSync(parent, { recursive: true })
@@ -139,7 +140,7 @@ export const git = {
     if (!existsSync(ignore)) writeFileSync(ignore, '*\n')
     const dir = join(parent, `${BRAND.slug}-${jobId}`)
     const branch = `${BRAND.slug}/${jobId}-${branchSlug(prompt)}`
-    const add = await run(['git', '-C', root, 'worktree', 'add', '-b', branch, dir, 'HEAD'])
+    const add = await run(['git', '-C', root, 'worktree', 'add', '-b', branch, dir, head.out.trim()])
     if (add.code !== 0) return null
     const rel = relative(root, realpathSync(projectDir))
     return { dir: rel && !rel.startsWith('..') ? join(dir, rel) : dir, branch, base: head.out.trim() }

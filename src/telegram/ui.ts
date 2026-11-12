@@ -792,6 +792,8 @@ export function answeredView(job: Job, questions: Question[], answers: (Question
 
 export interface NoticeContext extends UiContext {
   now: number
+  /** The first task a stacked task's branch carries (the bottom of its open stack); null if it isn't stacked. */
+  stackFrom?: (job: Job) => number | null
 }
 
 export function noticeView(n: Notice, ctx: NoticeContext): View {
@@ -849,12 +851,14 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       const head = [
         `<b>#${n.job.id} done</b>${took} · ${esc(ctx.label(n.job.projectDir))}`,
         n.diff ? `<i>${esc(n.diff)}</i>` : '',
-        n.job.branch ? `On branch <code>${esc(n.job.branch)}</code>` : '',
+        n.job.branch ? `On branch <code>${esc(n.job.branch)}</code>${n.job.stackedOn !== null ? ` (on top of #${n.job.stackedOn}, so it has that work too)` : ''}` : '',
         `<i>${next}</i>`,
       ]
         .filter(Boolean)
         .join('\n')
-      const branch = n.job.branch && !n.job.branchNote ? [[btn('Merge', `j:${n.job.id}:merge`), btn('Pull request', `j:${n.job.id}:pr`), btn('Discard branch', `j:${n.job.id}:discard`)]] : []
+      const from = ctx.stackFrom?.(n.job) ?? n.job.stackedOn
+      const range = from !== null ? ` #${from}–#${n.job.id}` : ''
+      const branch = n.job.branch && !n.job.branchNote ? [[btn(`Merge${range}`, `j:${n.job.id}:merge`), btn(`Pull request${range ? ` for${range}` : ''}`, `j:${n.job.id}:pr`)], [btn('Discard branch', `j:${n.job.id}:discard`)]] : []
       return longView(head, n.job.lastMessage, [[btn('Follow up', `j:${n.job.id}:fu`), btn('New task here', `j:${n.job.id}:new`)], [linkButton(n.job)], ...branch], {
         name: `answer-${n.job.id}.md`,
         caption: `#${n.job.id}: Claude's full answer`,

@@ -28,6 +28,7 @@ Setup and service:
   cq telegram <token>  connect your Telegram bot (from @BotFather) and pair your account
   cq telegram off      stop using Telegram
   cq folders           the project folders the bot searches; cq folders add|remove <path>
+  cq stack on|off      whether queued tasks in one project build on each other's branches (on: no merge conflicts)
   cq awake             whether this computer stays awake while tasks run (cq awake on|off); cq awake lid on: with the lid closed too
   cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux, a startup app on Windows)
   cq restart           restart it (on macOS, after granting Full Disk Access)
@@ -270,6 +271,17 @@ async function main(): Promise<void> {
     case 'awake':
       if (!(await awakeCommand(rest))) process.exitCode = 1
       return
+    case 'stack': {
+      const config = loadConfig()
+      if (rest[0] === 'on' || rest[0] === 'off') saveConfig({ ...config, stack: rest[0] === 'on' })
+      const on = rest[0] ? rest[0] === 'on' : config.stack
+      console.log(
+        on
+          ? 'Tasks on their own branch build on the last unmerged task’s branch in the same project, so their work stacks instead of conflicting. Merge the newest to merge them all.'
+          : 'Each task on its own branch starts from your checkout (cq stack on to build on the last one).',
+      )
+      return
+    }
     case 'doctor':
       return doctor()
     case 'report':
