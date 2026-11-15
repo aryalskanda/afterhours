@@ -35,6 +35,7 @@ import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../chats'
 import { claudeInfo } from '../claude-info'
 import { claudeVersion, health } from '../health'
+import { offeredModels } from '../models'
 import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
 import { oneLine } from '../format'
 import { slashCommands } from '../slash'
@@ -395,7 +396,7 @@ export class Router {
         workEffort: config.defaults.workEffort ?? null,
         isolate: config.isolate,
       },
-      models: [...new Set([...config.models, config.defaults.model])],
+      models: offeredModels(config),
       features: this.d.mac ? [...FEATURES, 'mac'] : FEATURES,
       ...(config.remote.relay ? { relay: config.remote.relay } : {}),
     }

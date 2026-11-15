@@ -1145,7 +1145,7 @@ export function settingsView(o: {
       `Tasks at once: <b>${o.parallel}</b>${o.parallel > 1 ? '. The next starts beside the running ones only in another folder, on its own branch, or when it only answers.' : '.'}`,
       `Other chats: <b>${o.watch ? 'watched' : 'not watched'}</b>${o.watch ? `. I tell you when one in VS Code or a terminal hits a usage limit${o.autoContinue ? ', and continue it at the reset' : ''}.` : '.'}`,
       `Folders: ${o.folders} under ${o.roots.map(r => esc(basename(r))).join(', ')} · ${built}.`,
-      `Models: ${esc(o.models.join(', '))} <i>(change in ~/${BRAND.homeDir}/config.json)</i>`,
+      `Models: ${esc(o.models.join(', '))} <i>(from Claude Code; add more in ~/${BRAND.homeDir}/config.json)</i>`,
       '<i>New tasks start with the choices you used last.</i>',
     ].join('\n'),
     keyboard: [

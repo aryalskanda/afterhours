@@ -8,6 +8,7 @@ import type { Approval, Effort, ExecMode, JobSpec, SessionPolicy } from '../shar
 import { chatState, type ChatSource } from './chats'
 import { duration, excerpt, jobLine, oneLine, projectLabel } from './format'
 import { formatClock } from './limits'
+import { offeredModels } from './models'
 import type { PowerControl } from './power'
 import type { Runner } from './runner'
 import { findSessions, isTrusted } from './sessions'
@@ -96,7 +97,9 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
     if (out.plan === undefined) out.plan = true
     return true
   }
-  const isModel = (m: string) => MODELS.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m)
+  // The known names, a full id, and whatever Claude Code offers now (a model newer than this list).
+  const offered = offeredModels(config)
+  const isModel = (m: string) => MODELS.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m) || offered.includes(m)
   if (isModel(t)) {
     out.model = t
     return true

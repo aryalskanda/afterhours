@@ -371,7 +371,7 @@ The words before the first colon count as options only if every one of them is a
 | `folders.roots` | chosen in `cq setup` | The project folders the folder browser and search cover. Change them with `cq folders add\|remove <path>`. The map stays current: a watch updates it within seconds of a folder being made, renamed or removed, and the whole tree is checked every 15 minutes. It goes as deep as your folders do, and two levels inside a project (a git repo, a package…) |
 | `defaults` | plan → auto, `sonnet`, `high` | Used for your first task; after that, new cards start with your last choices |
 | `isolate` | `true` | New conversations run on their own branch |
-| `models` | `opus`, `sonnet`, `haiku` | Model buttons |
+| `models` | `opus`, `sonnet`, `haiku` | Extra model buttons. The models Claude Code offers your account are found on their own and come first; add a pinned version here (`claude-opus-4-8`) |
 | `notify` | `all` | `important` skips started, approved and resumed messages |
 | `timeouts.approvalSec` / `questionSec` | 900 | How long 🔐 and ❓ wait for you |
 | `timeouts.reviewSec` | 3600 | How long a 📝 review waits |

@@ -22,6 +22,8 @@ import {
 } from '../shared/config'
 import { TelegramApi } from '../telegram/api'
 import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
+import { claudeVersion } from './health'
+import { watchModels } from './models'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
@@ -468,6 +470,9 @@ export async function runDaemon(): Promise<void> {
   }
   process.on('SIGTERM', () => shutdown())
   process.on('SIGINT', () => shutdown())
+
+  // The models Claude Code offers this account: the buttons in the bot and the apps.
+  watchModels({ claudePath, version: () => claudeVersion(claudePath, Date.now()), log })
 
   const where = isWindows ? 'terminal host (ConPTY)' : `tmux -L ${TMUX_SOCKET}`
   log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · ${osLabel()} · claude ${claudePath} · ${where} · state ${CQ_HOME}`)
