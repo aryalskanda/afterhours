@@ -6,6 +6,7 @@ import { within as inside } from '../shared/paths'
 import type { Approval, Effort, Job, JobSpec } from '../shared/types'
 import { continueSpec, type ChatSource } from '../daemon/chats'
 import { parseQueueText, type CommandContext } from '../daemon/commands'
+import { offeredModels } from '../daemon/models'
 import { listChildren, parentWithin, relativeToRoots, type FolderMap } from '../daemon/folders'
 import { browse, browseLabel, canChoose, startNear, THIS_PC, type BrowseEnv } from '../daemon/browse'
 import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
@@ -550,7 +551,7 @@ export class TelegramBridge {
     const roots = this.roots()
     return {
       now: this.o.now(),
-      models: this.o.config().models,
+      models: offeredModels(this.o.config()),
       folderId: path => this.state.folderId(path),
       label: path => relativeToRoots(path, roots),
       hasConversation: folder => this.o.store.getThread(folder) !== null,
@@ -1402,7 +1403,7 @@ export class TelegramBridge {
       folders: this.o.folders.size,
       builtAt: this.o.folders.builtAt,
       roots: this.roots(),
-      models: config.models,
+      models: offeredModels(config),
       watch: config.watchSessions,
       autoContinue: config.autoContinueChats,
       parallel: this.o.runner.parallel,
