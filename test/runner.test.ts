@@ -306,6 +306,132 @@ describe('plan → execute → next job', () => {
     expect(lastNotice(h, 'held').reason).toContain('without presenting a plan')
   })
 
+  test('a plan job with nothing to plan says so and ends with its answer: no plan, no review', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true, prompt: 'Continue from where you left off.' })
+    // It has nothing left to do and says so; it is asked for a plan anyway, and told the way out.
+    const nudge = (await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Everything you asked for is finished.' })) as { reason: string }
+    expect(nudge.reason).toContain('Nothing to plan:')
+    expect(await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Nothing to plan: the work is already done.' })).toEqual({})
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'running', phase: 'finishing', lastMessage: 'Everything you asked for is finished.' })
+    expect(h.notices.some(n => n.type === 'plan_review' || n.type === 'held')).toBe(false)
+    h.advance(2000)
+    await h.runner.tick()
+    j.window.dead = true
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)!.status).toBe('done')
+  })
+
+  test('those words before any nudge are just an answer, and a plan is still asked for', async () => {
+    const h = setup()
+    const j = await startJob(h)
+    expect(await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Nothing to plan: really.' })).toMatchObject({ decision: 'block' })
+  })
+
+  test('a plan waiting for review steps aside for the task behind it, and runs when approved', async () => {
+    const h = setup()
+    const first = await startJob(h, { review: true, prompt: 'Plan this' })
+    const second = h.runner.enqueue(h.spec({ plan: false, prompt: 'Then this' }))
+    await h.runner.onHook('PermissionRequest', first.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    first.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    const review = lastNotice(h, 'plan_review')
+    // A minute in, it still waits in place: you may be about to answer.
+    h.advance(60_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)!.status).toBe('running')
+    expect(h.store.getJob(second.id)!.status).toBe('queued')
+
+    // Two minutes in, with a task waiting behind it, it steps aside.
+    h.advance(70_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'queued', onHold: true, planWaiting: true, planText: 'The plan', planApproved: false })
+    expect(h.tmux.windows.has(windowName(first.id))).toBe(false)
+    expect(lastNotice(h, 'held').reason).toContain('the queue has moved on')
+    await h.runner.tick()
+    expect(h.store.getJob(second.id)!.status).toBe('running')
+    // It stays aside however long you take.
+    h.advance(5 * 3_600_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)!.status).toBe('queued')
+
+    // Approved from the phone while the other task runs: it waits its turn, then carries the plan out.
+    expect(h.runner.answer(review.code, 'allow', null)).toContain('Approved')
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'queued', onHold: false, planWaiting: false, planApproved: true })
+    const running = { id: second.id, sid: h.store.getJob(second.id)!.sessionId!, window: h.tmux.windows.get(windowName(second.id))! }
+    await h.runner.onHook('SessionStart', second.id, { session_id: running.sid, transcript_path: '/tmp/t2.jsonl' })
+    await finishTurn(h, running)
+    await h.runner.tick()
+    const again = h.store.getJob(first.id)!
+    expect(again.status).toBe('running')
+    const argv = h.runner.launchSpec(first.id)!.argv
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('auto')
+    expect(argv).toContain('--resume')
+    expect(argv.at(-1)).toBe('Your plan is approved. Carry it out now, step by step, and finish the task.')
+  })
+
+  test('asking for changes to a plan that stepped aside plans again with them; go approves one', async () => {
+    const h = setup()
+    const first = await startJob(h, { review: true, prompt: 'Plan this' })
+    h.runner.enqueue({ ...h.spec({ plan: false, prompt: 'Later' }), notBefore: h.now() + 24 * 3_600_000 })
+    const blocked = h.runner.enqueue(h.spec({ plan: false, prompt: 'Then this' }))
+    await h.runner.onHook('PermissionRequest', first.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    first.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    const review = lastNotice(h, 'plan_review')
+    h.advance(130_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)!.planWaiting).toBe(true)
+
+    h.runner.answer(review.code, 'deny', 'Use the other approach')
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'queued', onHold: false, planWaiting: false, planApproved: false, resumePrompt: 'Use the other approach' })
+    // It is first in line again, and plans again with what you said.
+    await h.runner.remove(blocked.id)
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(first.id)!.argv
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'running', resumePrompt: null })
+    expect(argv[argv.indexOf('--permission-mode') + 1]).toBe('plan')
+    expect(argv.at(-1)).toBe('Use the other approach')
+  })
+
+  test('go approves a plan that stepped aside', async () => {
+    const h = setup()
+    const first = await startJob(h, { review: true })
+    const second = h.runner.enqueue(h.spec({ plan: false, prompt: 'Then this' }))
+    await h.runner.onHook('PermissionRequest', first.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    first.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    h.advance(130_000)
+    await h.runner.tick()
+    await h.runner.tick()
+    expect(h.store.getJob(second.id)!.status).toBe('running')
+    expect(await h.runner.go(first.id)).toContain(`Approved #${first.id}'s plan`)
+    expect(h.store.getJob(first.id)).toMatchObject({ planApproved: true, onHold: false, planWaiting: false })
+    expect(h.store.pendingApprovals(first.id)).toEqual([])
+  })
+
+  test('a plan waiting for review with nothing behind it waits in place, then is paused; a task queued later frees it', async () => {
+    const h = setup()
+    const first = await startJob(h, { review: true })
+    await h.runner.onHook('PermissionRequest', first.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    first.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    h.advance(30 * 60_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'running', planWaiting: false })
+    h.advance(31 * 60_000)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'held', holdReason: 'the plan is still waiting for your review (reply go to approve it)' })
+
+    // Hours later something is queued behind it: it steps aside then, and the new task starts.
+    h.advance(3 * 3_600_000)
+    const later = h.runner.enqueue(h.spec({ plan: false, prompt: 'Queued overnight' }))
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'queued', onHold: true, planWaiting: true })
+    await h.runner.tick()
+    expect(h.store.getJob(later.id)!.status).toBe('running')
+  })
+
   test('background work keeps the job open until Claude ends a turn without any', async () => {
     const h = setup()
     const j = await startJob(h, { plan: false })

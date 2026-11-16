@@ -74,6 +74,8 @@ export interface Config {
     questionSec: number
     /** How long a `review` plan waits for your approval. */
     reviewSec: number
+    /** And how long before it steps aside when other tasks are waiting behind it. */
+    reviewAsideSec: number
     /** No activity for this long while the session is idle means the job is stuck. */
     stuckSec: number
     /** Extra wait after a limit reset before cq types `continue` itself. */
@@ -164,6 +166,7 @@ export const DEFAULT_CONFIG: Config = {
     approvalSec: 900,
     questionSec: 900,
     reviewSec: 3600,
+    reviewAsideSec: 120,
     stuckSec: 1200,
     limitGraceSec: 180,
     launchSec: 90,

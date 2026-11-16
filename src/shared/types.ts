@@ -86,6 +86,13 @@ export interface Job {
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: boolean
   /**
+   * Its plan is waiting for your review, and it stepped aside so the queue could go on: back in
+   * the queue on hold, its Claude session closed, the plan kept. Approving it lets it run again.
+   */
+  planWaiting: boolean
+  /** What a task that stepped aside is told when it starts again (your changes to its plan). */
+  resumePrompt: string | null
+  /**
    * Plan with one model, work with another: `model` plans, and once the plan is approved this
    * model carries it out (the same conversation, resumed). Null: `model` does both.
    */
