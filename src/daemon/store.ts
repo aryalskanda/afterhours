@@ -158,8 +158,6 @@ const COLUMNS = {
   attachments: 'attachments',
   group: 'job_group',
   onHold: 'on_hold',
-  planWaiting: 'plan_waiting',
-  resumePrompt: 'resume_prompt',
   workModel: 'work_model',
   workEffort: 'work_effort',
   wantLink: 'want_link',
@@ -168,7 +166,7 @@ const COLUMNS = {
   linkFor: 'link_for',
 } as const satisfies Record<keyof Job, string>
 
-const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved', 'onHold', 'wantLink', 'planWaiting'])
+const BOOLEAN_FIELDS = new Set<keyof Job>(['plan', 'review', 'fork', 'isolate', 'planApproved', 'onHold', 'wantLink'])
 
 /** Columns added after the first release, for databases created before them. */
 const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
@@ -199,8 +197,6 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'links', 'TEXT'],
   ['jobs', 'link_note', 'TEXT'],
   ['jobs', 'link_for', 'INTEGER'],
-  ['jobs', 'plan_waiting', 'INTEGER NOT NULL DEFAULT 0'],
-  ['jobs', 'resume_prompt', 'TEXT'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links'])
 

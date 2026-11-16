@@ -374,8 +374,7 @@ The words before the first colon count as options only if every one of them is a
 | `models` | `opus`, `sonnet`, `haiku` | Extra model buttons. The models Claude Code offers your account are found on their own and come first; add a pinned version here (`claude-opus-4-8`) |
 | `notify` | `all` | `important` skips started, approved and resumed messages |
 | `timeouts.approvalSec` / `questionSec` | 900 | How long 🔐 and ❓ wait for you |
-| `timeouts.reviewSec` | 3600 | How long a 📝 review waits |
-| `timeouts.reviewAsideSec` | 120 | How long a 📝 review waits before the task steps aside, when other tasks are queued behind it |
+| `timeouts.reviewSec` | 900 | How long a 📝 review waits for you; with no answer the plan is approved, as if review were off |
 | `timeouts.stuckSec` | 1200 | Silence before a task counts as stuck |
 | `timeouts.limitGraceSec` | 180 | Wait after a reset before Afterhours types `continue` itself |
 | `timeouts.backgroundSec` | 600 | How long to wait for background commands after a turn |

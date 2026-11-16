@@ -143,11 +143,6 @@ const NUDGE =
   "If the task is already done and there is nothing left to plan or change, don't present a plan: " +
   `reply with one line that starts with "${NOTHING_TO_PLAN}" and says why.`
 
-/** Why a task is paused once its plan has waited `reviewSec` for you. */
-const REVIEW_WAIT = 'the plan is still waiting for your review (reply go to approve it)'
-/** And what you're told when it steps aside for the tasks behind it. */
-const REVIEW_ASIDE = 'its plan is waiting for your review, so the queue has moved on (reply go to approve it)'
-
 /** What the work model is told when it takes over an approved plan (plan with one model, work with another). */
 const HANDOFF_PROMPT = 'Your plan is approved. Carry it out now, step by step, and finish the task.'
 
@@ -404,10 +399,7 @@ export class Runner {
       }
       // Beside a running task only when they can't get in each other's way; it keeps its place otherwise.
       if (running.length > 0 && this.collision(job, running)) continue
-      // One that stepped aside for a review: its plan is approved (carry it out), or you asked for changes.
-      const prompt = job.resumePrompt ?? (job.plan && job.planApproved && job.launches > 0 ? HANDOFF_PROMPT : undefined)
-      if (job.resumePrompt) this.d.store.updateJob(job.id, { resumePrompt: null })
-      await this.launch(job, prompt)
+      await this.launch(job)
       return
     }
   }
@@ -676,11 +668,7 @@ export class Runner {
       const reason = pane ? `Claude exited (code ${pane.deadStatus ?? '?'})` : 'its tmux window is gone'
       return this.hold(job, reason, screen, 'failed')
     }
-    if (job.status === 'held') {
-      // Paused for a review nobody answered: a task queued behind it since shouldn't wait for that.
-      if (job.holdReason === REVIEW_WAIT && this.blocksQueue(job)) await this.setAside(job, rt)
-      return
-    }
+    if (job.status === 'held') return
     if (rt.finishing) return this.continueFinishing(job, rt)
 
     if (!rt.sessionStarted) {
@@ -830,12 +818,12 @@ export class Runner {
       }
       const approval = this.d.store.getApproval(p.reviewCode)
       if (approval?.status === 'pending') {
-        const waited = now - approval.createdAt
-        // Nothing has changed while it plans, so it can step aside for the tasks behind it and
-        // pick the plan up again when you've looked at it.
-        if (waited > (config.timeouts.reviewAsideSec ?? 120) * 1000 && this.blocksQueue(job)) return this.setAside(job, rt)
-        if (waited > config.timeouts.reviewSec * 1000) this.hold(job, REVIEW_WAIT)
-        return
+        if (now - approval.createdAt <= config.timeouts.reviewSec * 1000) return
+        // No answer in time: the plan is approved as if review were off, like a question nobody
+        // answers. A task that waits on you all night holds up everything queued behind it.
+        this.d.store.resolveApproval(p.reviewCode, 'allowed', null, now)
+        p.choice = `not reviewed in ${duration(config.timeouts.reviewSec * 1000)}, so approved automatically`
+        this.d.log(`#${job.id}: its plan wasn't reviewed in time; approving it`)
       }
       if (approval?.status === 'denied') return this.sendPlanFeedback(job, rt, dialog.options, approval.answer)
     }
@@ -844,11 +832,12 @@ export class Runner {
     if (p.attempts >= 3) return this.hold(job, "couldn't approve the plan dialog", tail(screen, 20))
     const choice = choosePlanOption(dialog.options, job.execMode)
     if (!choice) return this.hold(job, "didn't recognize the plan dialog's options", tail(screen, 20))
-    if (differentWork(job)) return this.handOver(job, rt, choice.option.label)
+    if (differentWork(job)) return this.handOver(job, rt, p.choice ?? choice.option.label)
     await this.d.tmux.sendKeys(rt.window, String(choice.option.n))
     p.sentAt = now
     p.attempts++
-    p.choice = choice.option.label
+    // An approval nobody gave keeps saying so.
+    p.choice ??= choice.option.label
     p.switchAfter = choice.switchAfter
     this.d.log(`#${job.id}: answered plan dialog with "${choice.option.label}"`)
   }
@@ -858,50 +847,6 @@ export class Runner {
    * answering the dialog, the planner's window closes and the same conversation resumes on the work
    * model and effort, in the task's own mode, told to carry the plan out.
    */
-  /** Whether a queued task that could start now is kept waiting by this one. */
-  private blocksQueue(job: Job): boolean {
-    if (this.paused) return false
-    const now = this.d.now()
-    const running = this.d.store.running()
-    return this.d.store.queued().some(q => {
-      if (q.onHold || (q.notBefore !== null && now < q.notBefore)) return false
-      if (q.afterJob !== null && this.d.store.getJob(q.afterJob)?.status !== 'done') return false
-      const others = running.filter(r => r.id !== job.id)
-      // Free to start but for this task: it takes the last slot, or shares the folder or conversation.
-      if (this.collision(q, others)) return false
-      return running.length >= this.parallel || this.collision(q, [job]) !== null
-    })
-  }
-
-  /**
-   * A task whose plan waits for your review steps aside: its Claude session is closed and it goes
-   * back into the queue on hold, with its plan and the review you can still answer. It has only
-   * planned, so nothing on disk is half-done. Approving it (or asking for changes) lets it run again.
-   */
-  private async setAside(job: Job, rt: Runtime): Promise<void> {
-    if (this.ended(job.id)) return
-    // The record first, so nothing else supervising this task acts on the window being closed.
-    const aside = this.d.store.updateJob(job.id, { status: 'queued', phase: null, holdReason: null, onHold: true, planWaiting: true, nudges: 0 })
-    const procs = this.d.procs ?? systemProcs
-    const pane = await this.d.tmux.pane(rt.window).catch(() => null)
-    const pids = (pane?.pid ? await procs.tree(pane.pid).catch(() => [pane.pid!]) : []).filter(pid => pid > 1 && pid !== process.pid)
-    await this.d.tmux.killWindow(rt.window)
-    await endProcesses(pids, { procs, sleep: this.d.sleep })
-    this.runtimes.delete(job.id)
-    this.d.log(`#${job.id}: its plan is waiting for review; set aside so the queue can go on`)
-    this.d.notify({ type: 'held', job: aside, reason: REVIEW_ASIDE })
-  }
-
-  /** Your answer to the review of a task that stepped aside: it may start again, as approved or with your changes. */
-  private releaseAside(job: Job, approved: boolean, feedback: string | null): void {
-    if (approved) {
-      const released = this.d.store.updateJob(job.id, { planApproved: true, planWaiting: false, onHold: false, resumePrompt: null })
-      this.d.notify({ type: 'plan_approved', job: released, choice: 'approved; it runs when its turn comes' })
-    } else {
-      this.d.store.updateJob(job.id, { planWaiting: false, onHold: false, resumePrompt: feedback?.trim() || 'Please revise the plan.' })
-    }
-  }
-
   private async handOver(job: Job, rt: Runtime, choice: string): Promise<void> {
     job = this.d.store.updateJob(job.id, { planApproved: true, phase: 'working', nudges: 0 })
     rt.plan = undefined
@@ -1435,8 +1380,6 @@ export class Runner {
     const status = decision === 'answer' ? 'answered' : decision === 'allow' ? 'allowed' : 'denied'
     if (status === 'allowed' && o.mode && approval.kind === 'review') this.d.store.updateJob(approval.jobId, { execMode: o.mode })
     this.d.store.resolveApproval(approval.code, status, text, this.d.now())
-    const aside = approval.kind === 'review' ? this.d.store.getJob(approval.jobId) : null
-    if (aside?.status === 'queued' && aside.planWaiting) this.releaseAside(aside, status === 'allowed', text)
     this.waiters.get(approval.code)?.({ status, answer: text, ...(status === 'allowed' && o.rule !== undefined ? { rule: o.rule } : {}) })
     const verb = { permission: 'request', question: 'question', review: 'plan', trust: 'folder' }[approval.kind]
     if (status === 'answered') return `Sent your answer to #${approval.jobId}.`
@@ -1448,14 +1391,6 @@ export class Runner {
   /** Go: continue a paused task (the one named, else a paused one, else a limited one), or resume the queue. */
   async go(id?: number): Promise<string> {
     const job = this.target(id, j => j.status === 'held') ?? (id === undefined ? this.target(undefined, j => j.phase === 'limited') : null)
-    // A plan that stepped aside for the queue: go approves it, as it does for one waiting in place.
-    const aside = this.d.store.queued().find(j => j.planWaiting && (id === undefined ? !job : j.id === id))
-    if (aside) {
-      const review = this.d.store.pendingApprovals(aside.id).find(a => a.kind === 'review')
-      if (review) this.d.store.resolveApproval(review.code, 'allowed', null, this.d.now())
-      this.releaseAside(aside, true, null)
-      return `Approved #${aside.id}'s plan. It runs when its turn comes.`
-    }
     if (id !== undefined && !job) return `#${id} isn't running.`
     if (job?.status === 'held') return this.resumeHeld(job)
     if (job?.phase === 'limited') return this.continueNow()
@@ -1617,8 +1552,7 @@ export class Runner {
   holdQueued(id: number, on: boolean): string {
     const job = this.d.store.getJob(id)
     if (!job || job.status !== 'queued') return `#${id} isn't waiting in the queue.`
-    // Released by hand while its plan waited for review: it plans again from the start.
-    this.d.store.updateJob(id, { onHold: on, ...(on ? {} : { planWaiting: false }) })
+    this.d.store.updateJob(id, { onHold: on })
     return on ? `#${id} is on hold: it keeps its place and doesn't start.` : `#${id} can start again.`
   }
 
