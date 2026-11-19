@@ -10,7 +10,7 @@ import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
 import { currentLimits, pickResetTime, windowsFromStatusline } from './limits'
 import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
-import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
+import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
@@ -555,7 +555,8 @@ export class Runner {
     }
 
     const settingsPath = join(this.d.jobsDir, `${job.id}.settings.json`)
-    this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts), null, 2))
+    const extraDirs = job.attachments?.length && this.d.uploadsDir ? [this.d.uploadsDir] : []
+    this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts, extraDirs), null, 2))
     // Plan with one model (and effort), work with another: after the plan, every run is the work's.
     const working = job.planApproved
     const model = working && job.workModel ? job.workModel : job.model
@@ -568,7 +569,6 @@ export class Runner {
       prompt: promptOverride ?? (job.launches === 0 ? withAttachments(job.prompt, job.attachments) : job.prompt),
       name: isNew ? sessionName(job.prompt) : undefined,
       remoteControl: config.remoteControl,
-      addDirs: job.attachments?.length && this.d.uploadsDir ? [this.d.uploadsDir] : undefined,
     })
     const startHead = job.launches === 0 ? await this.d.git.head(cwd) : job.startHead
     const startTree = job.launches === 0 ? await this.d.git.snapshot(cwd) : job.startTree
@@ -693,6 +693,7 @@ export class Runner {
     if (!rt.sessionStarted) {
       const screen = await this.d.tmux.capture(rt.window, 40)
       if (trustDialog(screen).present) return this.handleTrust(job, rt, screen)
+      if (addDirDialog(screen).present) return this.handleAddDir(job, rt, screen)
       if (now - rt.launchedAt > config.timeouts.launchSec * 1000) {
         this.hold(job, `Claude didn't start within ${config.timeouts.launchSec}s`, tail(screen, 15))
       }
@@ -803,6 +804,31 @@ export class Runner {
     await this.d.tmux.sendKeys(rt.window, 'Enter')
     rt.launchedAt = now
     this.d.log(`#${job.id}: accepted Claude's folder trust prompt for ${job.projectDir}`)
+  }
+
+  /**
+   * Claude asks before adding a folder to the session ("Adding a new directory"), with "No, exit"
+   * selected. The uploads folder is ours (the task's attachments), so it's accepted; any other
+   * folder is yours to decide, so the task waits for you at once instead of after the launch timeout.
+   */
+  private async handleAddDir(job: Job, rt: Runtime, screen: string): Promise<void> {
+    const dialog = addDirDialog(screen)
+    const ours = Boolean(dialog.dir && this.d.uploadsDir && samePath(realOf(dialog.dir), realOf(this.d.uploadsDir)))
+    if (!ours) {
+      this.hold(
+        job,
+        `Claude asks to add the folder ${dialog.dir ?? '(unknown)'}: press Down then Enter to allow it, or Esc to go on without it`,
+        tail(screen, 15),
+      )
+      return
+    }
+    if (!dialog.yesFocused) {
+      await this.d.tmux.sendKeys(rt.window, 'Down')
+      return
+    }
+    await this.d.tmux.sendKeys(rt.window, 'Enter')
+    rt.launchedAt = this.d.now()
+    this.d.log(`#${job.id}: accepted Claude's add-folder prompt for ${dialog.dir}`)
   }
 
   private async handlePlan(job: Job, rt: Runtime): Promise<void> {
@@ -1656,16 +1682,27 @@ export class Runner {
     return job.id
   }
 
-  async keys(keys: string[], id?: number): Promise<string> {
+  async keys(keys: string[], id?: number, by?: string): Promise<string> {
     const job = this.target(id, j => j.status === 'running')
     if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
-    const pane = await this.d.tmux.pane(windowName(job.id))
+    const window = windowName(job.id)
+    const pane = await this.d.tmux.pane(window)
     if (!pane || pane.dead) return `#${job.id} has no live session.`
     const names = keys.map(tmuxKeyName)
+    const pressed: string[] = []
     for (const key of names) {
-      await this.d.tmux.sendKeys(windowName(job.id), key)
+      // Enter on a dialog with "No, exit" selected ends Claude, and the task with it: a slip on
+      // a phone keypad shouldn't do that. Esc still cancels, and Kill still ends a task.
+      if (key === 'Enter' && exitSelected(await this.d.tmux.capture(window, 40))) {
+        this.d.log(`#${job.id}: pressed ${[...pressed, '(not Enter: "No, exit" is selected)'].join(' ')}${by ? ` (from ${by})` : ''}`)
+        const done = pressed.length ? `Pressed ${pressed.join(' ')}, but not ` : 'Didn\'t press '
+        return `${done}Enter in #${job.id}: "No, exit" is selected, and Enter would end Claude. Press Down to pick the other option first.`
+      }
+      await this.d.tmux.sendKeys(window, key)
+      pressed.push(key)
       if (key === 'Escape') await Bun.sleep(ESC_SETTLE_MS)
     }
+    this.d.log(`#${job.id}: pressed ${names.join(' ')}${by ? ` (from ${by})` : ''}`)
     this.runtime(job).saidAt = this.d.now()
     return `Pressed ${names.join(' ')} in #${job.id}.`
   }

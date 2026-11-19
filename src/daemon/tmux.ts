@@ -76,11 +76,17 @@ export class Tmux implements TmuxDriver {
   async spawnWindow(name: string, cwd: string, env: Record<string, string>, argv: string[]): Promise<void> {
     const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`])
     const common = ['-d', '-n', name, '-c', cwd, ...envArgs]
-    if (await this.hasSession()) {
-      await this.must(['new-window', '-t', `=${TMUX_SESSION}:`, ...common, '--', ...argv])
-    } else {
-      await this.must(['new-session', '-s', TMUX_SESSION, '-x', '200', '-y', '50', ...common, '--', ...argv])
+    const newWindow = ['new-window', '-t', `=${TMUX_SESSION}:`, ...common, '--', ...argv]
+    const newSession = ['new-session', '-s', TMUX_SESSION, '-x', '200', '-y', '50', ...common, '--', ...argv]
+    // has-session can be wrong by the time the next command runs (another window was just
+    // started, or the last one ended), so either way round, try the other once.
+    const [first, second] = (await this.hasSession()) ? [newWindow, newSession] : [newSession, newWindow]
+    const r = await this.run(first)
+    if (r.code === 0) return
+    if (!/duplicate session|can't find session|no server running|session not found/i.test(r.err)) {
+      throw new Error(`tmux ${first[0]} failed: ${r.err.trim() || `exit ${r.code}`}`)
     }
+    await this.must(second)
   }
 
   // Not display-message: for a missing target it falls back to some other window instead of failing.

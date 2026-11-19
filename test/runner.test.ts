@@ -14,7 +14,7 @@ import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import type { JobSpec } from '../src/shared/types'
 import type { Procs } from '../src/daemon/procs'
 import { FakeTmux } from './fakes'
-import { PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
+import { ADD_DIR_SCREEN, PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
 
 function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean; procs?: Procs; slowSnapshot?: Promise<void> } = {}) {
   let now = Date.UTC(2026, 9, 14, 14, 0)
@@ -1546,7 +1546,64 @@ describe('attachments', () => {
     await h.runner.tick()
     const argv = h.runner.launchSpec(job.id)!.argv
     expect(argv.at(-1)).toBe('Why does it crash?\n\nAttached from the phone (read it):\n- /tmp/cqhome/uploads/2026-10-16/ab-crash.png')
-    expect(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2)).toEqual(['--add-dir', '/tmp/cqhome/uploads'])
+    // Through settings, not --add-dir: that stops at a prompt with "No, exit" selected (Nov 19, #246–#253).
+    expect(argv).not.toContain('--add-dir')
+    expect(JSON.parse(h.files.get(settingsFile(job.id))!).permissions).toEqual({ additionalDirectories: ['/tmp/cqhome/uploads'] })
+  })
+
+  test('a task without attachments gets no extra folders', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    expect(JSON.parse(h.files.get(settingsFile(job.id))!).permissions).toBeUndefined()
+  })
+})
+
+describe('add-folder prompt', () => {
+  const uploadsScreen = ADD_DIR_SCREEN.replace('/Users/me/.afterhours/uploads', '/tmp/cqhome/uploads')
+  const yes = (screen: string) => screen.replace(' ❯ No, exit', '   No, exit').replace('   Yes, add it', ' ❯ Yes, add it')
+
+  test('accepted for the uploads folder: Down, check focus, Enter', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = uploadsScreen
+    await h.runner.tick()
+    expect(w.input).toEqual(['Down'])
+    w.screen = yes(uploadsScreen)
+    await h.runner.tick()
+    expect(w.input).toEqual(['Down', 'Enter'])
+    expect(h.logs.some(l => l.includes("accepted Claude's add-folder prompt for /tmp/cqhome/uploads"))).toBe(true)
+    expect(h.store.getJob(job.id)!.status).toBe('running')
+  })
+
+  test('any other folder waits for you at once, without pressing anything', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = ADD_DIR_SCREEN
+    await h.runner.tick()
+    expect(w.input).toEqual([])
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'held' })
+    expect(h.store.getJob(job.id)!.holdReason).toContain('Claude asks to add the folder /Users/me/.afterhours/uploads')
+  })
+})
+
+describe('keys', () => {
+  test('Enter is refused while "No, exit" is selected; other keys go through and are logged', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    j.window.screen = ADD_DIR_SCREEN
+    const reply = await h.runner.keys(['Down', 'Enter'], j.id, 'iPhone')
+    expect(j.window.input).toEqual(['Down'])
+    expect(reply).toContain('Pressed Down, but not Enter')
+    expect(h.logs).toContain(`#${j.id}: pressed Down (not Enter: "No, exit" is selected) (from iPhone)`)
+    j.window.screen = ADD_DIR_SCREEN.replace(' ❯ No, exit', '   No, exit').replace('   Yes, add it', ' ❯ Yes, add it')
+    expect(await h.runner.keys(['Enter'], j.id, 'Telegram')).toBe(`Pressed Enter in #${j.id}.`)
+    expect(j.window.input).toEqual(['Down', 'Enter'])
+    expect(h.logs).toContain(`#${j.id}: pressed Enter (from Telegram)`)
   })
 })
 
