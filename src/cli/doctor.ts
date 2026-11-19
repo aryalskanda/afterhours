@@ -12,6 +12,7 @@ import { installHint, isMac, isWindows, MIN_WINDOWS_BUILD, osLabel, windowsBuild
 import { powerSystem, systemSleepSwitch, windowsLidSwitch } from '../platform/power'
 import { wifiSystem } from '../platform/network'
 import { service } from '../platform/service'
+import { freeBytes, gb, LOW_BYTES } from '../daemon/disk'
 import { launcherPath } from './install'
 import { relayHealth } from './remote'
 import { daemonHealth, run } from './util'
@@ -105,6 +106,9 @@ export async function checks(): Promise<Check[]> {
 
   const wifi = wifiSystem()
   if (wifi && (await wifi.device())) info(`Wi-Fi: ${config.network.reconnect ? 'reconnected by itself when it drops' : 'left alone when it drops (cq network reconnect on)'}`)
+  const free = freeBytes(paths.home)
+  if (free !== null && free < LOW_BYTES) bad(`Disk: only ${gb(free)} free. When it's full, Claude can't save its conversations and answers go missing: free some space`)
+  else if (free !== null) ok(`Disk: ${gb(free)} free`)
 
   const svc = service()
   if (!svc.installed()) info(svc.kind === 'none' ? `Not started by itself: there's no service manager here, so run cq daemon (cq install says how)` : 'Not set to start by itself: run cq install')

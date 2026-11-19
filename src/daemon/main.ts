@@ -1,4 +1,4 @@
-import { readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import hookScript from '../../bin/cq-hook.sh' with { type: 'text' }
 import statusScript from '../../bin/cq-statusline.sh' with { type: 'text' }
@@ -38,6 +38,7 @@ import { CLAUDE_DIR, CLAUDE_JSON, findConversation, liveConversation, liveSessio
 import { pruneUploads } from './uploads'
 import { Store } from './store'
 import { accountSwitched } from './claude-info'
+import { CHECK_EVERY_MS as DISK_CHECK_MS, DiskWatch, freeBytes, isDiskFull } from './disk'
 import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
@@ -89,9 +90,18 @@ export async function runDaemon(): Promise<void> {
 
   // Windows has no sh or tmux: hooks run `cq hook`, and tasks run in cq's own terminal host.
   if (!isWindows) {
-    writeFileAtomic(paths.hookScript, hookScript, 0o755)
-    writeFileAtomic(paths.statusScript, statusScript, 0o755)
-    writeFileAtomic(paths.tmuxConf, TMUX_CONF)
+    // On a full disk the copies from the last start do: staying up is what lets it say the disk is full.
+    const keep = (path: string, text: string, mode?: number) => {
+      try {
+        writeFileAtomic(path, text, mode)
+      } catch (err) {
+        if (!isDiskFull(err) || !existsSync(path)) throw err
+        log(`disk full: keeping the ${basename(path)} already in place`)
+      }
+    }
+    keep(paths.hookScript, hookScript, 0o755)
+    keep(paths.statusScript, statusScript, 0o755)
+    keep(paths.tmuxConf, TMUX_CONF)
   } else {
     removeOldBinaries()
   }
@@ -116,6 +126,7 @@ export async function runDaemon(): Promise<void> {
   // Tool calls go to the apps once remote access is set up below.
   let onActivity: (a: ToolActivity) => void = () => {}
   const runner = new Runner({
+    diskFull: () => disk.check({ full: true }),
     store,
     tmux: terminals,
     notify: notice => notifier.send(notice),
@@ -312,6 +323,17 @@ export async function runDaemon(): Promise<void> {
   startTelegram()
   notifier.addSink((_text, notice) => telegram?.notify(notice))
 
+  // A full disk loses answers quietly (Claude can't save its conversation): said while it's low.
+  const disk = new DiskWatch({
+    free: () => freeBytes(CQ_HOME),
+    notify: message => notifier.send({ type: 'setup_warning', message }),
+    word: isMac ? 'Mac' : isWindows ? 'PC' : 'computer',
+    now: Date.now,
+    log,
+  })
+  setTimeout(() => disk.check(), 30_000)
+  const diskTimer = setInterval(() => disk.check(), DISK_CHECK_MS)
+
   // Without Full Disk Access a task can stop on a macOS prompt nobody is there to click: say so, once a day.
   setTimeout(() => {
     if (!isMac || hasFullDiskAccess() || Date.now() - (store.kvGet<number>('warned.fullDiskAccess') ?? 0) < 24 * 3600_000) return
@@ -494,6 +516,7 @@ export async function runDaemon(): Promise<void> {
     log('stopping (Claude sessions in tmux keep running and are picked up on the next start)')
     clearInterval(timer)
     if (networkTimer) clearInterval(networkTimer)
+    clearInterval(diskTimer)
     stopUpdateChecks()
     keepAwake.set(false)
     // Sleep turned off for tasks goes back on; started again with work, it goes off again.
