@@ -351,6 +351,19 @@ describe('remote access', () => {
     expect(m.store.queued().map(j => [j.sessionId, j.execMode, j.prompt])).toEqual([[conversations[0]!.sessionId, 'bypassPermissions', 'Carry on']])
   })
 
+  test('a reply to a chat left in plan mode runs in your usual mode, and says how it runs', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    conversations = [
+      { sessionId: '3f0c2a9e-0000-4000-8000-000000000002', cwd: m.project, title: 'Notion pages', lastPrompt: null, lastReply: null, updatedAt: Date.now(), model: 'claude-haiku-4-5', permissionMode: 'plan', limit: null, where: null, busy: false, running: false },
+    ]
+    const r = await conn.request({ type: 'chat.write', session: conversations[0]!.sessionId, text: 'Okay then do it' })
+    expect(r.ok).toBe(true)
+    const job = m.store.queued()[0]!
+    expect([job.plan, job.review, job.execMode]).toEqual([m.config().defaults.plan, m.config().defaults.review, m.config().defaults.execMode])
+    expect(r.text).toMatch(/^Sent to “Notion pages” as #\d+ · .+Haiku/)
+  })
+
   test('an owner sets what other devices may do; it is audited, and others can’t', async () => {
     const m = machine()
     const owner = await pairedApp(m)
