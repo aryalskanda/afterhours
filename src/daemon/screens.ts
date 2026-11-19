@@ -29,6 +29,26 @@ export function trustDialog(screen: string): { present: boolean; yesFocused: boo
   return { present, yesFocused: /❯\s*Yes, I trust this folder/.test(screen) }
 }
 
+/**
+ * "Adding a new directory: <dir> … Is this a directory you created or one you trust?", shown for
+ * --add-dir (and a folder Claude is asked to add) since Claude Code 2.1.3xx. Focus starts on
+ * "No, exit", so Enter there ends Claude.
+ */
+export function addDirDialog(screen: string): { present: boolean; dir: string | null; yesFocused: boolean } {
+  const present = /Adding a new directory/.test(screen) && /Yes, add it/.test(screen)
+  if (!present) return { present: false, dir: null, yesFocused: false }
+  const lines = screen.split('\n')
+  const at = lines.findLastIndex(l => /Adding a new directory/.test(l))
+  // The folder is on the next line (capture-pane -J joins a long one that wrapped).
+  const dir = lines.slice(at + 1).map(l => l.trim()).find(Boolean) ?? null
+  return { present, dir, yesFocused: /❯\s*Yes, add it/.test(screen) }
+}
+
+/** A Claude Code dialog with "No, exit" selected: Enter would end the session. */
+export function exitSelected(screen: string): boolean {
+  return /❯\s*No, exit/.test(screen)
+}
+
 const PLAN_MARKER = /Would you like to proceed\?/
 
 /** The plan approval dialog shown after Claude calls ExitPlanMode. */

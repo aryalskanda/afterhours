@@ -72,7 +72,7 @@ export interface Config {
     approvalSec: number
     /** How long one of Claude's questions waits for your answer. */
     questionSec: number
-    /** How long a `review` plan waits for your approval. */
+    /** How long a `review` plan waits for your answer; after that it's approved as if review were off. */
     reviewSec: number
     /** No activity for this long while the session is idle means the job is stuck. */
     stuckSec: number
@@ -163,7 +163,7 @@ export const DEFAULT_CONFIG: Config = {
   timeouts: {
     approvalSec: 900,
     questionSec: 900,
-    reviewSec: 3600,
+    reviewSec: 900,
     stuckSec: 1200,
     limitGraceSec: 180,
     launchSec: 90,

@@ -10,7 +10,7 @@ import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
 import { currentLimits, pickResetTime, windowsFromStatusline } from './limits'
 import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
-import { choosePlanOption, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
+import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
@@ -130,11 +130,18 @@ interface Runtime {
   linkAsked?: { at: number; answer: string | null }
   /** The live link was looked for (once, as the task ends). */
   linksRead?: boolean
+  /** What Claude had said when it was first asked for its plan: the answer, if it turns out there's nothing to plan. */
+  beforeNudge?: string
 }
+
+/** How Claude says a plan-first task needs no plan: the first words of its reply to the nudge. */
+export const NOTHING_TO_PLAN = 'Nothing to plan:'
 
 const NUDGE =
   "You're running unattended from a prompt queue and the user can't reply right now. " +
-  'Make reasonable assumptions, finish your plan, and call ExitPlanMode to present it.'
+  'Make reasonable assumptions, finish your plan, and call ExitPlanMode to present it. ' +
+  "If the task is already done and there is nothing left to plan or change, don't present a plan: " +
+  `reply with one line that starts with "${NOTHING_TO_PLAN}" and says why.`
 
 /** What the work model is told when it takes over an approved plan (plan with one model, work with another). */
 const HANDOFF_PROMPT = 'Your plan is approved. Carry it out now, step by step, and finish the task.'
@@ -326,6 +333,25 @@ export class Runner {
 
   private saveLimits(state: LimitState): void {
     this.d.store.kvSet('limits', state)
+  }
+
+  /**
+   * Claude Code is signed in to another account: usage limits are an account's own, so the old
+   * one's readings and its block on new tasks no longer apply. A task waiting on the old account's
+   * reset is continued now. Returns the tasks continued.
+   */
+  accountChanged(): number[] {
+    this.saveLimits({})
+    const continued: number[] = []
+    for (const job of this.d.store.running()) {
+      const rt = this.runtimes.get(job.id)
+      if (job.phase === 'limited' && rt) {
+        rt.limit = { ...(rt.limit ?? { at: null, since: this.d.now(), stage: 0 }), force: true }
+        continued.push(job.id)
+      }
+    }
+    this.d.log(`Claude Code is signed in to another account: usage limits start fresh${continued.length ? `; continuing #${continued.join(', #')}` : ''}`)
+    return continued
   }
 
   launchSpec(id: number): LaunchSpec | null {
@@ -529,7 +555,8 @@ export class Runner {
     }
 
     const settingsPath = join(this.d.jobsDir, `${job.id}.settings.json`)
-    this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts), null, 2))
+    const extraDirs = job.attachments?.length && this.d.uploadsDir ? [this.d.uploadsDir] : []
+    this.d.writeFile(settingsPath, JSON.stringify(sessionSettings(job, config, this.d.scripts, extraDirs), null, 2))
     // Plan with one model (and effort), work with another: after the plan, every run is the work's.
     const working = job.planApproved
     const model = working && job.workModel ? job.workModel : job.model
@@ -542,7 +569,6 @@ export class Runner {
       prompt: promptOverride ?? (job.launches === 0 ? withAttachments(job.prompt, job.attachments) : job.prompt),
       name: isNew ? sessionName(job.prompt) : undefined,
       remoteControl: config.remoteControl,
-      addDirs: job.attachments?.length && this.d.uploadsDir ? [this.d.uploadsDir] : undefined,
     })
     const startHead = job.launches === 0 ? await this.d.git.head(cwd) : job.startHead
     const startTree = job.launches === 0 ? await this.d.git.snapshot(cwd) : job.startTree
@@ -667,6 +693,7 @@ export class Runner {
     if (!rt.sessionStarted) {
       const screen = await this.d.tmux.capture(rt.window, 40)
       if (trustDialog(screen).present) return this.handleTrust(job, rt, screen)
+      if (addDirDialog(screen).present) return this.handleAddDir(job, rt, screen)
       if (now - rt.launchedAt > config.timeouts.launchSec * 1000) {
         this.hold(job, `Claude didn't start within ${config.timeouts.launchSec}s`, tail(screen, 15))
       }
@@ -779,6 +806,31 @@ export class Runner {
     this.d.log(`#${job.id}: accepted Claude's folder trust prompt for ${job.projectDir}`)
   }
 
+  /**
+   * Claude asks before adding a folder to the session ("Adding a new directory"), with "No, exit"
+   * selected. The uploads folder is ours (the task's attachments), so it's accepted; any other
+   * folder is yours to decide, so the task waits for you at once instead of after the launch timeout.
+   */
+  private async handleAddDir(job: Job, rt: Runtime, screen: string): Promise<void> {
+    const dialog = addDirDialog(screen)
+    const ours = Boolean(dialog.dir && this.d.uploadsDir && samePath(realOf(dialog.dir), realOf(this.d.uploadsDir)))
+    if (!ours) {
+      this.hold(
+        job,
+        `Claude asks to add the folder ${dialog.dir ?? '(unknown)'}: press Down then Enter to allow it, or Esc to go on without it`,
+        tail(screen, 15),
+      )
+      return
+    }
+    if (!dialog.yesFocused) {
+      await this.d.tmux.sendKeys(rt.window, 'Down')
+      return
+    }
+    await this.d.tmux.sendKeys(rt.window, 'Enter')
+    rt.launchedAt = this.d.now()
+    this.d.log(`#${job.id}: accepted Claude's add-folder prompt for ${dialog.dir}`)
+  }
+
   private async handlePlan(job: Job, rt: Runtime): Promise<void> {
     const now = this.d.now()
     const config = this.d.config()
@@ -811,11 +863,12 @@ export class Runner {
       }
       const approval = this.d.store.getApproval(p.reviewCode)
       if (approval?.status === 'pending') {
-        if (now - approval.createdAt > config.timeouts.reviewSec * 1000) {
-          this.d.store.resolveApproval(p.reviewCode, 'expired', null, now)
-          this.hold(job, 'the plan is still waiting for your review (reply go to approve it)')
-        }
-        return
+        if (now - approval.createdAt <= config.timeouts.reviewSec * 1000) return
+        // No answer in time: the plan is approved as if review were off, like a question nobody
+        // answers. A task that waits on you all night holds up everything queued behind it.
+        this.d.store.resolveApproval(p.reviewCode, 'allowed', null, now)
+        p.choice = `not reviewed in ${duration(config.timeouts.reviewSec * 1000)}, so approved automatically`
+        this.d.log(`#${job.id}: its plan wasn't reviewed in time; approving it`)
       }
       if (approval?.status === 'denied') return this.sendPlanFeedback(job, rt, dialog.options, approval.answer)
     }
@@ -824,11 +877,12 @@ export class Runner {
     if (p.attempts >= 3) return this.hold(job, "couldn't approve the plan dialog", tail(screen, 20))
     const choice = choosePlanOption(dialog.options, job.execMode)
     if (!choice) return this.hold(job, "didn't recognize the plan dialog's options", tail(screen, 20))
-    if (differentWork(job)) return this.handOver(job, rt, choice.option.label)
+    if (differentWork(job)) return this.handOver(job, rt, p.choice ?? choice.option.label)
     await this.d.tmux.sendKeys(rt.window, String(choice.option.n))
     p.sentAt = now
     p.attempts++
-    p.choice = choice.option.label
+    // An approval nobody gave keeps saying so.
+    p.choice ??= choice.option.label
     p.switchAfter = choice.switchAfter
     this.d.log(`#${job.id}: answered plan dialog with "${choice.option.label}"`)
   }
@@ -1146,12 +1200,22 @@ export class Runner {
 
     if (job.plan && !job.planApproved && payload.permission_mode === 'plan') {
       if (rt.plan) return {}
-      if (job.nudges < 2) {
-        this.d.store.updateJob(job.id, { nudges: job.nudges + 1 })
-        return { decision: 'block', reason: NUDGE }
+      const said = payload.last_assistant_message?.trim() ?? ''
+      if (job.nudges > 0 && said.toLowerCase().startsWith(NOTHING_TO_PLAN.toLowerCase())) {
+        // Asked for a plan, it says there's nothing to plan (the work was done, or it was only a
+        // question): the task ends with what it said before, rather than with a plan about nothing.
+        const answer = rt.beforeNudge || said.slice(NOTHING_TO_PLAN.length).trim() || said
+        job = this.d.store.updateJob(job.id, { lastMessage: answer })
+        this.d.log(`#${job.id}: nothing to plan; ending the task with its answer`)
+      } else {
+        if (job.nudges < 2) {
+          if (job.nudges === 0) rt.beforeNudge = said || undefined
+          this.d.store.updateJob(job.id, { nudges: job.nudges + 1 })
+          return { decision: 'block', reason: NUDGE }
+        }
+        this.hold(job, 'Claude stopped in plan mode without presenting a plan')
+        return {}
       }
-      this.hold(job, 'Claude stopped in plan mode without presenting a plan')
-      return {}
     }
     const tasks = this.ownBackground(job, payload.background_tasks ?? [])
     if (tasks.length > 0) {
@@ -1618,16 +1682,27 @@ export class Runner {
     return job.id
   }
 
-  async keys(keys: string[], id?: number): Promise<string> {
+  async keys(keys: string[], id?: number, by?: string): Promise<string> {
     const job = this.target(id, j => j.status === 'running')
     if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
-    const pane = await this.d.tmux.pane(windowName(job.id))
+    const window = windowName(job.id)
+    const pane = await this.d.tmux.pane(window)
     if (!pane || pane.dead) return `#${job.id} has no live session.`
     const names = keys.map(tmuxKeyName)
+    const pressed: string[] = []
     for (const key of names) {
-      await this.d.tmux.sendKeys(windowName(job.id), key)
+      // Enter on a dialog with "No, exit" selected ends Claude, and the task with it: a slip on
+      // a phone keypad shouldn't do that. Esc still cancels, and Kill still ends a task.
+      if (key === 'Enter' && exitSelected(await this.d.tmux.capture(window, 40))) {
+        this.d.log(`#${job.id}: pressed ${[...pressed, '(not Enter: "No, exit" is selected)'].join(' ')}${by ? ` (from ${by})` : ''}`)
+        const done = pressed.length ? `Pressed ${pressed.join(' ')}, but not ` : 'Didn\'t press '
+        return `${done}Enter in #${job.id}: "No, exit" is selected, and Enter would end Claude. Press Down to pick the other option first.`
+      }
+      await this.d.tmux.sendKeys(window, key)
+      pressed.push(key)
       if (key === 'Escape') await Bun.sleep(ESC_SETTLE_MS)
     }
+    this.d.log(`#${job.id}: pressed ${names.join(' ')}${by ? ` (from ${by})` : ''}`)
     this.runtime(job).saidAt = this.d.now()
     return `Pressed ${names.join(' ')} in #${job.id}.`
   }

@@ -14,7 +14,7 @@ import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import type { JobSpec } from '../src/shared/types'
 import type { Procs } from '../src/daemon/procs'
 import { FakeTmux } from './fakes'
-import { PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
+import { ADD_DIR_SCREEN, PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
 
 function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean; procs?: Procs; slowSnapshot?: Promise<void> } = {}) {
   let now = Date.UTC(2026, 9, 14, 14, 0)
@@ -304,6 +304,93 @@ describe('plan → execute → next job', () => {
     expect(await h.runner.onHook('Stop', j.id, { permission_mode: 'plan' })).toEqual({})
     expect(h.store.getJob(j.id)!.status).toBe('held')
     expect(lastNotice(h, 'held').reason).toContain('without presenting a plan')
+  })
+
+  test('a plan job with nothing to plan says so and ends with its answer: no plan, no review', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true, prompt: 'Continue from where you left off.' })
+    // It has nothing left to do and says so; it is asked for a plan anyway, and told the way out.
+    const nudge = (await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Everything you asked for is finished.' })) as { reason: string }
+    expect(nudge.reason).toContain('Nothing to plan:')
+    expect(await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Nothing to plan: the work is already done.' })).toEqual({})
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'running', phase: 'finishing', lastMessage: 'Everything you asked for is finished.' })
+    expect(h.notices.some(n => n.type === 'plan_review' || n.type === 'held')).toBe(false)
+    h.advance(2000)
+    await h.runner.tick()
+    j.window.dead = true
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)!.status).toBe('done')
+  })
+
+  test('those words before any nudge are just an answer, and a plan is still asked for', async () => {
+    const h = setup()
+    const j = await startJob(h)
+    expect(await h.runner.onHook('Stop', j.id, { permission_mode: 'plan', last_assistant_message: 'Nothing to plan: really.' })).toMatchObject({ decision: 'block' })
+  })
+
+  test('a plan nobody reviews in time is approved as if review were off, and the queue goes on', async () => {
+    const h = setup()
+    const first = await startJob(h, { review: true, prompt: 'Plan this' })
+    const second = h.runner.enqueue(h.spec({ plan: false, prompt: 'Then this' }))
+    await h.runner.onHook('PermissionRequest', first.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    first.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    const review = lastNotice(h, 'plan_review')
+    // It waits for you first.
+    h.advance(14 * 60_000)
+    await h.runner.tick()
+    expect(first.window.input).toEqual([])
+    expect(h.store.getApproval(review.code)!.status).toBe('pending')
+
+    // Fifteen minutes and no answer: approved in the task's own mode, never paused.
+    h.advance(2 * 60_000)
+    await h.runner.tick()
+    expect(first.window.input).toEqual(['1'])
+    expect(h.store.getApproval(review.code)!.status).toBe('allowed')
+    first.window.screen = ''
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)).toMatchObject({ status: 'running', planApproved: true, phase: 'working', planText: 'The plan' })
+    expect(lastNotice(h, 'plan_approved').choice).toBe('not reviewed in 15m, so approved automatically')
+    expect(h.notices.some(n => n.type === 'held')).toBe(false)
+
+    // The work is done, and the task behind it starts: nothing waited on you.
+    await finishTurn(h, first)
+    await h.runner.tick()
+    expect(h.store.getJob(first.id)!.status).toBe('done')
+    expect(h.store.getJob(second.id)!.status).toBe('running')
+  })
+
+  test('answering a review in time still decides it: changes go back to Claude, and the clock starts again', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true })
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    h.advance(10 * 60_000)
+    h.runner.answer(lastNotice(h, 'plan_review').code, 'deny', 'Use the other approach')
+    await h.runner.tick()
+    await h.runner.tick()
+    expect(j.window.input.at(-1)).toBe('Enter')
+    expect(j.window.input.join(' ')).toContain('Use the other approach')
+    expect(h.store.getJob(j.id)!.planApproved).toBe(false)
+    // Long after the first review's time: nothing was approved behind your back.
+    h.advance(20 * 60_000)
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)!.planApproved).toBe(false)
+  })
+
+  test('an unreviewed plan that another model carries out is handed over to it', async () => {
+    const h = setup()
+    const j = await startJob(h, { review: true, model: 'opus', workModel: 'sonnet' })
+    await h.runner.onHook('PermissionRequest', j.id, { tool_name: 'ExitPlanMode', permission_mode: 'plan', tool_input: { plan: 'The plan' } })
+    j.window.screen = PLAN_SCREEN
+    await h.runner.tick()
+    h.advance(16 * 60_000)
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(j.id)!.argv
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'running', planApproved: true })
+    expect(argv[argv.indexOf('--model') + 1]).toBe('sonnet')
+    expect(lastNotice(h, 'plan_approved').choice).toContain('approved automatically')
   })
 
   test('background work keeps the job open until Claude ends a turn without any', async () => {
@@ -981,6 +1068,21 @@ describe('live links', () => {
   })
 })
 
+describe('another Claude account', () => {
+  test('its limits start fresh: the old block is gone and a task waiting on the old reset continues now', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', error_details: "You've hit your limit · resets 1:45am" })
+    expect(h.store.getJob(j.id)!.phase).toBe('limited')
+    expect(h.runner.limits().blockedUntil).not.toBeNull()
+    expect(h.runner.accountChanged()).toEqual([j.id])
+    expect(h.runner.limits().blockedUntil ?? null).toBeNull()
+    await h.runner.tick()
+    expect(j.window.input.join(' ')).toContain('continue')
+    expect(h.logs.some(l => l.includes('signed in to another account'))).toBe(true)
+  })
+})
+
 describe('the queue: hold, put back, clear', () => {
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()
@@ -1444,7 +1546,64 @@ describe('attachments', () => {
     await h.runner.tick()
     const argv = h.runner.launchSpec(job.id)!.argv
     expect(argv.at(-1)).toBe('Why does it crash?\n\nAttached from the phone (read it):\n- /tmp/cqhome/uploads/2026-10-16/ab-crash.png')
-    expect(argv.slice(argv.indexOf('--add-dir'), argv.indexOf('--add-dir') + 2)).toEqual(['--add-dir', '/tmp/cqhome/uploads'])
+    // Through settings, not --add-dir: that stops at a prompt with "No, exit" selected (Nov 19, #246–#253).
+    expect(argv).not.toContain('--add-dir')
+    expect(JSON.parse(h.files.get(settingsFile(job.id))!).permissions).toEqual({ additionalDirectories: ['/tmp/cqhome/uploads'] })
+  })
+
+  test('a task without attachments gets no extra folders', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    expect(JSON.parse(h.files.get(settingsFile(job.id))!).permissions).toBeUndefined()
+  })
+})
+
+describe('add-folder prompt', () => {
+  const uploadsScreen = ADD_DIR_SCREEN.replace('/Users/me/.afterhours/uploads', '/tmp/cqhome/uploads')
+  const yes = (screen: string) => screen.replace(' ❯ No, exit', '   No, exit').replace('   Yes, add it', ' ❯ Yes, add it')
+
+  test('accepted for the uploads folder: Down, check focus, Enter', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = uploadsScreen
+    await h.runner.tick()
+    expect(w.input).toEqual(['Down'])
+    w.screen = yes(uploadsScreen)
+    await h.runner.tick()
+    expect(w.input).toEqual(['Down', 'Enter'])
+    expect(h.logs.some(l => l.includes("accepted Claude's add-folder prompt for /tmp/cqhome/uploads"))).toBe(true)
+    expect(h.store.getJob(job.id)!.status).toBe('running')
+  })
+
+  test('any other folder waits for you at once, without pressing anything', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = ADD_DIR_SCREEN
+    await h.runner.tick()
+    expect(w.input).toEqual([])
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'held' })
+    expect(h.store.getJob(job.id)!.holdReason).toContain('Claude asks to add the folder /Users/me/.afterhours/uploads')
+  })
+})
+
+describe('keys', () => {
+  test('Enter is refused while "No, exit" is selected; other keys go through and are logged', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    j.window.screen = ADD_DIR_SCREEN
+    const reply = await h.runner.keys(['Down', 'Enter'], j.id, 'iPhone')
+    expect(j.window.input).toEqual(['Down'])
+    expect(reply).toContain('Pressed Down, but not Enter')
+    expect(h.logs).toContain(`#${j.id}: pressed Down (not Enter: "No, exit" is selected) (from iPhone)`)
+    j.window.screen = ADD_DIR_SCREEN.replace(' ❯ No, exit', '   No, exit').replace('   Yes, add it', ' ❯ Yes, add it')
+    expect(await h.runner.keys(['Enter'], j.id, 'Telegram')).toBe(`Pressed Enter in #${j.id}.`)
+    expect(j.window.input).toEqual(['Down', 'Enter'])
+    expect(h.logs).toContain(`#${j.id}: pressed Enter (from Telegram)`)
   })
 })
 
