@@ -13,6 +13,18 @@ export const TRUST_SCREEN = `─────────────────
 
 export const TRUST_SCREEN_YES = TRUST_SCREEN.replace(' ❯ No, exit', '   No, exit').replace('   Yes, I trust', ' ❯ Yes, I trust')
 
+// Claude Code 2.1.328, started with --add-dir (Nov 2026).
+export const ADD_DIR_SCREEN = `────────────────────────────────────────────
+ Adding a new directory:
+ /Users/me/.afterhours/uploads
+ This session hasn't worked here before. Is this a directory you created or one you trust?
+ Claude Code'll be able to read, edit, and execute files here. Its skills, commands, and agents load and can run commands, and so can the git settings of its repository. Your answer holds for this
+ session. Starting Claude Code in this directory and trusting it there lasts, and covers its whole repository or everything below it.
+ Security guide
+ ❯ No, exit
+   Yes, add it
+ Enter to confirm · Esc to cancel`
+
 export const PLAN_SCREEN = `❯ Create a file hello.txt containing the word hi. Keep the plan to one line.
 ⏺ Updated plan
   ⎿  /plan to preview

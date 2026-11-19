@@ -635,7 +635,7 @@ export async function runCommand(text: string, ctx: CommandContext): Promise<str
       if (!w.rest) return 'Usage: keys [#job] <keys>, e.g. keys 1, keys Enter, keys Escape'
       const running = ctx.store.running()
       if (w.id === undefined && running.length > 1) return `Several are running (${running.map(j => `#${j.id}`).join(', ')}): keys #<number> <keys>.`
-      return ctx.runner.keys(w.rest.split(/\s+/), w.id)
+      return ctx.runner.keys(w.rest.split(/\s+/), w.id, ctx.source === 'remote' ? 'an app' : 'this computer')
     }
     case 'fork': {
       const w = taskArg(rest)

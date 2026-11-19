@@ -2073,7 +2073,7 @@ export class TelegramBridge {
       case 'k': {
         if (!parts[1]) return
         const id = parts[2] ? Number(parts[2]) : undefined
-        const reply = await this.o.runner.keys([parts[1]], id)
+        const reply = await this.o.runner.keys([parts[1]], id, 'Telegram')
         // On a screen: it shows again, a moment later, with what the key did.
         if (at && this.peekMessages.has(at)) {
           await (this.o.pause ?? Bun.sleep)(400)

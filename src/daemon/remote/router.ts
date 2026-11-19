@@ -533,7 +533,7 @@ export class Router {
       case 'keys': {
         if (!policy.allowTyping) return { ok: false, code: 'policy', error: "This machine doesn't let apps type into tasks (cq remote typing on)." }
         if (notRunning(r.job)) return { ok: false, code: 'gone', error: `#${r.job} isn't running.` }
-        return { ok: true, text: r.type === 'say' ? await runner.say(r.text, r.job) : await runner.keys(r.keys, r.job) }
+        return { ok: true, text: r.type === 'say' ? await runner.say(r.text, r.job) : await runner.keys(r.keys, r.job, name) }
       }
       case 'chats': {
         if (r.folder && !isAllowed(r.folder, roots)) return { ok: false, code: 'policy', error: 'That folder is outside the ones this machine shares with apps.' }

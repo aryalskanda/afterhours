@@ -26,7 +26,7 @@ export function dq(s: string): string {
  * Settings passed with --settings for one queue session only. They layer on top of the
  * user's own settings and never touch ~/.claude/settings.json.
  */
-export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths): Record<string, unknown> {
+export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths, extraDirs: string[] = []): Record<string, unknown> {
   const program = scripts.program?.map(dq).join(' ')
   const command = (event: string, timeout: number) => ({
     type: 'command',
@@ -59,7 +59,13 @@ export function sessionSettings(job: Job, config: Config, scripts: ScriptPaths):
   }
   if (job.execMode === 'bypassPermissions') settings.skipDangerousModePermissionPrompt = true
   // A live link: publishing the artifact is what this task was asked for.
-  if (job.wantLink || job.linkFor !== null) settings.permissions = { allow: ['Artifact'] }
+  const permissions: Record<string, unknown> = {}
+  if (job.wantLink || job.linkFor !== null) permissions.allow = ['Artifact']
+  // Extra folders the session may read (an app's uploads). Through settings, not --add-dir:
+  // since Claude Code 2.1.3xx, --add-dir stops at an "Adding a new directory" prompt with
+  // "No, exit" selected; a folder named here joins the workspace without one.
+  if (extraDirs.length > 0) permissions.additionalDirectories = extraDirs
+  if (Object.keys(permissions).length > 0) settings.permissions = permissions
   return settings
 }
 
@@ -75,8 +81,6 @@ export interface ArgvOptions {
   prompt: string
   name?: string
   remoteControl?: boolean
-  /** Extra folders the session may read (an app's uploads). */
-  addDirs?: string[]
 }
 
 export function claudeArgv(job: Job, o: ArgvOptions): string[] {
@@ -94,7 +98,6 @@ export function claudeArgv(job: Job, o: ArgvOptions): string[] {
   ]
   if (job.execMode === 'bypassPermissions') argv.push('--allow-dangerously-skip-permissions')
   if (o.name) argv.push('--name', o.name)
-  for (const dir of o.addDirs ?? []) argv.push('--add-dir', dir)
   if (o.remoteControl) argv.push(`--remote-control=cq-${job.id}`)
   // `--` so a prompt that starts with "-" is never read as a flag.
   argv.push('--', o.prompt)
