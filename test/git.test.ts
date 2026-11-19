@@ -15,6 +15,8 @@ function repo(): string {
   sh(root, 'init', '-q', '-b', 'main')
   sh(root, 'config', 'user.email', 'test@example.com')
   sh(root, 'config', 'user.name', 'Test')
+  // Windows runners check out with CRLF (core.autocrlf), so a task's worktree wouldn't match byte for byte.
+  sh(root, 'config', 'core.autocrlf', 'false')
   mkdirSync(join(root, 'web'))
   writeFileSync(join(root, 'web', 'app.js'), 'console.log(1)\n')
   sh(root, 'add', '-A')
