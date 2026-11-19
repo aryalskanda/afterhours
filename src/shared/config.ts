@@ -115,6 +115,11 @@ export interface Config {
    * try the saved networks (`prefer` first). Never while someone is using the computer.
    */
   network: { reconnect: boolean; prefer: string[] }
+  /**
+   * Tasks on their own branch in a project build on the last unmerged task's branch there, so their
+   * work stacks into one line instead of conflicting (`cq stack off`: each starts from your checkout).
+   */
+  stack: boolean
   /** Remote access from the Afterhours apps, through a relay. Set up with `cq pair`. */
   remote: RemoteConfig
   claudePath?: string
@@ -186,6 +191,7 @@ export const DEFAULT_CONFIG: Config = {
   keepAwake: true,
   keepAwakeLidClosed: false,
   network: { reconnect: true, prefer: [] },
+  stack: true,
   remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
 }
 

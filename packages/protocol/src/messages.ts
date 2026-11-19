@@ -122,6 +122,8 @@ export const JobInfo = z.object({
   waiting: z.object({ since: z.number(), commands: z.array(z.string()), endsAt: z.number().nullable() }).nullable().optional(),
   /** Someone is changing it right now: it doesn't start until they save or cancel. */
   editing: z.boolean().optional(),
+  /** Its own branch started from this earlier task's branch: merging it brings that work in too. */
+  stackedOn: z.number().nullable().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
   /** Plan with `effort`, work with this one: it carries out the approved plan. Null: `effort` for both. */

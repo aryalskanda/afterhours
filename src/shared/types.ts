@@ -85,6 +85,8 @@ export interface Job {
   group: string | null
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: boolean
+  /** Its own branch started from this earlier task's branch, so their work stacks instead of conflicting. */
+  stackedOn: number | null
   /**
    * Claude has answered, but background commands it started still run, so the task stays open
    * (Claude takes another turn when they finish): since when, and what they are. Null otherwise.
