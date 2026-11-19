@@ -335,6 +335,25 @@ export class Runner {
     this.d.store.kvSet('limits', state)
   }
 
+  /**
+   * Claude Code is signed in to another account: usage limits are an account's own, so the old
+   * one's readings and its block on new tasks no longer apply. A task waiting on the old account's
+   * reset is continued now. Returns the tasks continued.
+   */
+  accountChanged(): number[] {
+    this.saveLimits({})
+    const continued: number[] = []
+    for (const job of this.d.store.running()) {
+      const rt = this.runtimes.get(job.id)
+      if (job.phase === 'limited' && rt) {
+        rt.limit = { ...(rt.limit ?? { at: null, since: this.d.now(), stage: 0 }), force: true }
+        continued.push(job.id)
+      }
+    }
+    this.d.log(`Claude Code is signed in to another account: usage limits start fresh${continued.length ? `; continuing #${continued.join(', #')}` : ''}`)
+    return continued
+  }
+
   launchSpec(id: number): LaunchSpec | null {
     return this.d.store.getJob(id)?.launchSpec ?? null
   }

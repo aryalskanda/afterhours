@@ -1068,6 +1068,21 @@ describe('live links', () => {
   })
 })
 
+describe('another Claude account', () => {
+  test('its limits start fresh: the old block is gone and a task waiting on the old reset continues now', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', error_details: "You've hit your limit · resets 1:45am" })
+    expect(h.store.getJob(j.id)!.phase).toBe('limited')
+    expect(h.runner.limits().blockedUntil).not.toBeNull()
+    expect(h.runner.accountChanged()).toEqual([j.id])
+    expect(h.runner.limits().blockedUntil ?? null).toBeNull()
+    await h.runner.tick()
+    expect(j.window.input.join(' ')).toContain('continue')
+    expect(h.logs.some(l => l.includes('signed in to another account'))).toBe(true)
+  })
+})
+
 describe('the queue: hold, put back, clear', () => {
   test('a task on hold keeps its place but the next one starts; released, it starts next', async () => {
     const h = setup()
