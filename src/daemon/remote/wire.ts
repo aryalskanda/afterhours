@@ -46,6 +46,7 @@ export function jobInfo(job: Job, o: { brief?: boolean } = {}): JobInfo {
     group: job.group,
     onHold: job.onHold,
     waiting: job.waitingSince !== null ? { since: job.waitingSince, commands: job.waitingFor ?? [], endsAt: job.waitingUntil } : null,
+    editing: job.editingUntil !== null && job.editingUntil > Date.now(),
     workModel: job.workModel,
     workEffort: job.workEffort,
     wantLink: job.wantLink,
