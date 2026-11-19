@@ -116,7 +116,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -177,6 +177,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
     folders,
     chats,
     mac,
+    wifi: o.wifi,
     git: o.git,
     config: () => config,
     saveConfig: c => {
@@ -228,7 +229,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit } = {}) {
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakePower; git?: BranchGit } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1593,6 +1594,22 @@ describe('awake and asleep, from the bot', () => {
     expect(msg.html).toContain('This PC')
     expect(msg.html).toContain('When I close the lid: Do nothing')
     expect(labels(h, msg.id).some(l => l.startsWith('Lid closed'))).toBe(false)
+  })
+
+  test('/mac with Wi-Fi: Reconnect Wi-Fi turns reconnecting off and on; back online is said once it is', async () => {
+    const h = await paired({ mac: new FakePower('mac'), wifi: true })
+    await h.say('/mac')
+    const msg = h.api.last().id
+    expect(h.api.view(msg).html).toContain('Reconnect by itself: <b>on</b>')
+    await press(h, msg, 'Reconnect Wi-Fi: on')
+    expect(h.config().network.reconnect).toBe(false)
+    expect(h.api.view(msg).html).toContain('Reconnect by itself: <b>off</b>')
+    await h.bridge.backOnline({ since: h.now() - 120_000, how: 'turned the Wi-Fi off and on' })
+    expect(h.api.last().html).toContain('Afterhours turned the Wi-Fi off and on after 2m')
+    // Without Wi-Fi, no switch.
+    const wired = await paired({ mac: new FakePower('mac') })
+    await wired.say('/mac')
+    expect(labels(wired, wired.api.last().id).some(l => l.startsWith('Reconnect Wi-Fi'))).toBe(false)
   })
 
   test('Sleep now asks on its own button, then sleeps', async () => {

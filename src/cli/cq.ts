@@ -12,6 +12,7 @@ import { doctor, report } from './doctor'
 import { install, nextSteps, uninstall, update } from './install'
 import { awakeCommand } from './awake'
 import { foldersCommand } from './folders'
+import { networkCommand } from './network'
 import { auditCommand, devicesCommand, pairCommand, remoteCommand } from './remote'
 import { chooseFolder, setup, telegramStep } from './setup'
 import { installHint, isWindows } from '../platform/os'
@@ -29,6 +30,7 @@ Setup and service:
   cq telegram off      stop using Telegram
   cq folders           the project folders the bot searches; cq folders add|remove <path>
   cq awake             whether this computer stays awake while tasks run (cq awake on|off); cq awake lid on: with the lid closed too
+  cq network           whether the Wi-Fi is reconnected when it drops (cq network reconnect on|off; cq network prefer "<network>")
   cq install           (re)install and run it in the background (a LaunchAgent on macOS, a systemd user service on Linux, a startup app on Windows)
   cq restart           restart it (on macOS, after granting Full Disk Access)
   cq update            update to the latest release
@@ -269,6 +271,9 @@ async function main(): Promise<void> {
       return
     case 'awake':
       if (!(await awakeCommand(rest))) process.exitCode = 1
+      return
+    case 'network':
+      if (!(await networkCommand(rest))) process.exitCode = 1
       return
     case 'doctor':
       return doctor()

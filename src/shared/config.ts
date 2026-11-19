@@ -110,6 +110,11 @@ export interface Config {
   keepAwake: boolean
   /** And on a Mac, with the lid closed too: sleep turned off while jobs are pending (cq awake lid on). */
   keepAwakeLidClosed: boolean
+  /**
+   * When the Wi-Fi (or a hotspot) drops and the computer stays offline: turn Wi-Fi off and on, then
+   * try the saved networks (`prefer` first). Never while someone is using the computer.
+   */
+  network: { reconnect: boolean; prefer: string[] }
   /** Remote access from the Afterhours apps, through a relay. Set up with `cq pair`. */
   remote: RemoteConfig
   claudePath?: string
@@ -180,6 +185,7 @@ export const DEFAULT_CONFIG: Config = {
   parallel: 1,
   keepAwake: true,
   keepAwakeLidClosed: false,
+  network: { reconnect: true, prefer: [] },
   remote: { enabled: false, relay: null, name: null, allowedRoots: [], allowBypass: false, allowScreens: true, allowTyping: true, allowMac: true, serve: null, publicUrl: null },
 }
 
@@ -209,6 +215,7 @@ export function loadConfig(): Config {
     folders: { ...DEFAULT_CONFIG.folders, ...raw.folders, roots: [...(raw.folders?.roots ?? DEFAULT_CONFIG.folders.roots)] },
     models: [...(raw.models ?? DEFAULT_CONFIG.models)],
     remote: { ...DEFAULT_CONFIG.remote, ...raw.remote, allowedRoots: [...(raw.remote?.allowedRoots ?? [])] },
+    network: { ...DEFAULT_CONFIG.network, ...raw.network, prefer: [...(raw.network?.prefer ?? [])] },
   }
 }
 
