@@ -37,6 +37,7 @@ import { deliverToInbox } from './inbox'
 import { CLAUDE_DIR, CLAUDE_JSON, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { pruneUploads } from './uploads'
 import { Store } from './store'
+import { accountSwitched } from './claude-info'
 import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
 import { hasFullDiskAccess, KeepAwake, openInVsCode, reopenInVsCode } from '../platform/desktop'
@@ -415,6 +416,23 @@ export async function runDaemon(): Promise<void> {
     process.exit(0)
   }
 
+  // Another Claude account signed in (claude /login): its own usage limits, so nothing waits on the old one's.
+  // Only a stable id is kept, never the email.
+  const checkAccount = () => {
+    if (!accountSwitched({ claudeJson: CLAUDE_JSON, kv: { get: k => store.kvGet(k), set: (k, v) => store.kvSet(k, v) }, now: Date.now() })) return
+    const continued = runner.accountChanged()
+    const waiting = store.queued().length
+    notifier.send({
+      type: 'setup_warning',
+      message:
+        'Claude Code is signed in to a different account now. The old account’s usage limit no longer holds tasks back' +
+        (continued.length ? `: #${continued.join(', #')} continues now` : '') +
+        (runner.paused && waiting > 0 ? `. The queue is paused, with ${waiting} waiting: tap Resume (or /resume) to start them.` : '.') +
+        ' Its own chats and usage show from here on.',
+    })
+  }
+  checkAccount()
+
   // When an update replaces the installed binary (brew upgrade, cq update), restart into it.
   const startedAs = selfCommand().length === 1 ? binaryStamp() : null
   let ticks = 0
@@ -441,6 +459,7 @@ export async function runDaemon(): Promise<void> {
     // About every 30 s: did one of your other chats (VS Code, a terminal) stop on a usage limit?
     if (++watchTicks % 15 === 0) {
       watcher.check().catch(err => log(`watching other chats failed: ${err instanceof Error ? err.message : err}`))
+      checkAccount()
     }
     await runner.tick()
     remote.tick()
