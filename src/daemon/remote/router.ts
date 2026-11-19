@@ -93,6 +93,7 @@ export const FEATURES = [
   'folders.set',
   'settings.remote',
   'queue.edit.when',
+  'finish',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -495,6 +496,11 @@ export class Router {
             if (!job) return { ok: false, code: 'not-found', error: `No task #${r.job}.` }
             if (job.status !== 'queued' && job.status !== 'running' && job.status !== 'held') return { ok: false, code: 'gone', error: `#${r.job} has already ended.` }
             return { ok: true, text: await runner.kill(r.job, { by: name, pause: r.pause === true }) }
+          }
+          case 'finish': {
+            if (r.job === undefined) return { ok: false, code: 'invalid', error: 'Say which task to finish.' }
+            const done = runner.finishNow(r.job, name)
+            return done.ok ? { ok: true, text: done.text } : { ok: false, code: store.getJob(r.job)?.status === 'running' ? 'invalid' : 'gone', error: done.text }
           }
           case 'continue':
             return { ok: true, text: await runner.continueNow() }

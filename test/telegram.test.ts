@@ -1671,6 +1671,20 @@ describe('the menu button', () => {
 })
 
 describe('what the bot does without the app', () => {
+  test('a task that answered but waits on its background commands says so in Status, and Finish now ends it as done', async () => {
+    const h = await paired()
+    const job = await running(h)
+    await h.runner.onHook('Stop', job.id, { permission_mode: 'auto', last_assistant_message: 'Done; the preview runs.', background_tasks: [{ type: 'shell', status: 'running', description: 'npm run dev' }] })
+    await h.say('/status')
+    const status = h.api.last().id
+    expect(h.api.view(status).html).toContain('Claude has answered; it stays open for a background command it started (npm run dev)')
+    expect(labels(h, status)).toContain(`Finish now #${job.id}`)
+    await press(h, status, `Finish now #${job.id}`)
+    expect(h.store.getJob(job.id)!.phase).toBe('finishing')
+    await h.say('/finish')
+    expect(h.api.last().html).toContain('No task is waiting on background commands.')
+  })
+
   test('Change on a queued task: its choices on a card; Save puts them on the task', async () => {
     const h = await paired()
     await running(h)

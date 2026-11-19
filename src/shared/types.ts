@@ -86,6 +86,14 @@ export interface Job {
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: boolean
   /**
+   * Claude has answered, but background commands it started still run, so the task stays open
+   * (Claude takes another turn when they finish): since when, and what they are. Null otherwise.
+   */
+  waitingSince: number | null
+  waitingFor: string[] | null
+  /** When it ends by itself if they're still running then. */
+  waitingUntil: number | null
+  /**
    * Plan with one model, work with another: `model` plans, and once the plan is approved this
    * model carries it out (the same conversation, resumed). Null: `model` does both.
    */

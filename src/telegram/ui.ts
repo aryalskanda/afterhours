@@ -712,9 +712,29 @@ export interface Card {
   plan?: string
 }
 
-/** A running task's buttons: its screen, Stop (or Continue), and Kill. */
+/**
+ * A task that answered but stays open for background commands it started: what they are, and
+ * when it ends by itself at the latest.
+ */
+export function waitingLine(job: Job, now: number): string | null {
+  if (job.status !== 'running' || job.waitingSince === null) return null
+  const what = job.waitingFor ?? []
+  const n = what.length
+  const named = n > 0 ? ` (${what.slice(0, 2).map(esc).join(', ')}${n > 2 ? ', …' : ''})` : ''
+  const until = job.waitingUntil ? `, until ${esc(formatClock(job.waitingUntil, now))} at the latest` : ''
+  return `Claude has answered; it stays open for ${n === 1 ? 'a background command' : `${n} background commands`} it started${named}${until}. <b>Finish now</b> ends it as done.`
+}
+
+/** A running task's buttons: its screen, Stop (or Continue, or Finish now), and Kill. */
 function taskButtons(job: Job): InlineButton[] {
-  const middle = job.status === 'held' ? btn('Continue', `j:${job.id}:go`) : job.phase === 'limited' ? btn('Continue now', `j:${job.id}:now`) : btn('Stop', `j:${job.id}:stop`)
+  const middle =
+    job.status === 'held'
+      ? btn('Continue', `j:${job.id}:go`)
+      : job.phase === 'limited'
+        ? btn('Continue now', `j:${job.id}:now`)
+        : job.waitingSince !== null
+          ? btn('Finish now', `j:${job.id}:fin`)
+          : btn('Stop', `j:${job.id}:stop`)
   return [btn('Screen', `j:${job.id}:peek`), middle, btn('Kill', `j:${job.id}:kill`)]
 }
 
@@ -995,7 +1015,9 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
   for (const { job: a, lastTool } of s.running) {
     const since = a.startedAt ? ` · ${duration(ctx.now - a.startedAt)}` : ''
     lines.push(`<b>#${a.id}</b> · ${esc(ctx.label(a.projectDir))} · ${esc(phaseText(a))}${since}`, `“${esc(oneLine(a.prompt, 140))}”`)
-    if (lastTool) lines.push(`<i>Last step: ${esc(lastTool.tool)}, ${duration(ctx.now - lastTool.at)} ago</i>`)
+    const waiting = waitingLine(a, ctx.now)
+    if (waiting) lines.push(`<i>${waiting}</i>`)
+    else if (lastTool) lines.push(`<i>Last step: ${esc(lastTool.tool)}, ${duration(ctx.now - lastTool.at)} ago</i>`)
   }
   if (s.running.length > 0 && s.parallel > 1) lines.push(`<i>Up to ${s.parallel} tasks at once.</i>`)
   if (s.approvals.length > 0) {
@@ -1311,7 +1333,7 @@ export function helpHtml(machine: string): string {
     '',
     "I message you when a plan is ready, when Claude needs permission or asks something, when a usage limit pauses work, and when a task ends. News that needs nothing from you arrives silently.",
     '',
-    'Commands: /new /status /queue /tasks /chats /mac /sleep /settings /kill /pause /resume /cancel /help',
+    'Commands: /new /status /queue /tasks /chats /mac /sleep /settings /kill /finish /pause /resume /cancel /help',
     'Typing <code>q myapp plan opus max&gt;low: …</code> works too.',
   ].join('\n')
 }

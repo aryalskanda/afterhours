@@ -114,6 +114,12 @@ export const JobInfo = z.object({
   group: z.string().nullable().optional(),
   /** Kept in its place in the queue, but not started until it's released. */
   onHold: z.boolean().optional(),
+  /**
+   * Running, and Claude has answered, but background commands it started still run, so it stays
+   * open (Claude takes another turn when they finish): since when, what they are, and when it ends
+   * by itself at the latest.
+   */
+  waiting: z.object({ since: z.number(), commands: z.array(z.string()), endsAt: z.number().nullable() }).nullable().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
   workModel: z.string().nullable().optional(),
   /** Plan with `effort`, work with this one: it carries out the approved plan. Null: `effort` for both. */
@@ -398,12 +404,13 @@ export const Request = z.discriminatedUnion('type', [
   /** Acts on the running task; `job` makes sure it's still the one you meant. */
   /**
    * The queue and the running task. `kill`: end task `job` now, whatever it's doing (a queued one
-   * comes off the queue); `pause` also pauses the queue. `clear`: take every task off the queue
+   * comes off the queue); `pause` also pauses the queue. `finish`: task `job` has answered and only
+   * waits on background commands it started (its `waiting`): it ends as done (feature `finish`). `clear`: take every task off the queue
    * (the result's data says which, `{ removed }`, to put them back).
    */
   withId({
     type: z.literal('control'),
-    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill', 'clear']),
+    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill', 'clear', 'finish']),
     job: z.number().int().optional(),
     pause: z.boolean().optional(),
   }),
