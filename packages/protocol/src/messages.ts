@@ -488,6 +488,12 @@ export const Request = z.discriminatedUnion('type', [
    */
   withId({ type: z.literal('folders.roots.set'), action: z.enum(['add', 'remove', 'set']), path: z.string().min(1).max(4096) }),
   withId({ type: z.literal('devices') }),
+  /**
+   * Owners: the Claude account Claude Code uses on the machine (`account`), and switching it: `switch`
+   * starts (it waits for a running task), gives a sign-in `url`; `code` is what that page shows
+   * after you sign in; `cancel` stops (the old account stays). Feature `account.switch`.
+   */
+  withId({ type: z.literal('account'), action: z.enum(['status', 'switch', 'code', 'cancel', 'signout']).optional(), code: z.string().min(1).max(500).optional() }),
   withId({ type: z.literal('devices.remove'), device: PeerId }),
   withId({ type: z.literal('devices.rename'), device: PeerId, name: z.string().min(1).max(80) }),
   /** The text commands (`help` lists them). Owners only. */
@@ -611,6 +617,20 @@ export const State = z.object({
 export type State = z.infer<typeof State>
 
 /** What a new task starts with on this machine, unless the app picks otherwise. */
+/** The machine's Claude account, and where a switch is. The email is sent to owners only. */
+export const AccountInfo = z.object({
+  loggedIn: z.boolean(),
+  email: z.string().nullable(),
+  plan: z.string().nullable(),
+  switch: z.object({
+    stage: z.enum(['idle', 'waiting', 'starting', 'link', 'checking', 'done', 'failed']),
+    job: z.number().optional(),
+    url: z.string().optional(),
+    reason: z.string().optional(),
+  }),
+})
+export type AccountInfo = z.infer<typeof AccountInfo>
+
 export const Defaults = z.object({
   plan: z.boolean(),
   review: z.boolean(),

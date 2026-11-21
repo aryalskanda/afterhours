@@ -11,9 +11,10 @@ import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type MenuButton, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
-import { TelegramBridge } from '../src/telegram/bot'
+import { TelegramBridge, type TelegramOptions } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
+import type { SwitchState } from '../src/daemon/account'
 import { FakePower, FakeTmux, makeTree } from './fakes'
 
 const OWNER = 7001
@@ -116,7 +117,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account'] } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -178,6 +179,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}) {
     chats,
     mac,
     wifi: o.wifi,
+    account: o.account,
     git: o.git,
     config: () => config,
     saveConfig: c => {
@@ -229,7 +231,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}) {
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account'] } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1688,6 +1690,43 @@ describe('the menu button', () => {
 })
 
 describe('what the bot does without the app', () => {
+  test('Settings → Claude account → Switch account: the sign-in link, then the code you type goes to Claude Code', async () => {
+    let state: SwitchState = { stage: 'idle' }
+    const codes: string[] = []
+    let h!: Harness
+    const account: TelegramOptions['account'] = {
+      current: () => state,
+      status: async () => ({ loggedIn: true, email: 'old@example.com', plan: 'pro', method: 'claude.ai' }),
+      start: async () => {
+        state = { stage: 'link', url: 'https://claude.com/cai/oauth/authorize?state=x', since: 0 }
+        await h.bridge.accountSwitch(state)
+        return state
+      },
+      code: async c => {
+        codes.push(c)
+        state = { stage: 'done', account: { loggedIn: true, email: 'new@example.com', plan: 'max', method: 'claude.ai' } }
+        await h.bridge.accountSwitch(state)
+        return state
+      },
+      cancel: async () => (state = { stage: 'failed', reason: 'Stopped.' }),
+      signOut: async () => true,
+    }
+    h = await paired({ account })
+    await h.say('/settings')
+    await press(h, h.api.last().id, 'Claude account')
+    const screen = h.api.last().id
+    expect(h.api.view(screen).html).toContain('old@example.com')
+    await press(h, screen, 'Switch account')
+    const link = h.api.sent.find(m => m.html.includes('shows a <b>code</b>'))!
+    expect(link.markup).toMatchObject({ inline_keyboard: [[{ text: 'Open the sign-in page', url: 'https://claude.com/cai/oauth/authorize?state=x' }], expect.anything()] })
+    await h.say('THE-CODE#1')
+    expect(codes).toEqual(['THE-CODE#1'])
+    expect(h.api.last().html).toContain('<b>Switched.</b> Claude Code now uses new@example.com (max)')
+    // The code step is over: the next message is a prompt again.
+    await h.say('Fix the login page')
+    expect(codes).toHaveLength(1)
+  })
+
   test('a task that answered but waits on its background commands says so in Status, and Finish now ends it as done', async () => {
     const h = await paired()
     const job = await running(h)

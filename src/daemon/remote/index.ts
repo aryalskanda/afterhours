@@ -72,6 +72,8 @@ export interface RemoteDeps {
   relayMoveMs?: number
   /** Quitting apps and sleeping the Mac; null on other systems. */
   mac?: PowerControl | null
+  /** Switching the Claude account (owners only). */
+  account?: RouterDeps['account']
 }
 
 const RELAY_MOVE_MS = 3000
@@ -116,6 +118,7 @@ export class Remote {
     this.feed = new Feed({ db: this.db, store: d.store, runner: d.runner, host: () => this.host, resolvedBy: this.resolvedBy, now: d.now })
     this.router = new Router({
       mac: d.mac ?? null,
+      account: d.account,
       runner: d.runner,
       store: d.store,
       chats: d.chats,
