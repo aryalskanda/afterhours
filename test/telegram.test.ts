@@ -11,7 +11,7 @@ import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type MenuButton, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
-import { TelegramBridge, type TelegramOptions } from '../src/telegram/bot'
+import { COMMANDS, TelegramBridge, type TelegramOptions } from '../src/telegram/bot'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
 import type { SwitchState } from '../src/daemon/account'
@@ -1725,6 +1725,33 @@ describe('what the bot does without the app', () => {
     // The code step is over: the next message is a prompt again.
     await h.say('Fix the login page')
     expect(codes).toHaveLength(1)
+  })
+
+  test('/account (as typed, or from the menu) shows the Claude account', async () => {
+    const account: TelegramOptions['account'] = {
+      current: () => ({ stage: 'idle' }),
+      status: async () => ({ loggedIn: true, email: 'me@example.com', plan: 'max', method: 'claude.ai' }),
+      start: async () => ({ stage: 'idle' }),
+      code: async () => ({ stage: 'idle' }),
+      cancel: async () => ({ stage: 'idle' }),
+      signOut: async () => true,
+    }
+    const h = await paired({ account })
+    for (const typed of ['/account', '/account@afterhours_bot']) {
+      await h.say(typed)
+      expect(h.api.last().html).toContain('me@example.com')
+      expect(labels(h, h.api.last().id)).toContain('Switch account')
+    }
+  })
+
+  test('every command in the menu is one the bot knows', async () => {
+    const h = await paired()
+    for (const { command } of COMMANDS) {
+      const before = h.api.sent.length
+      await h.say(`/${command}`)
+      const replies = h.api.sent.slice(before).map(m => m.html)
+      expect({ command, unknown: replies.some(r => r.includes('know that command')) }).toEqual({ command, unknown: false })
+    }
   })
 
   test('a task that answered but waits on its background commands says so in Status, and Finish now ends it as done', async () => {

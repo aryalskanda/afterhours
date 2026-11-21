@@ -99,7 +99,8 @@ export interface TelegramStatus {
   error: string | null
 }
 
-const COMMANDS = [
+/** The menu Telegram shows: every one is handled in `onCommand`. */
+export const COMMANDS = [
   { command: 'new', description: 'A new task: pick the folder, then send the prompt' },
   { command: 'status', description: "What's running, what waits on you, usage" },
   { command: 'queue', description: 'Waiting tasks: move, hold, change or remove' },
@@ -680,12 +681,8 @@ export class TelegramBridge {
       case 'settings':
         await this.send(chat, this.settingsView())
         return
-      case 'account': {
-        const acct = this.o.account
-        if (!acct) return void (await this.sendText(chat, 'Switching accounts isn’t available here.'))
-        await this.send(chat, ui.accountView(await acct.status(), acct.current(), this.word))
-        return
-      }
+      case 'account':
+        return this.showAccount(chat)
       case 'help':
         return this.showHelp(chat)
       case 'leave':
@@ -820,9 +817,18 @@ export class TelegramBridge {
     await this.send(chat, { html: ui.helpHtml(this.word) }, this.keys())
   }
 
+  /** The Claude account on this computer, with Switch account and Sign out. */
+  private async showAccount(chat: number): Promise<void> {
+    const acct = this.o.account
+    if (!acct) return void (await this.sendText(chat, 'Switching accounts isn’t available here.'))
+    await this.send(chat, ui.accountView(await acct.status(), acct.current(), this.word))
+  }
+
   private async onCommand(chat: number, text: string): Promise<void> {
     const name = text.slice(1).split(/[\s@]/)[0]!.toLowerCase()
     switch (name) {
+      case 'account':
+        return this.showAccount(chat)
       case 'start':
       case 'help':
         return this.showHelp(chat)
