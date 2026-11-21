@@ -5,7 +5,7 @@ import type { AuthStatus, SwitchState } from '../daemon/account'
 import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration } from '../daemon/format'
-import { formatClock, windowLabel } from '../daemon/limits'
+import { formatClock, modelLabel, windowLabel } from '../daemon/limits'
 import type { PowerStatus } from '../daemon/power'
 import { machineWord } from '../platform/power'
 import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
@@ -147,9 +147,7 @@ export function effortLabel(e: Effort | string): string {
 }
 
 /** "opus" → "Opus"; a full model id stays as it is. */
-export function modelLabel(model: string): string {
-  return /^[a-z]+$/.test(model) ? model[0]!.toUpperCase() + model.slice(1) : model
-}
+export { modelLabel }
 
 const modelEffort = (model: string, effort: Effort): string => `${modelLabel(model)} · ${effortLabel(effort)}`
 
@@ -871,6 +869,10 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
     }
     case 'resumed':
       return { html: `<b>#${n.job.id}</b> continued after the limit reset (${esc(resumedBy(n.how))})`, silent: true }
+    case 'model_switched': {
+      const until = n.until ? ` until ${esc(formatClock(n.until, ctx.now))}` : ''
+      return { html: `<b>#${n.job.id}</b>: ${esc(modelLabel(n.from))} is at its limit${until}, so it carries on with <b>${esc(modelLabel(n.to))}</b>`, silent: true }
+    }
     case 'done': {
       const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? ctx.now) - n.job.startedAt)}` : ''
       const next = n.next ? `Next: #${n.next.id} · ${esc(ctx.label(n.next.projectDir))}` : 'Queue empty.'
@@ -1041,7 +1043,10 @@ export function statusView(s: StatusInfo, ctx: NoticeContext): View {
     for (const j of s.queued.slice(0, 3)) lines.push(`#${j.id} · ${esc(ctx.label(j.projectDir))}: “${esc(oneLine(j.prompt, 70))}”`)
   }
   const blocked = s.limits.blockedUntil && s.limits.blockedUntil > ctx.now ? `New tasks wait for the limit reset at ${esc(formatClock(s.limits.blockedUntil, ctx.now))}.` : ''
-  const limits = [limitLine('5-hour', s.limits.fiveHour, ctx.now), limitLine('Weekly', s.limits.sevenDay, ctx.now), blocked].filter(Boolean)
+  const atLimit = Object.entries(s.limits.models ?? {})
+    .filter(([, at]) => at > ctx.now)
+    .map(([model, at]) => `${esc(modelLabel(model))}: at its limit until ${esc(formatClock(at, ctx.now))}; tasks use another model meanwhile.`)
+  const limits = [limitLine('5-hour', s.limits.fiveHour, ctx.now), limitLine('Weekly', s.limits.sevenDay, ctx.now), ...atLimit, blocked].filter(Boolean)
   // Readings only come while a task runs: an old one says when it's from.
   const read = s.limits.updatedAt
   const stale = read && ctx.now - read > 30 * 60_000 ? `<i>Usage as of ${esc(formatClock(read, ctx.now))}; it updates while a task runs.</i>` : ''

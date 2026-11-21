@@ -33,7 +33,46 @@ function toWindow(raw: unknown): LimitWindow | undefined {
  */
 export function currentLimits(l: LimitState, now: number): LimitState {
   const fresh = (w: LimitWindow | undefined): LimitWindow | undefined => (w && w.resetsAt !== null && w.resetsAt <= now ? { usedPct: null, resetsAt: null } : w)
-  return { ...l, fiveHour: fresh(l.fiveHour), sevenDay: fresh(l.sevenDay) }
+  const models = Object.fromEntries(Object.entries(l.models ?? {}).filter(([, at]) => at > now))
+  return { ...l, fiveHour: fresh(l.fiveHour), sevenDay: fresh(l.sevenDay), ...(l.models ? { models } : {}) }
+}
+
+/** Words that name the account's own limits, not a model's: "your session limit", "your weekly limit". */
+const ACCOUNT_LIMITS = new Set(['session', 'usage', 'weekly', 'daily', 'monthly', 'hourly', 'rate', 'plan', 'extra', 'spend', 'spending', 'org', 'organization', 'team'])
+
+/**
+ * The model a usage-limit message is about, when the limit is that model's own ("You've hit your
+ * Fable limit", "your Opus weekly limit"), lower case; null for the account's limits (5-hour,
+ * weekly). Other models can still be used meanwhile.
+ */
+export function modelLimit(text: string): string | null {
+  const m = /\bhit your ([A-Za-z]+)(?: weekly| 5-hour| daily)? limit\b/i.exec(text)
+  const name = m?.[1]?.toLowerCase()
+  return name && !ACCOUNT_LIMITS.has(name) ? name : null
+}
+
+/** The family a model name belongs to, as limits name it: "claude-opus-4-8[1m]" → "opus". */
+export function modelFamily(model: string): string {
+  const bare = model.toLowerCase().replace(/\[.*\]$/, '')
+  const m = /^claude-([a-z]+)/.exec(bare)
+  return m ? m[1]! : bare
+}
+
+/** Whether a model is at its own limit now. */
+export function modelLimited(l: LimitState, model: string, now: number): number | null {
+  const at = l.models?.[modelFamily(model)]
+  return at && at > now ? at : null
+}
+
+/**
+ * The model to carry on with when `current` is at its limit: the task's other model (plan or
+ * work), then your default model, then Claude Code's own list in its order, skipping any model at
+ * its limit. Null when every one is.
+ */
+export function fallbackModel(o: { current: string; other?: string | null; preferred: string; offered: string[]; limits: LimitState; now: number }): string | null {
+  const from = modelFamily(o.current)
+  const candidates = [o.other, o.preferred, ...o.offered].filter((m): m is string => Boolean(m))
+  return candidates.find(m => modelFamily(m) !== from && !modelLimited(o.limits, m, o.now)) ?? null
 }
 
 /** Reads the `rate_limits` block Claude Code passes to the status line command. */
@@ -163,7 +202,8 @@ export function parseResetText(text: string, now: number, localZone = Intl.DateT
 export interface ResetPick {
   at: number | null
   source: 'message' | 'status line' | 'unknown'
-  window?: 'five_hour' | 'seven_day'
+  /** 'five_hour', 'seven_day', or 'model:<name>' for one model's own limit. */
+  window?: string
 }
 
 /**
@@ -185,7 +225,8 @@ export function pickResetTime(state: LimitState, failureText: string, now: numbe
   }
   const fromText = parseResetText(failureText, now)
   if (fromText && fromText > now - 60_000) {
-    const window = /week|7-day|seven/i.test(failureText) ? 'seven_day' : 'five_hour'
+    const model = modelLimit(failureText)
+    const window = model ? `model:${model}` : /week|7-day|seven/i.test(failureText) ? 'seven_day' : 'five_hour'
     return { at: fromText, source: 'message', window }
   }
   return { at: null, source: 'unknown' }
@@ -206,5 +247,11 @@ export function formatClock(ms: number, now: number, timeZone?: string): string 
 }
 
 export function windowLabel(window: string | undefined): string {
+  if (window?.startsWith('model:')) return `${modelLabel(window.slice(6))} limit`
   return window === 'seven_day' ? 'weekly limit' : '5-hour limit'
+}
+
+/** "fable" → "Fable"; other names as they are. */
+export function modelLabel(model: string): string {
+  return /^[a-z]+$/.test(model) ? model[0]!.toUpperCase() + model.slice(1) : model
 }

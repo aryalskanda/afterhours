@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { currentLimits, formatClock, parseResetText, pickResetTime, toMs, wallToUtc, windowsFromStatusline } from '../src/daemon/limits'
+import { currentLimits, fallbackModel, formatClock, modelFamily, modelLimit, modelLimited, parseResetText, pickResetTime, toMs, wallToUtc, windowLabel, windowsFromStatusline } from '../src/daemon/limits'
 
 const NY = 'America/New_York'
 // 2026-10-14 10:00 in New York (EDT, UTC-4)
@@ -101,4 +101,50 @@ test('a window whose reset has passed since the last reading is unknown, not its
   expect(l.fiveHour).toEqual({ usedPct: null, resetsAt: null })
   expect(l.sevenDay).toEqual({ usedPct: 87, resetsAt: now + 3600_000 })
   expect(l.updatedAt).toBe(read.updatedAt)
+})
+
+describe("one model's own limit", () => {
+  const FABLE = "You've hit your Fable limit · resets Nov 20 at 1:45am (Asia/Katmandu)"
+
+  test('names the model; the account limits name none', () => {
+    expect(modelLimit(FABLE)).toBe('fable')
+    expect(modelLimit("You've hit your Opus weekly limit · resets Fri 3am")).toBe('opus')
+    expect(modelLimit("You've hit your session limit · resets 4:55am (Asia/Katmandu)")).toBeNull()
+    expect(modelLimit("You've hit your weekly limit · resets Mon 9am")).toBeNull()
+    expect(modelLimit("You've hit your usage limit")).toBeNull()
+    expect(modelLimit("You've hit your org's monthly limit")).toBeNull()
+  })
+
+  test("isn't taken for the 5-hour limit (task #239)", () => {
+    const at = Date.UTC(2026, 10, 16, 18, 44)
+    const pick = pickResetTime({}, FABLE, at)
+    expect(pick).toEqual({ at: Date.UTC(2026, 10, 19, 20, 0), source: 'message', window: 'model:fable' })
+    expect(windowLabel(pick.window)).toBe('Fable limit')
+  })
+
+  test('an exhausted account window still wins', () => {
+    const reset = now + 3600_000
+    expect(pickResetTime({ fiveHour: { usedPct: 100, resetsAt: reset } }, FABLE, now).window).toBe('five_hour')
+  })
+
+  test('families, and limits that pass', () => {
+    expect(modelFamily('claude-opus-4-8[1m]')).toBe('opus')
+    expect(modelFamily('fable')).toBe('fable')
+    const l = { models: { fable: now + 60_000 } }
+    expect(modelLimited(l, 'fable', now)).toBe(now + 60_000)
+    expect(modelLimited(l, 'opus', now)).toBeNull()
+    expect(currentLimits(l, now + 120_000).models).toEqual({})
+  })
+
+  test('the fallback: the other model, then your default, then Claude Code\'s list, skipping any at a limit', () => {
+    const offered = ['opus', 'sonnet', 'fable', 'haiku']
+    const limits = { models: { fable: now + 60_000 } }
+    expect(fallbackModel({ current: 'fable', other: 'haiku', preferred: 'opus', offered, limits, now })).toBe('haiku')
+    expect(fallbackModel({ current: 'fable', other: null, preferred: 'opus', offered, limits, now })).toBe('opus')
+    expect(fallbackModel({ current: 'fable', other: 'fable', preferred: 'fable', offered, limits, now })).toBe('opus')
+    const most = { models: { fable: now + 60_000, opus: now + 60_000 } }
+    expect(fallbackModel({ current: 'fable', preferred: 'opus', offered, limits: most, now })).toBe('sonnet')
+    const all = { models: Object.fromEntries(offered.map(m => [m, now + 60_000])) }
+    expect(fallbackModel({ current: 'fable', preferred: 'opus', offered, limits: all, now })).toBeNull()
+  })
 })

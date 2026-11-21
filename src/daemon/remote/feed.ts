@@ -7,6 +7,8 @@ import type { Runner } from '../runner'
 import type { Store } from '../store'
 import type { RemoteDb } from './db'
 import { jobInfo, limitsInfo, wireNotice } from './wire'
+import { offeredModels } from '../models'
+import type { Config } from '../../shared/config'
 
 /** At most this many missed events are replayed (the newest); the snapshot that follows covers the rest. */
 const REPLAY_LIMIT = 200
@@ -19,6 +21,8 @@ export interface FeedDeps {
   /** Who answered an approval from an app, by approval code. */
   resolvedBy: Map<string, string>
   now: () => number
+  /** For the models offered; without it, state carries no list (the snapshot still does). */
+  config?: () => Config
 }
 
 export class Feed {
@@ -56,6 +60,7 @@ export class Feed {
       parallel: this.d.runner.parallel,
       queued: this.d.store.queued().map(j => jobInfo(j, { brief: true })),
       limits: limitsInfo(this.d.runner.limits()),
+      ...(this.d.config ? { models: offeredModels(this.d.config()) } : {}),
     }
   }
 

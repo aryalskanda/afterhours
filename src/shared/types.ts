@@ -181,4 +181,6 @@ export interface LimitState {
   updatedAt?: number
   /** Set while a job is stopped by a usage limit: no new job starts before this time. */
   blockedUntil?: number | null
+  /** Models at their own limit (lower-case family → when it resets): other models carry on meanwhile. */
+  models?: Record<string, number>
 }

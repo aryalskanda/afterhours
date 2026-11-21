@@ -28,6 +28,7 @@ export function pushGroup(type: Notice['type']): PushGroup | null {
     case 'setup_warning':
       return 'failed'
     case 'limit':
+    case 'model_switched':
     case 'session_limit':
       return 'limits'
     default:

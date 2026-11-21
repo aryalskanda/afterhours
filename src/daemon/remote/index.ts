@@ -115,7 +115,7 @@ export class Remote {
   constructor(private readonly d: RemoteDeps) {
     this.db = new RemoteDb(d.store.db)
     this.pusher = new PushSender({ ...d.push, gone: token => this.db.dropPushToken(token), log: d.log, now: d.now })
-    this.feed = new Feed({ db: this.db, store: d.store, runner: d.runner, host: () => this.host, resolvedBy: this.resolvedBy, now: d.now })
+    this.feed = new Feed({ db: this.db, store: d.store, runner: d.runner, host: () => this.host, resolvedBy: this.resolvedBy, now: d.now, config: d.config })
     this.router = new Router({
       mac: d.mac ?? null,
       account: d.account,

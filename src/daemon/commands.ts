@@ -39,7 +39,8 @@ const EFFORTS: Record<string, Effort> = {
   xhigh: 'xhigh',
   max: 'max',
 }
-const MODELS = new Set(['opus', 'sonnet', 'haiku', 'fable', 'opus[1m]', 'sonnet[1m]', 'opusplan', 'best'])
+/** Claude Code's own aliases, which its model list doesn't name. Every model comes from that list. */
+const ALIASES = new Set(['opusplan', 'best', 'default'])
 const EXEC: Record<string, ExecMode> = {
   auto: 'auto',
   edits: 'acceptEdits',
@@ -97,9 +98,9 @@ export function applyOption(token: string, config: Config, out: QueueOptions): b
     if (out.plan === undefined) out.plan = true
     return true
   }
-  // The known names, a full id, and whatever Claude Code offers now (a model newer than this list).
+  // Whatever Claude Code offers now (with or without [1m]), its aliases, or a full id.
   const offered = offeredModels(config)
-  const isModel = (m: string) => MODELS.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m) || offered.includes(m)
+  const isModel = (m: string) => ALIASES.has(m) || /^claude-[a-z0-9.-]+(\[1m\])?$/.test(m) || offered.includes(m.replace(/\[1m\]$/, ''))
   if (isModel(t)) {
     out.model = t
     return true
