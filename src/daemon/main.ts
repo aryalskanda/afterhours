@@ -37,7 +37,8 @@ import { deliverToInbox } from './inbox'
 import { CLAUDE_DIR, CLAUDE_JSON, findConversation, liveConversation, liveSessions, sessionHolders } from './sessions'
 import { pruneUploads } from './uploads'
 import { Store } from './store'
-import { accountSwitched } from './claude-info'
+import { accountSwitched, claudeAccount } from './claude-info'
+import { AccountSwitch, authLogout, authStatus } from './account'
 import { CHECK_EVERY_MS as DISK_CHECK_MS, DiskWatch, freeBytes, isDiskFull } from './disk'
 import { startUpdateChecks, updateCommand } from './updates'
 import { git } from './system'
@@ -261,6 +262,14 @@ export async function runDaemon(): Promise<void> {
   folders.refreshIfStale()
 
   const remote = new Remote({
+    account: {
+      current: () => accounts.current,
+      status: () => authStatus(claudePath),
+      start: () => accounts.start(),
+      code: code => accounts.code(code),
+      cancel: () => accounts.cancel(),
+      signOut: () => accounts.signOut(),
+    },
     store,
     runner,
     chats,
@@ -311,6 +320,14 @@ export async function runDaemon(): Promise<void> {
       config: getConfig,
       saveConfig: putConfig,
       commandContext: () => commandContext('cli'),
+      account: {
+        current: () => accounts.current,
+        status: () => authStatus(claudePath),
+        start: () => accounts.start(),
+        code: code => accounts.code(code),
+        cancel: () => accounts.cancel(),
+        signOut: () => accounts.signOut(),
+      },
       mac,
       wifi: wifi !== null,
       git,
@@ -457,6 +474,27 @@ export async function runDaemon(): Promise<void> {
 
   // Another Claude account signed in (claude /login): its own usage limits, so nothing waits on the old one's.
   // Only a stable id is kept, never the email.
+  // Switching the Claude account from a phone: one account at a time, as at the computer.
+  const accounts = new AccountSwitch({
+    term: terminals,
+    claudePath,
+    cwd: CQ_HOME,
+    status: () => authStatus(claudePath),
+    logout: () => authLogout(claudePath),
+    running: () => store.running().map(j => j.id),
+    paused: () => runner.paused,
+    setPaused: on => runner.setPaused(on),
+    accountChanged: () => {
+      runner.accountChanged()
+      // Noted as the account now, so the check below doesn't announce it a second time.
+      const id = claudeAccount(CLAUDE_JSON)
+      if (id) store.kvSet('claude.account', id)
+    },
+    tell: state => void telegram?.accountSwitch(state).catch(err => log(`telegram: couldn't follow the account switch: ${err instanceof Error ? err.message : err}`)),
+    now: Date.now,
+    log,
+  })
+
   const checkAccount = () => {
     if (!accountSwitched({ claudeJson: CLAUDE_JSON, kv: { get: k => store.kvGet(k), set: (k, v) => store.kvSet(k, v) }, now: Date.now() })) return
     const continued = runner.accountChanged()
@@ -503,6 +541,7 @@ export async function runDaemon(): Promise<void> {
     await runner.tick()
     remote.tick()
     void mac?.tick()
+    void accounts.tick()
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
     // Awake while tasks run, or for a while you asked for with nothing running. On Linux the lid

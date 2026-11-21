@@ -17,6 +17,8 @@ import { RemoteDb } from '../src/daemon/remote/db'
 import { FEATURES } from '../src/daemon/remote/router'
 import { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
+import type { RouterDeps } from '../src/daemon/remote/router'
+import type { SwitchState } from '../src/daemon/account'
 import { git } from '../src/daemon/system'
 import { codeRoots, DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { FakePower, FakeTmux } from './fakes'
@@ -67,7 +69,7 @@ const chats: ChatSource = {
   },
 }
 
-function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower } = {}) {
+function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; account?: RouterDeps['account'] } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -109,6 +111,7 @@ function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower } = {}
     ? new PowerControl({ system: o.mac, store, runner, config: () => config, saveConfig: c => (config = c), notify: n => remote?.notice(n.type, n), now: Date.now, log: () => {}, later: () => {} })
     : null
   remote = new Remote({
+    account: o.account,
     mac,
     store,
     runner,
@@ -362,6 +365,31 @@ describe('remote access', () => {
     const job = m.store.queued()[0]!
     expect([job.plan, job.review, job.execMode]).toEqual([m.config().defaults.plan, m.config().defaults.review, m.config().defaults.execMode])
     expect(r.text).toMatch(/^Sent to “Notion pages” as #\d+ · .+Haiku/)
+  })
+
+  test('an owner switches the Claude account: the link, the code (never audited), and others can’t', async () => {
+    let state: SwitchState = { stage: 'idle' }
+    const codes: string[] = []
+    const m = machine({
+      account: {
+        current: () => state,
+        status: async () => ({ loggedIn: true, email: 'me@example.com', plan: 'pro', method: 'claude.ai' }),
+        start: async () => (state = { stage: 'link', url: 'https://claude.com/cai/oauth/authorize?state=x', since: 0 }),
+        code: async c => (codes.push(c), (state = { stage: 'checking' })),
+        cancel: async () => (state = { stage: 'failed', reason: 'Stopped.' }),
+        signOut: async () => true,
+      },
+    })
+    const owner = await pairedApp(m)
+    const operator = await pairedApp(m, { role: 'operator', name: 'Other phone' })
+    expect(await operator.conn.request({ type: 'account' })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await owner.conn.request({ type: 'account' })).toMatchObject({ ok: true, data: { loggedIn: true, plan: 'pro', switch: { stage: 'idle' } } })
+    expect(await owner.conn.request({ type: 'account', action: 'switch' })).toMatchObject({ ok: true, data: { switch: { stage: 'link', url: 'https://claude.com/cai/oauth/authorize?state=x' } } })
+    expect(await owner.conn.request({ type: 'account', action: 'code', code: 'SECRET-CODE' })).toMatchObject({ ok: true, data: { switch: { stage: 'checking' } } })
+    expect(codes).toEqual(['SECRET-CODE'])
+    const audit = (await owner.conn.request({ type: 'audit', limit: 20 })).data as { entries: { action: string; detail: string | null }[] }
+    expect(JSON.stringify(audit)).not.toContain('SECRET-CODE')
+    expect(audit.entries.filter(e => e.action === 'account').map(e => e.detail)).toEqual(expect.arrayContaining(['switch', 'code']))
   })
 
   test('an owner sets what other devices may do; it is audited, and others can’t', async () => {

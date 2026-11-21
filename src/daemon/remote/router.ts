@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { within } from '../../shared/paths'
 import type {
+  AccountInfo,
   AuditEntryInfo,
   ClaudeInfo,
   HealthInfo,
@@ -51,6 +52,7 @@ import type { Store } from '../store'
 import type { git as gitModule } from '../system'
 import { transcriptPage } from '../transcript'
 import { setupLine } from '../../telegram/ui'
+import type { AuthStatus, SwitchState } from '../account'
 import type { DeviceRow, RemoteDb } from './db'
 import type { Feed } from './feed'
 import { approvalInfo, chatInfo, jobInfo, limitsInfo } from './wire'
@@ -94,6 +96,7 @@ export const FEATURES = [
   'folders.set',
   'settings.remote',
   'queue.edit.when',
+  'account.switch',
   'finish',
   'job.lock',
 ]
@@ -124,6 +127,7 @@ const NEEDS: Record<RequestType, Role> = {
   'chat.rename': 'operator',
   projects: 'viewer',
   devices: 'owner',
+  account: 'owner',
   'devices.remove': 'owner',
   'devices.rename': 'owner',
   command: 'owner',
@@ -154,6 +158,7 @@ const RANK: Record<Role, number> = { viewer: 0, operator: 1, owner: 2 }
 const MAC_OFF = "This machine doesn't let apps quit its apps or put it to sleep (cq remote mac on)."
 /** Requests that change something: audited, and answered from memory when retried. */
 const CHANGES = new Set<RequestType>([
+  'account',
   'queue',
   'answer',
   'control',
@@ -218,6 +223,15 @@ export interface RouterDeps {
   restart: () => void
   /** Quitting apps and sleeping the Mac; null on other systems. */
   mac?: PowerControl | null
+  /** Switching the Claude account (owners only). */
+  account?: {
+    current(): SwitchState
+    status(): Promise<AuthStatus>
+    start(): Promise<SwitchState>
+    code(code: string): Promise<SwitchState>
+    cancel(): Promise<SwitchState>
+    signOut(): Promise<boolean>
+  }
   now: () => number
   log: (line: string) => void
 }
@@ -275,6 +289,9 @@ function isDir(path: string): boolean {
 /** A short description of a request for the audit trail: never the prompt or what was typed. */
 function auditDetail(r: Request): string | null {
   switch (r.type) {
+    case 'account':
+      // The code is a credential: never in the audit.
+      return r.action ?? 'status'
     case 'queue':
       return `${r.folder} · ${r.prompt.length} characters`
     case 'answer':
@@ -602,6 +619,28 @@ export class Router {
         this.d.saveConfig(next)
         this.d.log(`${name} changed what other devices may do: ${auditDetail(r)}`)
         return { ok: true, text: 'Saved.', data: policyInfo(next, session.role) }
+      }
+      case 'account': {
+        const acct = this.d.account
+        if (!acct) return { ok: false, code: 'invalid', error: 'This machine can’t switch accounts.' }
+        const action = r.action ?? 'status'
+        if (action === 'switch') await acct.start()
+        else if (action === 'code') {
+          if (!r.code) return { ok: false, code: 'invalid', error: 'Send the code the sign-in page showed.' }
+          await acct.code(r.code)
+        } else if (action === 'cancel') await acct.cancel()
+        else if (action === 'signout' && !(await acct.signOut())) return { ok: false, code: 'failed', error: 'Claude Code didn’t sign out.' }
+        const a = await acct.status()
+        const s = acct.current()
+        return {
+          ok: true,
+          data: {
+            loggedIn: a.loggedIn,
+            email: a.email,
+            plan: a.plan,
+            switch: { stage: s.stage, ...(s.stage === 'waiting' ? { job: s.job } : {}), ...(s.stage === 'link' ? { url: s.url } : {}), ...(s.stage === 'failed' ? { reason: s.reason } : {}) },
+          } satisfies AccountInfo,
+        }
       }
       case 'devices':
         return { ok: true, data: this.d.db.devices().map(publicDevice) }

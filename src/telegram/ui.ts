@@ -1,6 +1,7 @@
 import { basename } from 'node:path'
 import { BRAND } from '../shared/brand'
 import type { Approval, Effort, ExecMode, Job, LimitState } from '../shared/types'
+import type { AuthStatus, SwitchState } from '../daemon/account'
 import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration } from '../daemon/format'
@@ -1187,8 +1188,54 @@ export function settingsView(o: {
       // Continuing a chat by itself follows from watching them: turning it on watches them too.
       [btn(`Watch chats: ${onOff(o.watch)}`, 'g:watch'), btn(`Auto-continue: ${onOff(o.watch && o.autoContinue)}`, 'g:auto')],
       [btn('Project folders', 'g:pf'), btn('Rescan folders', 'g:rescan')],
+      [btn('Claude account', 'g:acct')],
     ],
   }
+}
+
+// --- the Claude account ------------------------------------------------------------------------
+
+/** The account Claude Code uses on this machine, and switching it (one account at a time). */
+export function accountView(a: AuthStatus, state: SwitchState, word: string): View {
+  const who = a.loggedIn ? `<b>${esc(a.email ?? 'Signed in')}</b>${a.plan ? ` · ${esc(a.plan)}` : ''}` : '<b>Not signed in</b>'
+  const busy = state.stage === 'waiting' || state.stage === 'starting' || state.stage === 'link' || state.stage === 'checking'
+  return {
+    html: [
+      '<b>Claude account</b>',
+      `Claude Code on this ${esc(word)}: ${who}.`,
+      '<i>One account at a time. Switch account signs in to another one (it replaces this one once you’re signed in); your chats stay on this computer either way.</i>',
+      busy ? `\n${switchText(state)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n'),
+    keyboard: busy ? [[btn('Stop switching', 'g:acct:x')], [btn('Back', 'g:set')]] : [[btn('Switch account', 'g:acct:s'), btn('Sign out', 'g:acct:o')], [btn('Back', 'g:set')]],
+  }
+}
+
+/** Where a switch is, in a sentence. */
+export function switchText(s: SwitchState): string {
+  switch (s.stage) {
+    case 'waiting':
+      return `Switching once #${s.job} is done. The queue is paused meanwhile.`
+    case 'starting':
+      return 'Getting the sign-in link from Claude Code…'
+    case 'link':
+      return 'Open the sign-in page and sign in with the account you want. The page then shows a <b>code</b>: copy it and send it here.'
+    case 'checking':
+      return 'Signing in with that code…'
+    case 'done':
+      return `<b>Switched.</b> Claude Code now uses ${esc(s.account.email ?? 'the new account')}${s.account.plan ? ` (${esc(s.account.plan)})` : ''}. Its usage limits start fresh, and the queue goes on.`
+    case 'failed':
+      return esc(s.reason)
+    case 'idle':
+      return ''
+  }
+}
+
+/** A message for each step of a switch, with the link as a button when there is one. */
+export function switchView(s: SwitchState): View {
+  if (s.stage === 'link') return { html: switchText(s), keyboard: [[{ text: 'Open the sign-in page', url: s.url }], [btn('Stop switching', 'g:acct:x')]] }
+  return { html: switchText(s), silent: s.stage === 'starting' || s.stage === 'checking' }
 }
 
 // --- project folders: where Claude may work ----------------------------------------------------
@@ -1359,7 +1406,7 @@ export function helpHtml(machine: string): string {
     '',
     "I message you when a plan is ready, when Claude needs permission or asks something, when a usage limit pauses work, and when a task ends. News that needs nothing from you arrives silently.",
     '',
-    'Commands: /new /status /queue /tasks /chats /mac /sleep /settings /kill /finish /pause /resume /cancel /help',
+    'Commands: /new /status /queue /tasks /chats /mac /sleep /settings /account /kill /finish /pause /resume /cancel /help',
     'Typing <code>q myapp plan opus max&gt;low: …</code> works too.',
   ].join('\n')
 }

@@ -13,6 +13,7 @@ import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../dae
 import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
 import { settleBranch, stackBelow, type BranchGit } from '../daemon/branches'
+import type { AuthStatus, SwitchState } from '../daemon/account'
 import type { PowerControl } from '../daemon/power'
 import { describeAnswers, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
 import type { Runner } from '../daemon/runner'
@@ -26,6 +27,15 @@ import * as ui from './ui'
 
 export interface TelegramOptions {
   api: BotApi
+  /** Switching the Claude account Claude Code uses here. */
+  account?: {
+    current(): SwitchState
+    status(): Promise<AuthStatus>
+    start(): Promise<SwitchState>
+    code(code: string): Promise<SwitchState>
+    cancel(): Promise<SwitchState>
+    signOut(): Promise<boolean>
+  }
   store: Store
   runner: Runner
   folders: FolderMap
@@ -65,6 +75,8 @@ type Pending =
   | { kind: 'tasksearch' }
   /** Project folders → Add: a folder you type. */
   | { kind: 'rootpath'; mode: 'c' | 'a' }
+  /** Switching the Claude account: the code the sign-in page shows. */
+  | { kind: 'logincode' }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
@@ -96,6 +108,7 @@ const COMMANDS = [
   { command: 'mac', description: 'Keep this computer awake, or put it to sleep' },
   { command: 'sleep', description: 'Put this computer to sleep' },
   { command: 'settings', description: 'Notifications, tasks at once, other chats' },
+  { command: 'account', description: 'The Claude account on this computer, and switching it' },
   { command: 'kill', description: 'End the running task now, and what it started' },
   { command: 'finish', description: 'End a task that has answered but waits on background commands' },
   { command: 'peek', description: "The running task's screen" },
@@ -462,6 +475,15 @@ export class TelegramBridge {
     }
   }
 
+  /** Each step of an account switch, said in the chat; the code step takes your next message. */
+  async accountSwitch(state: SwitchState): Promise<void> {
+    const chat = this.owner
+    if (chat === null || !this.running || state.stage === 'idle') return
+    if (state.stage === 'link') this.setPending({ kind: 'logincode' })
+    if ((state.stage === 'done' || state.stage === 'failed') && this.pending?.kind === 'logincode') this.setPending(null)
+    await this.deliver(chat, ui.switchView(state))
+  }
+
   /** Tells the owner a newer release is out; false when there is nobody to tell yet. */
   async updateAvailable(latest: string, current: string, command: string): Promise<boolean> {
     const chat = this.owner
@@ -658,6 +680,12 @@ export class TelegramBridge {
       case 'settings':
         await this.send(chat, this.settingsView())
         return
+      case 'account': {
+        const acct = this.o.account
+        if (!acct) return void (await this.sendText(chat, 'Switching accounts isn’t available here.'))
+        await this.send(chat, ui.accountView(await acct.status(), acct.current(), this.word))
+        return
+      }
       case 'help':
         return this.showHelp(chat)
       case 'leave':
@@ -882,6 +910,14 @@ export class TelegramBridge {
       }
       case 'tasksearch':
         return this.showTasks(chat, undefined, text)
+      case 'logincode': {
+        const acct = this.o.account
+        if (!acct) return
+        const state = await acct.code(text)
+        // Asked again until the switch is over (a code that didn't work can be sent again).
+        if (state.stage === 'checking' || state.stage === 'link') this.setPending({ kind: 'logincode' })
+        return
+      }
       case 'rootpath': {
         const r = this.useFolder(folderPath(text), p.mode)
         if (!r.ok) this.setPending(p) // try again
@@ -2068,6 +2104,30 @@ export class TelegramBridge {
       case 'set':
         if (at) await this.edit(chat, at, this.settingsView())
         return
+      case 'acct': {
+        const acct = this.o.account
+        if (!acct) return 'Not here.'
+        const sub = parts[1]
+        if (sub === 's') {
+          const state = await acct.start()
+          if (at) await this.edit(chat, at, ui.accountView(await acct.status(), state, this.word))
+          return state.stage === 'waiting' ? `Waiting for #${state.job}.` : 'Switching.'
+        }
+        if (sub === 'x') {
+          await acct.cancel()
+          if (this.pending?.kind === 'logincode') this.setPending(null)
+          if (at) await this.edit(chat, at, ui.accountView(await acct.status(), acct.current(), this.word))
+          return 'Stopped.'
+        }
+        if (sub === 'o') {
+          if (!(await this.secondTap(chat, message, 'Yes, sign out'))) return 'Tap again to sign Claude Code out. Tasks can’t run until an account signs in again.'
+          const ok = await acct.signOut()
+          if (at) await this.edit(chat, at, ui.accountView(await acct.status(), acct.current(), this.word))
+          return ok ? 'Signed out.' : 'Claude Code didn’t sign out.'
+        }
+        await this.send(chat, ui.accountView(await acct.status(), acct.current(), this.word))
+        return
+      }
       case 'pf': {
         const sub = parts[1]
         if (sub === 'ok') {
