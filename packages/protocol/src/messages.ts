@@ -219,6 +219,8 @@ export const LimitsInfo = z.object({
   /** No new task starts before this time (a usage limit stopped one). */
   blockedUntil: z.number().nullable().optional(),
   updatedAt: z.number().optional(),
+  /** Models at their own limit (family, as in "fable" → when it resets); tasks use another model meanwhile. */
+  models: z.record(z.string(), z.number()).optional(),
 })
 export type LimitsInfo = z.infer<typeof LimitsInfo>
 
@@ -282,6 +284,8 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('trust'), job: JobInfo, code: z.string() }),
   z.object({ type: z.literal('limit'), job: JobInfo, at: z.number().nullable(), window: z.string().optional() }),
   z.object({ type: z.literal('resumed'), job: JobInfo, how: z.enum(['claude', 'afterhours', 'you']) }),
+  /** Its model (`from`) hit its own limit, so it carries on with `to`; `until` = when that model resets. */
+  z.object({ type: z.literal('model_switched'), job: JobInfo, from: z.string(), to: z.string(), until: z.number().nullable() }),
   z.object({ type: z.literal('done'), job: JobInfo, diff: z.string().nullable(), next: JobInfo.nullable() }),
   z.object({ type: z.literal('held'), job: JobInfo, reason: z.string(), screen: z.string().optional() }),
   z.object({ type: z.literal('failed'), job: JobInfo, reason: z.string(), screen: z.string().optional() }),
@@ -613,6 +617,8 @@ export const State = z.object({
   parallel: z.number().int().optional(),
   queued: z.array(JobInfo),
   limits: LimitsInfo,
+  /** The models offered now (Claude Code's own list), so a new one shows without reconnecting. */
+  models: z.array(z.string()).optional(),
 })
 export type State = z.infer<typeof State>
 

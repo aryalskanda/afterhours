@@ -12,6 +12,7 @@ import { awakeCommand } from './awake'
 import { findToken, maskToken, openLink, readClipboard } from './clipboard'
 import { claudeStatus, doctor } from './doctor'
 import { install, migrateIfNeeded, type InstallResult } from './install'
+import { detectModels } from '../daemon/models'
 import { telegramCommand } from './telegram'
 import { ask, confirmYes, daemonHealth, restartAgent, run, runHere } from './util'
 
@@ -221,9 +222,24 @@ const MODES: Record<'plan' | 'auto' | 'review', { plan: boolean; review: boolean
   review: { plan: true, review: true, execMode: 'auto' },
 }
 
-function askDefaults(config: Config): void {
+/** What the setup says about a model it knows; one it doesn't (a newer one) is listed plainly. */
+const MODEL_HINTS: Record<string, string> = {
+  sonnet: 'balanced; the best fit for a Pro plan',
+  opus: 'strong; uses your limit faster',
+  haiku: 'fast and light',
+}
+
+/** The models to pick from: Claude Code's own list when it gives one, otherwise the config's. */
+export function modelChoices(found: string[] | null, config: Pick<Config, 'models' | 'defaults'>): [string, string][] {
+  const names = [...new Set([...(found ?? []), ...config.models, config.defaults.model])]
+  return names.map(m => [m, MODEL_HINTS[m] ?? ''])
+}
+
+async function askDefaults(config: Config): Promise<void> {
   const d = config.defaults
-  d.model = choose('Model', [['sonnet', 'balanced; the best fit for a Pro plan'], ['opus', 'strongest; uses your limit fastest'], ['haiku', 'fast and light']], d.model)
+  const claude = findExecutable('claude')
+  const found = claude ? await detectModels(claude) : null
+  d.model = choose('Model', modelChoices(found, config), d.model)
   d.effort = choose<Effort>('Effort', [['low', ''], ['medium', ''], ['high', 'recommended'], ['xhigh', ''], ['max', '']], d.effort)
   const mode = choose('Mode', [['plan', 'Claude plans first, then does it (recommended)'], ['auto', 'no plan'], ['review', 'you approve each plan from your phone']], d.review ? 'review' : d.plan ? 'plan' : 'auto')
   Object.assign(d, MODES[mode])
@@ -301,7 +317,7 @@ export async function setup(o: { custom?: boolean } = {}): Promise<void> {
 
   if (o.custom) {
     step('Defaults for new tasks (each task can still change them)')
-    askDefaults(config)
+    await askDefaults(config)
   } else {
     console.log('\nNew tasks start with the recommended settings (Claude plans first, Sonnet, high effort, on its own git branch).')
     console.log('You can change any of it on a task from your phone. For these questions here: cq setup --custom')

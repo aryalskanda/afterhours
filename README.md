@@ -35,7 +35,7 @@ bot  #14 done in 48m · 6 files changed, 212 insertions(+)
 | --- | --- |
 | **A queue across projects** | Each task has its own folder, mode, model and effort. Tasks run one at a time, in order. |
 | **Unattended plans** | `plan` tasks plan first, then Afterhours approves the plan. `review` tasks send you the plan to approve or change. |
-| **Limit-aware** | No new task starts while a 5-hour or weekly limit is active. The running task continues after the reset, even if the computer slept through it. |
+| **Limit-aware** | No new task starts while a 5-hour or weekly limit is active. The running task continues after the reset, even if the computer slept through it. When only one model is at its own limit (say Fable's weekly limit), the task carries on with another model at once, and other tasks aren't held up. |
 | **Never stalls on you** | You get permission requests and questions on your phone. If you don't answer, the request is denied, or Claude uses its best judgment and lists its assumptions. |
 | **Your checkout stays clean** | Each new conversation runs on its own branch in a git worktree, and its work is committed there for you to review and merge. |
 | **Every chat, from your phone** | **💬 Chats** lists your recent chats from every project, VS Code ones included. Open one and type: your messages go into that same conversation. A chat in VS Code that hits a usage limit continues by itself at the reset, inside VS Code. |
@@ -375,7 +375,7 @@ The words before the first colon count as options only if every one of them is a
 | `folders.roots` | chosen in `cq setup` | The project folders the folder browser and search cover. Change them with `cq folders add\|remove <path>`. The map stays current: a watch updates it within seconds of a folder being made, renamed or removed, and the whole tree is checked every 15 minutes. It goes as deep as your folders do, and two levels inside a project (a git repo, a package…) |
 | `defaults` | plan → auto, `sonnet`, `high` | Used for your first task; after that, new cards start with your last choices |
 | `isolate` | `true` | New conversations run on their own branch |
-| `models` | `opus`, `sonnet`, `haiku` | Extra model buttons. The models Claude Code offers your account are found on their own and come first; add a pinned version here (`claude-opus-4-8`) |
+| `models` | none | Extra model buttons. The models Claude Code offers your account are found on their own (asked every hour, after a Claude Code update and after an account switch) and come first; add a pinned version here (`claude-opus-4-8`) |
 | `notify` | `all` | `important` skips started, approved and resumed messages |
 | `timeouts.approvalSec` / `questionSec` | 900 | How long 🔐 and ❓ wait for you |
 | `timeouts.reviewSec` | 900 | How long a 📝 review waits for you; with no answer the plan is approved, as if review were off |

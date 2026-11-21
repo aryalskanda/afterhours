@@ -173,11 +173,14 @@ export interface Conversation {
   permissionMode: string | null
   /** Set while the conversation's last message is a usage-limit error: its text and when it happened (ms). */
   limit: { text: string; at: number } | null
+  /** Claude's last turn ended (it answered, and nothing was asked since): it isn't working, whatever a window says. */
+  turnEnded?: boolean
 }
 
 /** The transcript lines Afterhours reads. Claude Code writes many more kinds; the rest are skipped. */
 interface Entry {
   type?: string
+  subtype?: string
   timestamp?: string
   cwd?: string
   isMeta?: boolean
@@ -189,7 +192,7 @@ interface Entry {
   agentName?: string
   aiTitle?: string
   lastPrompt?: string
-  message?: { model?: string; content?: unknown }
+  message?: { model?: string; content?: unknown; stop_reason?: string | null }
 }
 
 const HEAD_BYTES = 64 * 1024
@@ -226,6 +229,11 @@ function typedPrompt(e: Entry): string | null {
   return text
 }
 
+function hasToolResult(e: Entry): boolean {
+  const content = e.message?.content
+  return Array.isArray(content) && content.some(b => (b as { type?: unknown } | null)?.type === 'tool_result')
+}
+
 function oneLineText(text: string): string {
   return text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 }
@@ -253,6 +261,7 @@ export function readConversation(path: string): Conversation | null {
     model: null,
     permissionMode: null,
     limit: null,
+    turnEnded: false,
   }
   let custom: string | null = null
   let agent: string | null = null
@@ -264,8 +273,13 @@ export function readConversation(path: string): Conversation | null {
     else if (e.type === 'agent-name' && e.agentName) agent = e.agentName
     else if (e.type === 'ai-title' && e.aiTitle) ai = e.aiTitle
     else if (e.type === 'last-prompt' && e.lastPrompt) c.lastPrompt = e.lastPrompt
+    // Claude Code notes the end of every turn (how long it took, the stop hooks it ran).
+    else if (e.type === 'system' && (e.subtype === 'turn_duration' || e.subtype === 'stop_hook_summary') && !e.isSidechain) c.turnEnded = true
     else if ((e.type === 'user' || e.type === 'assistant') && !e.isMeta && !e.isSidechain) {
       last = e
+      // A prompt or a tool's result starts work again; a final answer (or an error that stops it) ends the turn.
+      if (e.type === 'assistant') c.turnEnded = e.message?.stop_reason === 'end_turn' || Boolean(e.isApiErrorMessage)
+      else if (typedPrompt(e) !== null || hasToolResult(e)) c.turnEnded = false
       if (typeof e.permissionMode === 'string') c.permissionMode = e.permissionMode
       const model = e.type === 'assistant' ? e.message?.model : undefined
       if (model && model !== '<synthetic>') {

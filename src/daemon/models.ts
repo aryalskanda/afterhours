@@ -8,8 +8,8 @@ import { cleanEnv, type Config } from '../shared/config'
 
 /** How long Claude Code gets to answer. */
 const TIMEOUT_MS = 15_000
-/** Asked again this often, and whenever Claude Code's version changes. */
-const REFRESH_MS = 6 * 3600_000
+/** Asked again this often, whenever Claude Code's version changes, and after an account switch. */
+const REFRESH_MS = 3600_000
 
 const INITIALIZE = JSON.stringify({ type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } }) + '\n'
 
@@ -84,12 +84,15 @@ export async function detectModels(claudePath: string, timeoutMs = TIMEOUT_MS): 
   }
 }
 
+/** Only until Claude Code has answered (just started, or too old to say): never in place of its list. */
+const UNTIL_ASKED = ['opus', 'sonnet', 'haiku']
+
 /**
  * What's offered: Claude Code's own models first, then any added in config.json (a pinned
- * version, say), then the defaults. Without an answer from Claude Code it's the config's list.
+ * version, say), then the defaults. Until Claude Code has answered, a few it has always had.
  */
 export function offeredModels(config: Pick<Config, 'models' | 'defaults'>, found: string[] | null = detected): string[] {
-  return [...new Set([...(found ?? []), ...config.models, config.defaults.model, ...(config.defaults.workModel ? [config.defaults.workModel] : [])])]
+  return [...new Set([...(found ?? UNTIL_ASKED), ...config.models, config.defaults.model, ...(config.defaults.workModel ? [config.defaults.workModel] : [])])]
 }
 
 let detected: string[] | null = null
@@ -100,10 +103,11 @@ export function setDetectedModels(models: string[] | null): void {
 }
 
 /**
- * Asks now, and again every six hours and when Claude Code's version changes (`version` is asked
- * every ten minutes). An attempt that fails keeps the last answer.
+ * Asks now, and again every hour and when Claude Code's version changes (`version` is asked every
+ * ten minutes); `refresh` asks at once (another account may offer other models). An attempt that
+ * fails keeps the last answer.
  */
-export function watchModels(o: { claudePath: string; version: () => string | null; log: (line: string) => void }): { stop: () => void } {
+export function watchModels(o: { claudePath: string; version: () => string | null; log: (line: string) => void }): { stop: () => void; refresh: () => void } {
   let askedAt = 0
   let askedVersion: string | null = null
   let busy = false
@@ -128,5 +132,5 @@ export function watchModels(o: { claudePath: string; version: () => string | nul
   const timer = setInterval(() => {
     if (Date.now() - askedAt >= REFRESH_MS || o.version() !== askedVersion) void refresh()
   }, 600_000)
-  return { stop: () => clearInterval(timer) }
+  return { stop: () => clearInterval(timer), refresh: () => void refresh() }
 }

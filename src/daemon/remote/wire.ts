@@ -100,6 +100,7 @@ export function limitsInfo(l: LimitState): LimitsInfo {
     sevenDay: l.sevenDay,
     blockedUntil: l.blockedUntil ?? null,
     updatedAt: l.updatedAt,
+    ...(l.models && Object.keys(l.models).length ? { models: l.models } : {}),
   }
 }
 

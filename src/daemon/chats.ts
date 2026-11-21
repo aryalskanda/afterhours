@@ -35,12 +35,19 @@ export interface ChatSource {
   rename(sessionId: string, title: string): boolean
 }
 
+/** A window can say "busy" long after Claude finished (a stuck VS Code): a turn that ended, and quiet since, isn't work. */
+const SETTLED_MS = 30_000
+
+function settled(c: Conversation, now = Date.now()): boolean {
+  return Boolean(c.turnEnded) && now - c.updatedAt > SETTLED_MS
+}
+
 export function chatSource(o: { store: Store; liveSessions: () => LiveSession[]; claudeDir?: string }): ChatSource {
   /** The conversations the queue is running right now (one for each task running). */
   const sessionsRunning = () => new Set(o.store.running().flatMap(j => (j.sessionId ? [j.sessionId] : [])))
   const withState = (c: Conversation, live: LiveSession[], running: Set<string>): Chat => {
     const holder = running.has(c.sessionId) ? undefined : live.find(s => s.sessionId === c.sessionId)
-    return { ...c, where: holder ? whereLabel(holder) : null, busy: holder?.status === 'busy', running: running.has(c.sessionId) }
+    return { ...c, where: holder ? whereLabel(holder) : null, busy: holder?.status === 'busy' && !settled(c), running: running.has(c.sessionId) }
   }
   return {
     list(folder, limit) {

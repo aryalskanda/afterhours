@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { Chat } from '../src/daemon/chats'
 import { applyOption, parseQueueText, runCommand, type QueueOptions } from '../src/daemon/commands'
+import { setDetectedModels } from '../src/daemon/models'
 import { PowerControl } from '../src/daemon/power'
 import type { Runner } from '../src/daemon/runner'
 import { Store } from '../src/daemon/store'
@@ -66,6 +67,19 @@ describe('applyOption', () => {
     expect(apply('opus>sonnet').o).toEqual({ model: 'opus', workModel: 'sonnet', plan: true })
     expect(apply('claude-opus-5-5>haiku').o).toMatchObject({ model: 'claude-opus-5-5', workModel: 'haiku' })
     expect(apply('opus>nonsense').ok).toBe(false)
+  })
+
+  test("a model is whatever Claude Code offers now, with nothing to update here", () => {
+    setDetectedModels(['opus', 'sonnet', 'mythos', 'haiku'])
+    try {
+      expect(apply('mythos').o).toEqual({ model: 'mythos' })
+      expect(apply('mythos[1m]').o).toEqual({ model: 'mythos[1m]' })
+      expect(apply('mythos>haiku').o).toMatchObject({ model: 'mythos', workModel: 'haiku' })
+      expect(apply('best').o).toEqual({ model: 'best' })
+      expect(apply('gpt').ok).toBe(false)
+    } finally {
+      setDetectedModels(null)
+    }
   })
 
   test('plan at one effort, work at another: max>medium', () => {

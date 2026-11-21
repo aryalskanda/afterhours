@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { samePath, within } from '../shared/paths'
 import { BRAND } from '../shared/brand'
@@ -8,7 +8,7 @@ import type { ExecMode, Job, JobSpec, LaunchSpec, LimitState } from '../shared/t
 import { duration, excerpt, modeLabel, oneLine } from './format'
 import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
-import { currentLimits, pickResetTime, windowsFromStatusline } from './limits'
+import { currentLimits, fallbackModel, modelFamily, modelLimited, pickResetTime, windowsFromStatusline } from './limits'
 import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
 import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
@@ -30,6 +30,9 @@ export interface ToolActivity {
   tool: string
   detail: string
 }
+
+/** A conversation longer than this isn't opened in VS Code by itself after a task (VS Code can hang loading it). */
+export const REOPEN_MAX_BYTES = 5 * 1_048_576
 
 export interface RunnerDeps {
   store: Store
@@ -73,6 +76,8 @@ export interface RunnerDeps {
   uploadsDir?: string
   /** Finding and ending a task's processes (tests use a fake). */
   procs?: Procs
+  /** The models Claude Code offers now, in its order: where a task goes when its model is at its limit. */
+  models?: () => string[]
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -120,7 +125,7 @@ interface Runtime {
   /** Plan approved with "manually approve edits"; switch to the job's mode on the next permission prompt. */
   switchAfter?: ExecMode
   trust?: { since: number; code?: string; approved?: boolean }
-  limit?: { at: number | null; window?: string; since: number; stage: 0 | 1 | 2; sentAt?: number; force?: boolean }
+  limit?: { at: number | null; window?: string; since: number; stage: 0 | 1 | 2; sentAt?: number; force?: boolean; /** Its model hit its own limit: start it again on the model it was moved to. */ switched?: boolean }
   retry?: { at: number; count: number }
   /** The turn ended with background commands still running; Claude wakes again when they finish. */
   background?: { since: number; bounded: boolean }
@@ -352,6 +357,35 @@ export class Runner {
   }
 
   /**
+   * Moves a task off a model family that's at its own limit (its plan model, its work model, or
+   * both), to the model `fallbackModel` picks, and says so. Null when every model is at its limit.
+   */
+  private moveOffModel(job: Job, family: string): Job | null {
+    const now = this.d.now()
+    const limits = this.limits()
+    const working = job.planApproved && job.workModel ? job.workModel : job.model
+    const other = working === job.model ? job.workModel : job.model
+    const to = fallbackModel({ current: family, other, preferred: this.d.config().defaults.model, offered: this.d.models?.() ?? [], limits, now })
+    if (!to) return null
+    const patch: Partial<Job> = {}
+    if (modelFamily(job.model) === family) patch.model = to
+    if (job.workModel && modelFamily(job.workModel) === family) patch.workModel = to
+    // Named by an alias ("best") that turned out to be this model: the one it runs on now moves.
+    if (!patch.model && !patch.workModel) {
+      if (working === job.workModel) patch.workModel = to
+      else patch.model = to
+    }
+    // Planning and working on the same model now: it's simply that model.
+    const workModel = patch.workModel !== undefined ? patch.workModel : job.workModel
+    if (workModel && workModel === (patch.model ?? job.model)) patch.workModel = null
+    const updated = this.d.store.updateJob(job.id, patch)
+    const until = limits.models?.[family] ?? null
+    this.d.log(`#${job.id}: ${family} is at its own limit${until ? ` until ${new Date(until).toISOString()}` : ''}; it carries on with ${to}`)
+    this.d.notify({ type: 'model_switched', job: updated, from: family, to, until })
+    return updated
+  }
+
+  /**
    * Claude Code is signed in to another account: usage limits are an account's own, so the old
    * one's readings and its block on new tasks no longer apply. A task waiting on the old account's
    * reset is continued now. Returns the tasks continued.
@@ -508,6 +542,9 @@ export class Runner {
     if (this.ended(job.id)) return
     const now = this.d.now()
     const config = this.d.config()
+    // Its model is at its own limit: it starts on another one rather than waiting.
+    const runsOn = job.planApproved && job.workModel ? job.workModel : job.model
+    if (modelLimited(this.limits(), runsOn, now)) job = this.moveOffModel(job, modelFamily(runsOn)) ?? job
     if (!existsSync(job.projectDir)) {
       this.d.store.updateJob(job.id, { status: 'failed', finishedAt: now, error: `folder not found: ${job.projectDir}` })
       this.d.notify({ type: 'failed', job: this.d.store.getJob(job.id)!, reason: `folder not found: ${job.projectDir}` })
@@ -968,6 +1005,15 @@ export class Runner {
     const now = this.d.now()
     const config = this.d.config()
     const limit = (rt.limit ??= { at: this.limits().blockedUntil ?? null, since: now, stage: 0 })
+    if (limit.switched) {
+      // Moved to another model: Claude Code starts again on it, in the same conversation.
+      this.d.log(`#${job.id}: continuing on ${job.planApproved && job.workModel ? job.workModel : job.model}`)
+      await this.relaunch(job, 'continue')
+      const fresh = this.runtimes.get(job.id)
+      if (fresh) fresh.limit = undefined
+      this.limitNotified.delete(job.id)
+      return
+    }
     const due = (limit.at ?? limit.since + 15 * 60_000) + config.timeouts.limitGraceSec * 1000
     if (!limit.force && now < due) return
     if (limit.stage === 0) {
@@ -1008,6 +1054,26 @@ export class Runner {
     this.d.store.updateJob(job.id, { phase: job.plan && !job.planApproved ? 'planning' : 'working' })
     this.saveLimits({ ...this.limits(), blockedUntil: null })
     this.d.notify({ type: 'resumed', job, how })
+  }
+
+  /**
+   * A task that took its conversation from VS Code opens it there again, so VS Code is up to date.
+   * Not a very long one: VS Code loads all of it at once and can hang on it, so you reopen it there
+   * when you want it.
+   */
+  private giveBackToVsCode(job: Job): void {
+    if (job.tookFrom !== 'claude-vscode' || !job.sessionId || !this.d.config().reopenInVsCode) return
+    let size = 0
+    try {
+      size = job.transcriptPath ? statSync(job.transcriptPath).size : 0
+    } catch {
+      // No transcript to measure: open it.
+    }
+    if (size > REOPEN_MAX_BYTES) {
+      this.d.log(`#${job.id}: not opening chat ${job.sessionId} in VS Code again (${Math.round(size / 1_048_576)} MB, too long to open by itself); open it there when you want it`)
+      return
+    }
+    this.d.reopenInVsCode?.(job.sessionId)
   }
 
   /** Claude is at work again (or done waiting): the task isn't waiting on background commands now. */
@@ -1072,9 +1138,7 @@ export class Runner {
     const done = this.d.store.updateJob(job.id, { status: 'done', phase: null, finishedAt: now, summary: diff, ...ending })
     this.runtimes.delete(job.id)
     // Taken from VS Code: open it there again (unless more is queued for it), so VS Code is up to date.
-    if (job.tookFrom === 'claude-vscode' && job.sessionId && this.d.config().reopenInVsCode && !this.d.store.pendingForSession(job.sessionId)) {
-      this.d.reopenInVsCode?.(job.sessionId)
-    }
+    if (!job.sessionId || !this.d.store.pendingForSession(job.sessionId)) this.giveBackToVsCode(job)
     const next = this.paused ? null : (this.d.store.queued()[0] ?? null)
     this.d.notify({ type: 'done', job: done, diff, next })
     this.scheduleRepeat(done)
@@ -1372,6 +1436,20 @@ export class Runner {
     const text = [payload.error_details, payload.last_assistant_message].filter(Boolean).join(' · ')
     if (error === 'rate_limit') {
       const pick = pickResetTime(this.limits(), text, now)
+      // One model's own limit (the account's other models still work): carry on with another model.
+      if (pick.window?.startsWith('model:')) {
+        const family = pick.window.slice('model:'.length)
+        const until = pick.at ?? now + 60 * 60_000
+        const l = this.limits()
+        this.saveLimits({ ...l, models: { ...(l.models ?? {}), [family]: until } })
+        this.d.log(`#${job.id}: ${family} hit its own limit, resets ${pick.at ? new Date(pick.at).toISOString() : 'at an unknown time'} (from the ${pick.source})`)
+        if (this.moveOffModel(job, family)) {
+          this.d.store.updateJob(job.id, { phase: 'limited' })
+          rt.limit = { at: until, window: pick.window, since: now, stage: 0, switched: true }
+          return {}
+        }
+        // Every model is at its limit: it waits for the reset like any usage limit.
+      }
       rt.limit = { at: pick.at, window: pick.window, since: now, stage: 0 }
       const due = (pick.at ?? now + 15 * 60_000) + this.d.config().timeouts.limitGraceSec * 1000
       this.d.log(
@@ -1622,7 +1700,7 @@ export class Runner {
     this.runtimes.delete(id)
     this.limitNotified.delete(id)
     // Taken from VS Code: it gets its conversation back.
-    if (job.tookFrom === 'claude-vscode' && job.sessionId && this.d.config().reopenInVsCode) this.d.reopenInVsCode?.(job.sessionId)
+    this.giveBackToVsCode(job)
     this.d.notify({ type: 'killed', job: killed, by: o.by ?? null })
     this.scheduleRepeat(killed)
     const next = this.paused ? null : this.d.store.queued()[0]

@@ -23,7 +23,7 @@ import {
 import { TelegramApi } from '../telegram/api'
 import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
 import { claudeVersion } from './health'
-import { watchModels } from './models'
+import { offeredModels, watchModels } from './models'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
@@ -158,7 +158,10 @@ export async function runDaemon(): Promise<void> {
     allowedDir: dir => isAllowed(dir, allowedRoots(config)),
     uploadsDir: paths.uploads,
     procs: systemProcs,
+    models: () => offeredModels(getConfig()),
   })
+  // Asks Claude Code for its models again (set below, once it's watching).
+  let refreshModels = () => {}
 
   const chats = chatSource({ store, liveSessions: () => liveSessions() })
   const watcher = new SessionWatcher({
@@ -486,6 +489,7 @@ export async function runDaemon(): Promise<void> {
     setPaused: on => runner.setPaused(on),
     accountChanged: () => {
       runner.accountChanged()
+      refreshModels()
       // Noted as the account now, so the check below doesn't announce it a second time.
       const id = claudeAccount(CLAUDE_JSON)
       if (id) store.kvSet('claude.account', id)
@@ -498,6 +502,7 @@ export async function runDaemon(): Promise<void> {
   const checkAccount = () => {
     if (!accountSwitched({ claudeJson: CLAUDE_JSON, kv: { get: k => store.kvGet(k), set: (k, v) => store.kvSet(k, v) }, now: Date.now() })) return
     const continued = runner.accountChanged()
+    refreshModels()
     const waiting = store.queued().length
     notifier.send({
       type: 'setup_warning',
@@ -571,7 +576,7 @@ export async function runDaemon(): Promise<void> {
   process.on('SIGINT', () => shutdown())
 
   // The models Claude Code offers this account: the buttons in the bot and the apps.
-  watchModels({ claudePath, version: () => claudeVersion(claudePath, Date.now()), log })
+  refreshModels = watchModels({ claudePath, version: () => claudeVersion(claudePath, Date.now()), log }).refresh
 
   const where = isWindows ? 'terminal host (ConPTY)' : `tmux -L ${TMUX_SOCKET}`
   log(`${BRAND.name} ${VERSION} listening on 127.0.0.1:${config.port} · ${osLabel()} · claude ${claudePath} · ${where} · state ${CQ_HOME}`)

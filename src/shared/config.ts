@@ -182,7 +182,8 @@ export const DEFAULT_CONFIG: Config = {
   telegram: { enabled: false, token: null, ownerId: null, ownerName: null },
   // Empty means "detect": see codeRoots(). `cq setup` asks.
   folders: { roots: [], maxDepth: 6 },
-  models: ['opus', 'sonnet', 'haiku'],
+  // Extra models to offer beside Claude Code's own list (a pinned version, say); that list comes from Claude Code.
+  models: [],
   remoteControl: false,
   watchSessions: true,
   autoContinueChats: true,

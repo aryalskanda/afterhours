@@ -95,6 +95,24 @@ describe('reading a conversation', () => {
     expect(c.limit).not.toBeNull()
   })
 
+  test('whether the last turn ended: a stuck window saying "busy" is not work', () => {
+    const dir = claudeDir()
+    const cwd = '/Users/me/app'
+    const asked = user(cwd, 'Fix it', 0)
+    const working = { type: 'assistant', timestamp: at(1), message: { model: 'claude-opus-5-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Bash' }] } }
+    const result = { type: 'user', timestamp: at(2), message: { content: [{ type: 'tool_result', content: 'ok' }] } }
+    const answered = { type: 'assistant', timestamp: at(3), message: { model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fixed.' }] } }
+    const ended = { type: 'system', subtype: 'turn_duration', timestamp: at(3) }
+    const read = (lines: object[]) => readConversation(write(dir, cwd, 's5', lines))!.turnEnded
+    expect(read([asked, working])).toBe(false)
+    expect(read([asked, working, result])).toBe(false)
+    expect(read([asked, working, result, answered])).toBe(true)
+    expect(read([asked, working, result, answered, ended])).toBe(true)
+    // Claude Code's own notes after the turn (/exit's output) don't start work again.
+    expect(read([asked, answered, ended, user(cwd, '<local-command-stdout>Bye!</local-command-stdout>', 4)])).toBe(true)
+    expect(read([asked, answered, ended, user(cwd, 'One more thing', 5)])).toBe(false)
+  })
+
   test('unreadable or missing transcripts are skipped', () => {
     expect(readConversation('/definitely/not/here.jsonl')).toBeNull()
   })

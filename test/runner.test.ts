@@ -1869,3 +1869,69 @@ describe('tasks at once', () => {
     expect(await h.runner.say('x', 999)).toBe("#999 isn't running.")
   })
 })
+
+describe("a model's own limit", () => {
+  const FABLE = "You've hit your Fable limit · resets 11am"
+  const modelOf = (h: Harness, id: number) => {
+    const argv = h.runner.launchSpec(id)!.argv
+    return argv[argv.indexOf('--model') + 1]
+  }
+
+  test('the task carries on with another model at once; nothing else waits', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, model: 'fable' })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', last_assistant_message: FABLE })
+    expect(lastNotice(h, 'model_switched')).toMatchObject({ from: 'fable', to: 'sonnet' })
+    expect(h.notices.some(n => n.type === 'limit')).toBe(false)
+    expect(h.runner.limits().blockedUntil ?? null).toBeNull()
+    expect(h.runner.limits().models?.fable).toBeGreaterThan(h.now())
+
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)).toMatchObject({ model: 'sonnet', launches: 2 })
+    const argv = h.runner.launchSpec(j.id)!.argv
+    expect(argv.slice(1, 3)).toEqual(['--resume', j.sid])
+    expect(modelOf(h, j.id)).toBe('sonnet')
+  })
+
+  test('a queued task asking for that model starts on another', async () => {
+    const h = setup()
+    h.store.kvSet('limits', { models: { fable: h.now() + 3600_000 } })
+    const job = h.runner.enqueue(h.spec({ plan: false, model: 'fable' }))
+    await h.runner.tick()
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'running', model: 'sonnet' })
+    expect(modelOf(h, job.id)).toBe('sonnet')
+    expect(lastNotice(h, 'model_switched')).toMatchObject({ from: 'fable', to: 'sonnet' })
+  })
+
+  test('plan with one model, work with another: only the one at its limit moves', async () => {
+    const h = setup()
+    h.store.kvSet('limits', { models: { fable: h.now() + 3600_000 } })
+    const job = h.runner.enqueue(h.spec({ plan: true, model: 'fable', workModel: 'haiku' }))
+    await h.runner.tick()
+    // The plan's model goes to the task's other one; the work model stays.
+    expect(h.store.getJob(job.id)).toMatchObject({ model: 'haiku', workModel: null })
+  })
+
+  test('every model at its limit: it waits for the reset as before', async () => {
+    const h = setup()
+    h.store.kvSet('limits', { models: { sonnet: h.now() + 3600_000, opus: h.now() + 3600_000, haiku: h.now() + 3600_000 } })
+    const j = await startJob(h, { plan: false, model: 'fable' })
+    await h.runner.onHook('StopFailure', j.id, { error: 'rate_limit', last_assistant_message: FABLE })
+    expect(h.store.getJob(j.id)).toMatchObject({ phase: 'limited', model: 'fable' })
+    expect(lastNotice(h, 'limit').window).toBe('model:fable')
+  })
+})
+
+describe('giving a chat back to VS Code', () => {
+  test('a very long conversation is left for you to open there', async () => {
+    const h = setup()
+    const sid = 'dddddddd-1111-2222-3333-444444444444'
+    const j = await startJob(h, { plan: false, sessionPolicy: 'session', sessionId: sid })
+    const transcript = join(h.project, 'long.jsonl')
+    writeFileSync(transcript, Buffer.alloc(6 * 1_048_576, 120))
+    h.store.updateJob(j.id, { tookFrom: 'claude-vscode', transcriptPath: transcript })
+    await h.runner.kill(j.id)
+    expect(h.reopened).toEqual([])
+    expect(h.logs.some(l => l.includes(`not opening chat ${sid} in VS Code again (6 MB`))).toBe(true)
+  })
+})

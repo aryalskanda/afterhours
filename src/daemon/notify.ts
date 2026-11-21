@@ -1,7 +1,7 @@
 import { BRAND } from '../shared/brand'
 import type { Job } from '../shared/types'
 import { duration, excerpt, jobLine, oneLine, projectLabel } from './format'
-import { formatClock, windowLabel } from './limits'
+import { formatClock, modelLabel, windowLabel } from './limits'
 import type { Conversation } from './sessions'
 
 export interface QuestionOption {
@@ -40,6 +40,8 @@ export type Notice =
   | { type: 'limit'; job: Job; at: number | null; window?: string }
   /** Running again after a usage limit; `how` = who restarted it. */
   | { type: 'resumed'; job: Job; how: 'claude' | 'afterhours' | 'you' }
+  /** Its model (`from`, a family such as "fable") hit its own limit, so it carries on with `to`. */
+  | { type: 'model_switched'; job: Job; from: string; to: string; until: number | null }
   | { type: 'done'; job: Job; diff: string | null; next: Job | null }
   | { type: 'held'; job: Job; reason: string; screen?: string }
   | { type: 'failed'; job: Job; reason: string; screen?: string }
@@ -180,6 +182,8 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
     }
     case 'resumed':
       return `▶️ #${n.job.id} continued after the limit reset (${resumedBy(n.how)})`
+    case 'model_switched':
+      return `🔀 #${n.job.id}: ${modelLabel(n.from)} is at its limit${n.until ? ` until ${formatClock(n.until, now)}` : ''}, so it carries on with ${modelLabel(n.to)}`
     case 'done': {
       const took = n.job.startedAt ? ` in ${duration((n.job.finishedAt ?? now) - n.job.startedAt)}` : ''
       const diff = n.diff ? `\n${n.diff}` : ''
