@@ -88,6 +88,13 @@ describe('what the digest says', () => {
     expect(text).toContain('Limits left: 5-hour 65% (resets 11:00 PM) · weekly 26%')
   })
 
+  test('a stalled task is waiting on you, with why', () => {
+    const s = store()
+    const j = job(s, { status: 'running', stalledAt: NOW - HOUR, stallReason: 'no events for 11m' })
+    const d = buildDigest({ now: NOW, since: NOW - 24 * HOUR, finished: [], current: s.running(), approvals: [], limits: {}, prs: [], prsNote: null, label })
+    expect(d.waiting).toEqual([expect.objectContaining({ job: j.id, detail: 'stalled: no events for 11m' })])
+  })
+
   test('a few of each are listed; the counts say how many', () => {
     const s = store()
     for (let i = 0; i < 8; i++) job(s, { status: 'failed', finishedAt: NOW - HOUR - i, error: `error ${i}` })

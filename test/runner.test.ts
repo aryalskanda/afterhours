@@ -6,7 +6,7 @@ import { join, resolve, sep } from 'node:path'
 /** Where the runner writes a job's session settings (it joins the path, so it has \ on Windows). */
 const settingsFile = (id: number) => join('/tmp/cqhome/jobs', `${id}.settings.json`)
 import type { Notice } from '../src/daemon/notify'
-import { canTakeOver, Runner, windowName, type ToolActivity } from '../src/daemon/runner'
+import { canTakeOver, Runner, stallLines, windowName, type ToolActivity } from '../src/daemon/runner'
 import { sessionSettings } from '../src/daemon/launch'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
@@ -2015,5 +2015,74 @@ describe('retry', () => {
     h.store.updateJob(j.id, { status: 'done', error: null })
     expect((await h.runner.retry(j.id)).ok).toBe(false)
     expect((await h.runner.retry(999)).text).toBe('No task #999.')
+  })
+})
+
+describe('stalled', () => {
+  test('repro: Claude opens (SessionStart) but never takes the prompt: stalled and held at the launch limit, not 20 minutes later', async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const sid = h.store.getJob(job.id)!.sessionId!
+    await h.runner.onHook('SessionStart', job.id, { session_id: sid, transcript_path: '/tmp/t.jsonl' })
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = '╭──────╮\n│ > Fix the login page │\n╰──────╯\n  Error: MCP server "linear" failed to start\n  ? for shortcuts'
+    h.advance(91_000)
+    await h.runner.tick()
+    expect(h.store.getJob(job.id)).toMatchObject({ status: 'held', stallReason: expect.stringContaining("didn't start") })
+    expect(h.store.getJob(job.id)!.stalledAt).not.toBeNull()
+    const n = lastNotice(h, 'stalled')
+    expect(n.lines).toContain('Error: MCP server "linear" failed to start')
+    expect(n.lines.some(l => /^[╭╰─]+/.test(l))).toBe(false)
+    // Said once, as a stall (not a second "paused" message).
+    expect(h.notices.filter(x => x.type === 'held')).toHaveLength(0)
+  })
+
+  test('quiet while working: marked stalled once, with its last lines, and it keeps going; the next event clears it', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    await h.runner.onHook('ToolStart', j.id, { tool_name: 'Bash', tool_input: { command: 'npm test' } })
+    j.window.screen = '⏺ Bash(npm test)\n  ⎿  Running…\nnpm ERR! code ECONNRESET'
+    h.advance(9 * 60_000)
+    await h.runner.tick()
+    expect(h.notices.some(n => n.type === 'stalled')).toBe(false)
+    h.advance(2 * 60_000)
+    await h.runner.tick()
+    const n = lastNotice(h, 'stalled')
+    expect(n.reason).toMatch(/^no events for 11m/)
+    expect(n.lines.at(-1)).toBe('npm ERR! code ECONNRESET')
+    expect(h.store.getJob(j.id)).toMatchObject({ status: 'running', stallReason: n.reason })
+    h.advance(60_000)
+    await h.runner.tick()
+    expect(h.notices.filter(x => x.type === 'stalled')).toHaveLength(1)
+    await h.runner.onHook('PostToolUse', j.id, { tool_name: 'Bash' })
+    expect(h.store.getJob(j.id)).toMatchObject({ stalledAt: null, stallReason: null })
+  })
+
+  test('waiting on your answer is not a stall', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    void h.runner.onHook('PermissionRequest', j.id, { tool_name: 'Bash', tool_input: { command: 'rm -rf build' } })
+    await Bun.sleep(0)
+    h.advance(15 * 60_000)
+    await h.runner.tick()
+    expect(h.notices.some(n => n.type === 'stalled')).toBe(false)
+  })
+
+  test('Retry on a stalled task that is still running starts it again, continuing', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false })
+    h.advance(11 * 60_000)
+    await h.runner.tick()
+    expect(h.store.getJob(j.id)!.stalledAt).not.toBeNull()
+    const r = await h.runner.retry(j.id, 'Telegram')
+    expect(r.text).toBe(`#${j.id} starts again and continues.`)
+    expect(h.store.getJob(j.id)).toMatchObject({ launches: 2, stalledAt: null })
+    expect(h.runner.launchSpec(j.id)!.argv.at(-1)).toBe('continue')
+  })
+
+  test('the last lines: no blanks or box rules, the newest kept', () => {
+    expect(stallLines('╭────╮\n│ > hi │\n╰────╯\n\n  a\n  b  \n────────')).toEqual(['> hi', 'a', 'b'])
+    expect(stallLines(Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'), 3)).toEqual(['line 27', 'line 28', 'line 29'])
   })
 })

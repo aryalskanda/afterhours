@@ -72,11 +72,14 @@ export type Notice =
   /** The Mac is going to sleep (after quitting `quit`); `failed`: it was meant to and couldn't. */
   | { type: 'sleeping'; by: string | null; quit: string[]; failed?: string }
   | { type: 'empty' }
+  /** It stopped moving (didn't start, or no events for a while): why, since when, its terminal's last lines. */
+  | { type: 'stalled'; job: Job; reason: string; since: number; lines: string[] }
   /** The daily "Today" digest. */
   | { type: 'digest'; digest: Digest }
 
 const IMPORTANT = new Set<Notice['type']>([
   'digest',
+  'stalled',
   'plan_review',
   'permission',
   'question',
@@ -246,5 +249,7 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       return '🏁 Queue empty.'
     case 'digest':
       return digestText(n.digest, now)
+    case 'stalled':
+      return `⚠️ #${n.job.id} stalled: ${n.reason}${n.lines.length ? `\n${n.lines.slice(-6).join('\n')}` : ''}\nReply go to retry, kill ${n.job.id} to end it.`
   }
 }

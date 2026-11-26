@@ -249,6 +249,15 @@ By default one task runs at a time. To run two or three (Claude Code in two proj
 
 A task that can't start yet keeps its place; a later one that can goes first. They share your usage limit: when one hits it, nothing new starts until the reset, and each running task continues then. With several running, **stop**, **kill**, **say**, **peek** and the bot's buttons name the task (`stop #14`, or its number in the list).
 
+## Stalled tasks
+
+A task that stops moving says so, in Telegram and the app, with **Retry**, **Kill** and **View log**, and the last lines its terminal printed (Claude's errors show there):
+
+- **Didn't start:** Claude Code hasn't taken the prompt 90 seconds after it was started (a screen it's waiting on, an MCP server that won't start). The task is paused.
+- **No events:** nothing has happened for 10 minutes while it works, and it isn't waiting on you, a usage limit or its background commands. It keeps going (a long install is quiet too), and the mark clears as soon as it moves.
+
+**Retry** continues a paused task, or starts a stalled one again in the same conversation, told to continue. **View log** shows what Afterhours wrote about the task and its terminal's last lines. A stalled task also shows in the Today digest, under waiting on you.
+
 ## Kill a stuck task
 
 A task can get stuck: waiting for a chat that's open in VS Code, at a screen nobody can answer, or silent. **Kill** ends it now, from the bot (**Kill**, `/kill`) or the terminal (`cq kill [#]`):
@@ -390,7 +399,9 @@ The words before the first colon count as options only if every one of them is a
 | `notify` | `all` | `important` skips started, approved and resumed messages |
 | `timeouts.approvalSec` / `questionSec` | 900 | How long 🔐 and ❓ wait for you |
 | `timeouts.reviewSec` | 900 | How long a 📝 review waits for you; with no answer the plan is approved, as if review were off |
-| `timeouts.stuckSec` | 1200 | Silence before a task counts as stuck |
+| `timeouts.launchSec` | 90 | A task whose Claude hasn't taken the prompt by then is stalled (and paused) |
+| `timeouts.stallSec` | 600 | Silence before a working task is marked stalled and you're told (it keeps going) |
+| `timeouts.stuckSec` | 1200 | Silence before a task counts as stuck and is paused |
 | `timeouts.limitGraceSec` | 180 | Wait after a reset before Afterhours types `continue` itself |
 | `timeouts.backgroundSec` | 600 | How long to wait for background commands after a turn |
 | `keepAwake` | `true` | Keep the computer from idle-sleeping while tasks are pending (closing the lid still sleeps it unless the next row is on) |

@@ -27,6 +27,7 @@ export function pushGroup(type: Notice['type']): PushGroup | null {
     case 'held':
     case 'conflict':
     case 'setup_warning':
+    case 'stalled':
       return 'failed'
     case 'limit':
     case 'model_switched':

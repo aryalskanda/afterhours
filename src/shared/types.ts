@@ -100,6 +100,9 @@ export interface Job {
    * time, so it never starts with the settings being replaced. Saving or cancelling clears it.
    */
   editingUntil: number | null
+  /** It hasn't moved for too long (didn't start, or no events): since when, and why. Cleared when it moves. */
+  stalledAt: number | null
+  stallReason: string | null
   /**
    * Plan with one model, work with another: `model` plans, and once the plan is approved this
    * model carries it out (the same conversation, resumed). Null: `model` does both.

@@ -80,6 +80,8 @@ export interface Config {
     limitGraceSec: number
     /** A launch that hasn't produced its first event by then is stuck on a screen. */
     launchSec: number
+    /** A working task with no events for this long is marked stalled, and you're told (it keeps going). */
+    stallSec: number
     /**
      * After Claude's turn ends with background commands still running, how long to wait for
      * them before calling the job done (a dev server never finishes).
@@ -181,6 +183,7 @@ export const DEFAULT_CONFIG: Config = {
     stuckSec: 1200,
     limitGraceSec: 180,
     launchSec: 90,
+    stallSec: 600,
     backgroundSec: 600,
   },
   telegram: { enabled: false, token: null, ownerId: null, ownerName: null },

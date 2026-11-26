@@ -61,10 +61,12 @@ export function buildDigest(o: DigestInput): Digest {
   ]
   const asked = new Map<number, Approval>()
   for (const a of o.approvals) if (!asked.has(a.jobId)) asked.set(a.jobId, a)
-  const waitingJobs = o.current.filter(j => asked.has(j.id) || (j.status === 'held' && !j.error))
+  // Waiting on you: a request to answer, paused, or stalled (it stopped moving).
+  const waitingJobs = o.current.filter(j => asked.has(j.id) || (j.status === 'held' && !j.error) || (j.status === 'running' && j.stalledAt !== null))
   const waiting = waitingJobs.map(j => {
     const a = asked.get(j.id)
-    return task(j, o.label, a ? APPROVAL_WORDS[a.kind] : holdWords(j.holdReason), a?.code)
+    const detail = a ? APPROVAL_WORDS[a.kind] : j.stallReason ? `stalled: ${j.stallReason}` : holdWords(j.holdReason)
+    return task(j, o.label, detail, a?.code)
   })
   return {
     at: o.now,

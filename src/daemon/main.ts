@@ -342,6 +342,7 @@ export async function runDaemon(): Promise<void> {
     telegram = new TelegramBridge({
       api: new TelegramApi(token),
       digest,
+      logPath: paths.log,
       store,
       runner,
       folders,

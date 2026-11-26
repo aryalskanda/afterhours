@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Chat, ChatSource } from '../src/daemon/chats'
@@ -118,7 +118,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest'] } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -184,6 +184,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
     wifi: o.wifi,
     account: o.account,
     digest: o.digest,
+    logPath: o.logPath,
     git: o.git,
     config: () => config,
     saveConfig: c => {
@@ -235,7 +236,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest'] } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1814,6 +1815,31 @@ describe('what the bot does without the app', () => {
     expect(h.api.last().html).toContain('Every evening at <b>10:30 PM</b>')
     await press(h, h.api.last().id, 'Off')
     expect(h.config().digest.at).toBeNull()
+  })
+
+  test('a stalled task: why, its terminal\'s last lines, and Retry, Kill and View log', async () => {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'cq-log-')), 'cqd.log')
+    const h = await paired({ logPath })
+    const job = await running(h)
+    writeFileSync(
+      logPath,
+      [
+        `2026-10-14T09:00:00.000Z launched #${job.id}: --session-id x --model haiku`,
+        '2026-10-14T09:00:01.000Z #1000: someone else',
+        `2026-10-14T09:11:00.000Z #${job.id}: stalled: no events for 11m`,
+      ].join('\n') + '\n',
+    )
+    await h.bridge.notify({ type: 'stalled', job: h.store.getJob(job.id)!, reason: 'no events for 11m (last step: Bash)', since: h.now(), lines: ['npm ERR! code ECONNRESET'] })
+    const msg = h.api.last()
+    expect(msg.html).toContain(`<b>⚠️ #${job.id} stalled</b> · beta: no events for 11m (last step: Bash)`)
+    expect(msg.html).toContain('<pre>npm ERR! code ECONNRESET</pre>')
+    expect(labels(h, msg.id)).toEqual(['Retry', 'Kill', 'View log'])
+    await press(h, msg.id, 'View log')
+    const log = h.api.last().html
+    expect(log).toContain(`#${job.id}'s log`)
+    expect(log).toContain(`#${job.id}: stalled: no events for 11m`)
+    expect(log).not.toContain('#1000')
+    expect(log).not.toContain('2026-10-14T')
   })
 
   test('every command in the menu is one the bot knows', async () => {
