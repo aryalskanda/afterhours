@@ -41,3 +41,21 @@ export const PLAN_SCREEN = `❯ Create a file hello.txt containing the word hi. 
    3. Tell Claude what to change
       shift+tab to approve with this feedback
  ctrl+g to edit in VS Code · ~/.claude/plans/create-a-file-hello-txt-dreamy-bunny.md`
+
+/** Claude Code's theme picker before a session starts (task #303, Nov 2026). */
+export const THEME_SCREEN = ` To change this later, run /theme
+     Auto (match terminal)
+ ❯ ✔ Dark mode
+     Light mode
+     Dark mode (colorblind-friendly)
+     Light mode (colorblind-friendly)
+     Dark mode (ANSI colors only)
+     Light mode (ANSI colors only)
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1  function greet() {
+  2 -  console.log("Hello, World!");
+  2 +  console.log("Hello, Claude!");
+  3  }
+ ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  Syntax theme: Monokai Extended (ctrl+t to disable)
+`

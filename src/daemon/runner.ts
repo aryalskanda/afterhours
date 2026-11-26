@@ -10,7 +10,7 @@ import type { Worktree } from './system'
 import { claudeArgv, sessionName, sessionSettings, type ScriptPaths } from './launch'
 import { currentLimits, fallbackModel, modelFamily, modelLimited, pickResetTime, windowsFromStatusline } from './limits'
 import { describeAnswers, permissionDetail, type Notice, type Question } from './notify'
-import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, trustDialog, type MenuOption } from './screens'
+import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, themeDialog, trustDialog, type MenuOption } from './screens'
 import { whereLabel, type LiveSession } from './sessions'
 import type { Store } from './store'
 import { tail, type TmuxDriver } from './tmux'
@@ -78,6 +78,8 @@ export interface RunnerDeps {
   procs?: Procs
   /** The models Claude Code offers now, in its order: where a task goes when its model is at its limit. */
   models?: () => string[]
+  /** Whether Claude Code saved a conversation (one that never got its first message wasn't). Unset: assumed yes. */
+  conversationExists?: (sessionId: string) => boolean
 }
 
 /** What a hook sends: the documented common fields plus per-event ones. */
@@ -266,6 +268,11 @@ const RELEASE_WAIT_MS = 10_000
 const RELEASE_SETTLE_MS = 1500
 
 export class Runner {
+  /** Only VS Code has the conversation open, and you've said to take it from there without asking. */
+  private fromVsCode(holders: LiveSession[]): boolean {
+    return this.d.config().takeOverVsCode !== false && holders.length > 0 && holders.every(h => h.entrypoint === 'claude-vscode' && (h.kind ?? 'interactive') === 'interactive')
+  }
+
   private runtimes = new Map<number, Runtime>()
   private waiters = new Map<string, (r: Resolution) => void>()
   private limitNotified = new Set<number>()
@@ -563,7 +570,13 @@ export class Runner {
     let sessionArgs: string[]
     let isNew = false
     let tookEntry: string | null = null
-    if (sessionId && job.fork) {
+    // Never saved (Claude Code stopped before its first message): there's nothing to resume, so it starts.
+    if (sessionId && this.d.conversationExists && !this.d.conversationExists(sessionId)) {
+      this.d.log(`#${job.id}: conversation ${sessionId} was never saved; starting it`)
+      if (job.fork) sessionId = randomUUID()
+      sessionArgs = ['--session-id', sessionId]
+      isNew = true
+    } else if (sessionId && job.fork) {
       const copy = randomUUID()
       sessionArgs = ['--resume', sessionId, '--fork-session', '--session-id', copy]
       sessionId = copy
@@ -571,7 +584,7 @@ export class Runner {
       let holders = opts.skipConflictCheck ? [] : this.d.sessionHolders(sessionId)
       let tookFrom: string | null = null
       let stuck = false
-      if (canTakeOver(job, holders)) {
+      if (canTakeOver(job, holders) || this.fromVsCode(holders)) {
         tookFrom = whereLabel(holders[0]!)
         tookEntry = holders[0]!.entrypoint ?? 'claude'
         const left = await this.release(sessionId, holders)
@@ -767,6 +780,12 @@ export class Runner {
       const screen = await this.d.tmux.capture(rt.window, 40)
       if (trustDialog(screen).present) return this.handleTrust(job, rt, screen)
       if (addDirDialog(screen).present) return this.handleAddDir(job, rt, screen)
+      if (themeDialog(screen)) {
+        await this.d.tmux.sendKeys(rt.window, 'Enter')
+        rt.launchedAt = now
+        this.d.log(`#${job.id}: Claude Code asked for a theme; kept the one selected`)
+        return
+      }
       if (now - rt.launchedAt > config.timeouts.launchSec * 1000) {
         this.hold(job, `Claude didn't start within ${config.timeouts.launchSec}s`, tail(screen, 15))
       }

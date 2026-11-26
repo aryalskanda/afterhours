@@ -14,9 +14,9 @@ import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import type { JobSpec } from '../src/shared/types'
 import type { Procs } from '../src/daemon/procs'
 import { FakeTmux } from './fakes'
-import { ADD_DIR_SCREEN, PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
+import { ADD_DIR_SCREEN, PLAN_SCREEN, THEME_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
 
-function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean; procs?: Procs; slowSnapshot?: Promise<void> } = {}) {
+function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boolean; procs?: Procs; slowSnapshot?: Promise<void>; saved?: (sessionId: string) => boolean } = {}) {
   let now = Date.UTC(2026, 9, 14, 14, 0)
   const project = mkdtempSync(join(tmpdir(), 'cq-run-'))
   const gitCalls: string[] = []
@@ -88,6 +88,7 @@ function setup(timeouts: Partial<Config['timeouts']> = {}, opts: { gitRepo?: boo
     activity: a => activity.push(a),
     uploadsDir: '/tmp/cqhome/uploads',
     procs: opts.procs,
+    ...(opts.saved ? { conversationExists: opts.saved } : {}),
   })
   const spec = (over: Partial<JobSpec> = {}): JobSpec => ({
     projectDir: project,
@@ -938,6 +939,7 @@ describe('problems', () => {
 
   test('waits while the conversation is open elsewhere; fork continues in a copy', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     const first = await startJob(h, { plan: false })
     await finishTurn(h, first)
     h.setHolders([{ pid: 999, sessionId: first.sid, entrypoint: 'claude-vscode', status: 'idle' }])
@@ -952,6 +954,7 @@ describe('problems', () => {
 
   test('a job waiting on a busy conversation starts by itself once it is closed', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     const first = await startJob(h, { plan: false })
     await finishTurn(h, first)
     h.setHolders([{ pid: 999, sessionId: first.sid, entrypoint: 'claude-vscode', status: 'idle' }])
@@ -1274,6 +1277,7 @@ describe('killing a task', () => {
 
   test('waiting for a chat open in VS Code: it ends, and never starts by itself afterwards', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     const sid = 'bbbbbbbb-1111-2222-3333-444444444444'
     h.setHolders([{ pid: 77, sessionId: sid, entrypoint: 'claude-vscode', status: 'idle' }])
     const job = h.runner.enqueue(h.spec({ plan: false, sessionPolicy: 'session', sessionId: sid }))
@@ -1353,6 +1357,7 @@ describe('taking a chat over from VS Code', () => {
 
   test('a busy chat is taken over once its turn ends', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     h.setHolders([vscode(h, { status: 'busy' })])
     const job = handOff(h)
     await h.runner.tick()
@@ -1368,6 +1373,7 @@ describe('taking a chat over from VS Code', () => {
 
   test('a chat you opened again after asking is not closed: you are asked again', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     const job = handOff(h)
     h.advance(60_000)
     h.setHolders([vscode(h, { startedAt: h.now() })])
@@ -1396,6 +1402,7 @@ describe('taking a chat over from VS Code', () => {
 
   test('without take it waits; take closes it there and continues', async () => {
     const h = setup()
+    h.setConfig({ takeOverVsCode: false }) // the asking flow
     expect(await h.runner.takeover()).toBe('Nothing is waiting on a conversation that is open somewhere else.')
     h.setHolders([vscode(h, { status: 'busy' })])
     const job = handOff(h, false)
@@ -1933,5 +1940,65 @@ describe('giving a chat back to VS Code', () => {
     await h.runner.kill(j.id)
     expect(h.reopened).toEqual([])
     expect(h.logs.some(l => l.includes(`not opening chat ${sid} in VS Code again (6 MB`))).toBe(true)
+  })
+})
+
+describe('a conversation that was never saved', () => {
+  test('nothing to resume: it starts as a new conversation with that id (tasks #303-#305)', async () => {
+    const sid = '29a8aa25-4953-4507-84c2-b76e91b9fa95'
+    const h = setup({}, { saved: id => id !== sid })
+    const job = h.runner.enqueue(h.spec({ plan: false, sessionPolicy: 'session', sessionId: sid }))
+    await h.runner.tick()
+    const argv = h.runner.launchSpec(job.id)!.argv
+    expect(argv).not.toContain('--resume')
+    expect(argv.slice(1, 3)).toEqual(['--session-id', sid])
+    expect(h.logs.some(l => l.includes(`conversation ${sid} was never saved; starting it`))).toBe(true)
+  })
+
+  test('a saved one is resumed as before', async () => {
+    const sid = 'eeeeeeee-1111-2222-3333-444444444444'
+    const h = setup({}, { saved: () => true })
+    const job = h.runner.enqueue(h.spec({ plan: false, sessionPolicy: 'session', sessionId: sid }))
+    await h.runner.tick()
+    expect(h.runner.launchSpec(job.id)!.argv.slice(1, 3)).toEqual(['--resume', sid])
+  })
+
+  test("Claude Code's theme picker before it starts: Enter keeps the selected theme", async () => {
+    const h = setup()
+    const job = h.runner.enqueue(h.spec({ plan: false }))
+    await h.runner.tick()
+    const w = h.tmux.windows.get(windowName(job.id))!
+    w.screen = THEME_SCREEN
+    await h.runner.tick()
+    expect(w.input).toContain('Enter')
+    expect(h.logs.some(l => l.includes('asked for a theme'))).toBe(true)
+  })
+})
+
+describe('a chat open in VS Code', () => {
+  for (const status of ['idle', 'busy']) {
+    test(`is closed there and continued here, without asking (${status})`, async () => {
+      const h = setup()
+      const first = await startJob(h, { plan: false })
+      await finishTurn(h, first)
+      h.setHolders([{ pid: 999, sessionId: first.sid, entrypoint: 'claude-vscode', status }])
+      const second = h.runner.enqueue(h.spec({ plan: false, prompt: 'next' }))
+      await h.runner.tick()
+      expect(h.notices.some(n => n.type === 'conflict')).toBe(false)
+      expect(lastNotice(h, 'took_over').where).toBe('VS Code')
+      expect(h.killed).toContain(999)
+      expect(h.store.getJob(second.id)).toMatchObject({ status: 'running', tookFrom: 'claude-vscode' })
+      expect(h.runner.launchSpec(second.id)!.argv.slice(1, 3)).toEqual(['--resume', first.sid])
+    })
+  }
+
+  test('a chat open in a terminal still asks', async () => {
+    const h = setup()
+    const first = await startJob(h, { plan: false })
+    await finishTurn(h, first)
+    h.setHolders([{ pid: 998, sessionId: first.sid, entrypoint: 'cli', status: 'idle' }])
+    const second = h.runner.enqueue(h.spec({ plan: false, prompt: 'next' }))
+    await h.runner.tick()
+    expect(h.store.getJob(second.id)).toMatchObject({ status: 'held', holdReason: 'conflict' })
   })
 })
