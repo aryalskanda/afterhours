@@ -37,6 +37,7 @@ import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../chats'
 import { claudeInfo } from '../claude-info'
 import { claudeVersion, health } from '../health'
+import type { Playbooks, PlaybookStep } from '../playbooks'
 import { taskLogLines } from '../tasklog'
 import { offeredModels } from '../models'
 import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
@@ -102,6 +103,7 @@ export const FEATURES = [
   'finish',
   'job.lock',
   'digest',
+  'playbooks',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -122,6 +124,10 @@ const NEEDS: Record<RequestType, Role> = {
   'settings.digest': 'owner',
   digest: 'viewer',
   log: 'operator',
+  playbooks: 'viewer',
+  'playbook.save': 'operator',
+  'playbook.remove': 'operator',
+  'playbook.run': 'operator',
   'pr.merge': 'operator',
   queue: 'operator',
   answer: 'operator',
@@ -179,6 +185,9 @@ const CHANGES = new Set<RequestType>([
   'settings.remote',
   'settings.digest',
   'pr.merge',
+  'playbook.save',
+  'playbook.remove',
+  'playbook.run',
   'devices.remove',
   'devices.rename',
   'command',
@@ -233,6 +242,8 @@ export interface RouterDeps {
   /** Quitting apps and sleeping the Mac; null on other systems. */
   mac?: PowerControl | null
   /** Switching the Claude account (owners only). */
+  /** Prompts saved under a name and queued together. */
+  playbooks?: Playbooks
   /** The daily digest, built now, and merging the pull requests it lists. */
   digest?: {
     build(): Promise<Digest>
@@ -325,6 +336,11 @@ function auditDetail(r: Request): string | null {
       return `${r.n} at once`
     case 'settings.digest':
       return r.at ?? 'off'
+    case 'playbook.save':
+      return `${r.name} (${r.steps.length} step${r.steps.length === 1 ? '' : 's'})`
+    case 'playbook.remove':
+    case 'playbook.run':
+      return r.playbook
     case 'pr.merge':
       return r.url.replace(/^https:\/\/github\.com\//, '')
     case 'settings.remote':
@@ -632,6 +648,26 @@ export class Router {
         this.d.saveConfig({ ...config, digest: { ...config.digest, at: r.at } })
         this.d.log(`${name} set the digest ${r.at ? `for ${r.at} every day` : 'off'}`)
         return { ok: true, text: r.at ? `The digest comes every day at ${r.at}.` : 'No daily digest.', data: { at: r.at } }
+      }
+      case 'playbooks':
+        return { ok: true, data: { playbooks: this.d.playbooks?.list() ?? [] } }
+      case 'playbook.save': {
+        if (!this.d.playbooks) return { ok: false, code: 'invalid', error: 'This machine has no playbooks.' }
+        // Each step must be one this device may queue (its folder, its mode).
+        for (const [i, s] of r.steps.entries()) {
+          const why = this.guard(this.stepSpec(s, config), session.role)
+          if (why) return { ok: false, code: 'policy', error: `Step ${i + 1}: ${why}` }
+        }
+        const saved = this.d.playbooks.save({ id: r.playbook, name: r.name, steps: r.steps.map(s => ({ ...s, folder: resolve(expandHome(s.folder)) })) })
+        return saved.ok ? { ok: true, text: `Saved ${saved.playbook.name}.`, data: saved.playbook } : { ok: false, code: 'invalid', error: saved.error }
+      }
+      case 'playbook.remove':
+        if (!this.d.playbooks?.remove(r.playbook)) return { ok: false, code: 'gone', error: 'No such playbook.' }
+        return { ok: true, text: 'Removed.' }
+      case 'playbook.run': {
+        if (!this.d.playbooks) return { ok: false, code: 'invalid', error: 'This machine has no playbooks.' }
+        const ran = this.d.playbooks.run(r.playbook, { source: 'remote', allowed: s => this.guard(this.stepSpec(s, config), session.role) })
+        return ran.ok ? { ok: true, text: ran.text, data: { jobs: ran.jobs.map(j => j.id) } } : { ok: false, code: 'policy', error: ran.error }
       }
       case 'log': {
         if (!store.getJob(r.job)) return { ok: false, code: 'gone', error: `No task #${r.job}.` }
@@ -1160,6 +1196,22 @@ export class Router {
       .filter(p => isAllowed(p.path, roots) && isDir(p.path))
       .sort((a, b) => b.lastAt - a.lastAt)
       .slice(0, limit)
+  }
+
+  /** A playbook step as the task it queues, for the device's rules. */
+  private stepSpec(s: PlaybookStep, config: Config): JobSpec {
+    return {
+      projectDir: resolve(expandHome(s.folder)),
+      prompt: s.prompt,
+      plan: s.plan,
+      review: s.review,
+      execMode: s.mode,
+      model: s.model,
+      effort: s.effort,
+      sessionPolicy: s.fresh ? 'new' : 'continue',
+      isolate: s.isolate ?? config.isolate,
+      source: 'remote',
+    }
   }
 
   private queue(r: Extract<Request, { type: 'queue' }>, config: Config, role: Role): Outcome {

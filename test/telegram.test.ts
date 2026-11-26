@@ -12,6 +12,7 @@ import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type MenuButton, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
 import { COMMANDS, TelegramBridge, type TelegramOptions } from '../src/telegram/bot'
+import { Playbooks } from '../src/daemon/playbooks'
 import type { Digest } from '@afterhours/protocol'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
@@ -118,7 +119,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string; playbooks?: boolean } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -185,6 +186,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
     account: o.account,
     digest: o.digest,
     logPath: o.logPath,
+    playbooks: o.playbooks ? new Playbooks({ store, runner, now: () => now, log: () => {}, isolate: () => false }) : undefined,
     git: o.git,
     config: () => config,
     saveConfig: c => {
@@ -236,7 +238,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest']; logPath?: string; playbooks?: boolean } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1840,6 +1842,38 @@ describe('what the bot does without the app', () => {
     expect(log).toContain(`#${job.id}: stalled: no events for 11m`)
     expect(log).not.toContain('#1000')
     expect(log).not.toContain('2026-10-14T')
+  })
+
+  test('playbooks: written as tasks are, one step per line; shown, run (two taps) as a chain, deleted', async () => {
+    const h = await paired({ playbooks: true })
+    // A line it can't read: named, nothing saved.
+    await h.say('/playbook Release\nalpha sonnet high: Run the tests\nnowhere opus: Fix it')
+    expect(h.api.last().html).toContain('Line 2: I don’t know'.replace('’', "'"))
+    expect(h.api.last().html).toContain('Nothing was saved.')
+    await h.say('/playbook Release\nalpha sonnet high auto: Run the tests and fix what fails\nbeta haiku low: Update the changelog\nopus max plan: Write the release notes')
+    const shown = h.api.last()
+    expect(shown.html).toContain('<b>Playbook Release</b>')
+    expect(shown.html).toContain('1. <b>alpha</b> · Sonnet High · no plan')
+    expect(shown.html).toContain('2. <b>beta</b> · Haiku Low · plan')
+    expect(shown.html).toContain('3. <b>beta</b> · Opus Max · plan')
+    await h.say('/playbooks')
+    expect(h.api.last().html).toContain('<b>Release</b> · 3 steps · alpha, beta')
+    await h.say('/playbook release')
+    const view = h.api.last().id
+    await press(h, view, 'Run all 3')
+    expect(h.store.queued()).toEqual([])
+    await press(h, view, 'Yes, queue 3')
+    const q = h.store.queued()
+    expect(q.map(j => [j.model, j.effort, j.afterJob])).toEqual([
+      ['sonnet', 'high', null],
+      ['haiku', 'low', q[0]!.id],
+      ['opus', 'max', q[1]!.id],
+    ])
+    expect(h.api.last().html).toContain(`Playbook Release queued: 3 steps, #${q[0]!.id} → #${q[1]!.id} → #${q[2]!.id}.`)
+    await press(h, view, 'Delete')
+    await press(h, view, 'Yes, delete it')
+    await h.say('/playbooks')
+    expect(h.api.last().html).toContain('None yet.')
   })
 
   test('every command in the menu is one the bot knows', async () => {

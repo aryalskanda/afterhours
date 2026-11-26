@@ -20,6 +20,7 @@ import { Store } from '../src/daemon/store'
 import type { RouterDeps } from '../src/daemon/remote/router'
 import type { SwitchState } from '../src/daemon/account'
 import { git } from '../src/daemon/system'
+import { Playbooks } from '../src/daemon/playbooks'
 import { codeRoots, DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { FakePower, FakeTmux } from './fakes'
 
@@ -69,7 +70,7 @@ const chats: ChatSource = {
   },
 }
 
-function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; account?: RouterDeps['account']; digest?: RouterDeps['digest'] } = {}) {
+function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; account?: RouterDeps['account']; digest?: RouterDeps['digest']; playbooks?: boolean } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -113,6 +114,7 @@ function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; accou
   remote = new Remote({
     account: o.account,
     digest: o.digest,
+    playbooks: o.playbooks ? new Playbooks({ store, runner, now: Date.now, log: () => {}, isolate: () => false }) : undefined,
     mac,
     store,
     runner,
@@ -440,6 +442,30 @@ describe('remote access', () => {
     expect(r).toMatchObject({ ok: true, data: { job: j.id, screen: null } })
     expect((r.data as { lines: string[] }).lines).toEqual([`2026-11-26T10:00:00.000Z #${j.id}: stalled: no events for 11m`])
     expect(await owner.conn.request({ type: 'log', job: 9999 })).toMatchObject({ ok: false, code: 'gone' })
+  })
+
+  test('playbooks: anyone sees them; an operator saves and runs them as a chain, within the machine’s folders; audited', async () => {
+    const m = machine({ playbooks: true })
+    const owner = await pairedApp(m)
+    expect(owner.snapshots[0]!.features).toContain('playbooks')
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'TV' })
+    const operator = await pairedApp(m, { role: 'operator', name: 'Tablet' })
+    const step = (folder: string, prompt: string, model: string) => ({ folder, prompt, plan: false, review: false, mode: 'auto' as const, model, effort: 'low' as const })
+    const steps = [step(m.project, 'Run the tests', 'sonnet'), step(m.project, 'Update the changelog', 'haiku')]
+    expect(await viewer.conn.request({ type: 'playbook.save', name: 'Release', steps })).toMatchObject({ ok: false, code: 'forbidden' })
+    // A folder outside the ones apps may use: refused, by step.
+    expect(await operator.conn.request({ type: 'playbook.save', name: 'Out', steps: [steps[0]!, step(m.outside, 'x', 'opus')] })).toMatchObject({ ok: false, code: 'policy', error: expect.stringMatching(/^Step 2: /) })
+    expect(await operator.conn.request({ type: 'playbook.save', name: 'Release', steps })).toMatchObject({ ok: true, data: { id: 'release' } })
+    expect(await viewer.conn.request({ type: 'playbooks' })).toMatchObject({ ok: true, data: { playbooks: [{ id: 'release', name: 'Release' }] } })
+    expect(await viewer.conn.request({ type: 'playbook.run', playbook: 'release' })).toMatchObject({ ok: false, code: 'forbidden' })
+    const ran = await operator.conn.request({ type: 'playbook.run', playbook: 'release' })
+    expect(ran).toMatchObject({ ok: true })
+    const [a, b] = (ran.data as { jobs: number[] }).jobs
+    expect(m.store.getJob(b!)).toMatchObject({ afterJob: a, model: 'haiku' })
+    expect(await operator.conn.request({ type: 'playbook.remove', playbook: 'release' })).toMatchObject({ ok: true })
+    expect(await operator.conn.request({ type: 'playbook.run', playbook: 'release' })).toMatchObject({ ok: false })
+    const audit = (await owner.conn.request({ type: 'audit', limit: 30 })).data as { entries: { action: string; detail: string | null; ok: boolean }[] }
+    expect(audit.entries.filter(e => e.action.startsWith('playbook') && e.ok).map(e => `${e.action} ${e.detail}`)).toEqual(expect.arrayContaining(['playbook.save Release (2 steps)', 'playbook.run release', 'playbook.remove release']))
   })
 
   test('retry from an app: a failed task runs again', async () => {

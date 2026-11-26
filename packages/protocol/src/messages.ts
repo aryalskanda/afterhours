@@ -302,6 +302,27 @@ export const Digest = z.object({
 })
 export type Digest = z.infer<typeof Digest>
 
+/** One step of a playbook: its own folder, prompt, model and effort. */
+export const PlaybookStep = z.object({
+  folder: z.string().max(4096),
+  prompt: z.string().min(1).max(20_000),
+  plan: z.boolean(),
+  review: z.boolean(),
+  mode: ExecMode,
+  model: z.string().max(80),
+  effort: Effort,
+  workModel: z.string().max(80).nullable().optional(),
+  workEffort: Effort.nullable().optional(),
+  isolate: z.boolean().optional(),
+  /** A new conversation instead of continuing the folder's last one. */
+  fresh: z.boolean().optional(),
+})
+export type PlaybookStep = z.infer<typeof PlaybookStep>
+
+/** Prompts saved under a name and queued together, each after the one before has finished well. */
+export const Playbook = z.object({ id: z.string(), name: z.string(), steps: z.array(PlaybookStep), updatedAt: z.number() })
+export type Playbook = z.infer<typeof Playbook>
+
 /** The answer to `log`: `screen` is null where screens aren't allowed. */
 export const TaskLog = z.object({ job: z.number().int(), lines: z.array(z.string()), screen: z.array(z.string()).nullable() })
 export type TaskLog = z.infer<typeof TaskLog>
@@ -531,6 +552,13 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('settings.digest'), at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable() }),
   /** A task's log: the engine's lines about it, and (with screens allowed) its terminal's last lines (data: TaskLog). */
   withId({ type: z.literal('log'), job: z.number().int() }),
+  /** The machine's playbooks (data: { playbooks: Playbook[] }). */
+  withId({ type: z.literal('playbooks') }),
+  /** Creates a playbook, or replaces the one with this id (`playbook`) or name. */
+  withId({ type: z.literal('playbook.save'), playbook: z.string().max(64).optional(), name: z.string().min(1).max(60), steps: z.array(PlaybookStep).min(1).max(20) }),
+  withId({ type: z.literal('playbook.remove'), playbook: z.string().max(64) }),
+  /** Queues every step at once, each after the one before (data: { jobs: number[] }). */
+  withId({ type: z.literal('playbook.run'), playbook: z.string().max(64) }),
   /** Today's digest, built now (data: Digest). */
   withId({ type: z.literal('digest') }),
   /** Merges an open pull request a task opened (one the digest lists). */
