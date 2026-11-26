@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { planFromScreen } from '../src/daemon/runner'
-import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, trustDialog } from '../src/daemon/screens'
-import { ADD_DIR_SCREEN, PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES } from './fixtures'
+import { addDirDialog, choosePlanOption, exitSelected, feedbackOption, planDialog, themeDialog, trustDialog } from '../src/daemon/screens'
+import { ADD_DIR_SCREEN, PLAN_SCREEN, TRUST_SCREEN, TRUST_SCREEN_YES, THEME_SCREEN } from './fixtures'
 
 describe('trust dialog', () => {
   test('detected with focus on "No, exit"', () => {
@@ -67,5 +67,13 @@ describe('plan dialog', () => {
 
   test('not on the trust screen', () => {
     expect(planDialog(TRUST_SCREEN).present).toBe(false)
+  })
+})
+
+describe('themeDialog', () => {
+  test("Claude Code's theme picker, and not other screens", () => {
+    expect(themeDialog(THEME_SCREEN)).toBe(true)
+    expect(themeDialog(TRUST_SCREEN)).toBe(false)
+    expect(themeDialog('Light mode is nice')).toBe(false)
   })
 })

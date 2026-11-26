@@ -123,6 +123,8 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
   let config: Config = {
     ...DEFAULT_CONFIG,
+    // Chats open in VS Code ask before they're taken over here (the flow these tests follow).
+    takeOverVsCode: false,
     telegram: { enabled: true, token: 'x', ownerId: null, ownerName: null },
     folders: { roots: [root], maxDepth: 6 },
     defaults: { ...DEFAULT_CONFIG.defaults },

@@ -30,6 +30,14 @@ export function trustDialog(screen: string): { present: boolean; yesFocused: boo
 }
 
 /**
+ * Claude Code's theme picker ("To change this later, run /theme"), which it can show before a
+ * session starts (after an account switch, with no theme saved). Enter keeps the one selected.
+ */
+export function themeDialog(screen: string): boolean {
+  return /run \/theme/.test(screen) && /Dark mode/.test(screen) && /Light mode/.test(screen)
+}
+
+/**
  * "Adding a new directory: <dir> … Is this a directory you created or one you trust?", shown for
  * --add-dir (and a folder Claude is asked to add) since Claude Code 2.1.3xx. Focus starts on
  * "No, exit", so Enter there ends Claude.

@@ -101,6 +101,8 @@ export interface Config {
   autoContinueChats: boolean
   /** When a task that took a chat from VS Code ends, open the chat there again so VS Code is up to date. */
   reopenInVsCode: boolean
+  /** A task whose chat is open in VS Code closes it there and goes on, without asking (a terminal still asks). */
+  takeOverVsCode: boolean
   /**
    * How many tasks may run at once (1 to 3). Another starts beside the running ones only when it
    * can't collide with them: another folder, its own branch, or a task that only answers.
@@ -188,6 +190,7 @@ export const DEFAULT_CONFIG: Config = {
   watchSessions: true,
   autoContinueChats: true,
   reopenInVsCode: true,
+  takeOverVsCode: true,
   parallel: 1,
   keepAwake: true,
   keepAwakeLidClosed: false,

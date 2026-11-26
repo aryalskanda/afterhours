@@ -159,6 +159,7 @@ export async function runDaemon(): Promise<void> {
     uploadsDir: paths.uploads,
     procs: systemProcs,
     models: () => offeredModels(getConfig()),
+    conversationExists: sessionId => findConversation(sessionId) !== null,
   })
   // Asks Claude Code for its models again (set below, once it's watching).
   let refreshModels = () => {}

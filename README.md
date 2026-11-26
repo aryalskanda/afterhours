@@ -388,6 +388,7 @@ The words before the first colon count as options only if every one of them is a
 | `watchSessions` | `true` | Message you when one of your other chats (VS Code, a terminal) stops on a usage limit |
 | `autoContinueChats` | `true` | And continue it by itself at the reset: inside the open chat, else through the queue |
 | `reopenInVsCode` | `true` | When a task that took a chat from VS Code ends, open the chat there again |
+| `takeOverVsCode` | `true` | A task whose chat is open in VS Code closes it there and carries on, without asking. A chat open in a terminal still asks |
 | `telegram` | set by `cq telegram` | The bot token and your paired account |
 | `aliases`, `trustedDirs` | | Project names for text commands, and folders whose trust prompt Afterhours may accept |
 | `port`, `claudePath`, `tmuxPath` | 7787, from `PATH` | |
