@@ -7,6 +7,7 @@ import { join, resolve, sep } from 'node:path'
 const settingsFile = (id: number) => join('/tmp/cqhome/jobs', `${id}.settings.json`)
 import type { Notice } from '../src/daemon/notify'
 import { canTakeOver, Runner, stallLines, windowName, type ToolActivity } from '../src/daemon/runner'
+import { Playbooks } from '../src/daemon/playbooks'
 import { sessionSettings } from '../src/daemon/launch'
 import type { LiveSession } from '../src/daemon/sessions'
 import { Store } from '../src/daemon/store'
@@ -2084,5 +2085,31 @@ describe('stalled', () => {
   test('the last lines: no blanks or box rules, the newest kept', () => {
     expect(stallLines('╭────╮\n│ > hi │\n╰────╯\n\n  a\n  b  \n────────')).toEqual(['> hi', 'a', 'b'])
     expect(stallLines(Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n'), 3)).toEqual(['line 27', 'line 28', 'line 29'])
+  })
+})
+
+describe('a playbook in the queue', () => {
+  test('each step starts only after the one before has finished, even with tasks side by side', async () => {
+    const h = setup()
+    h.setConfig({ parallel: 3 })
+    const other = join(h.project, 'web')
+    mkdirSync(other)
+    const pb = new Playbooks({ store: h.store, runner: h.runner, now: h.now, log: () => {}, isolate: () => false })
+    const base = { plan: false, review: false, mode: 'auto' as const, effort: 'low' as const }
+    pb.save({ name: 'Two', steps: [{ ...base, folder: h.project, prompt: 'First', model: 'sonnet' }, { ...base, folder: other, prompt: 'Second', model: 'haiku' }] })
+    const r = pb.run('two', { source: 'cli' })
+    if (!r.ok) throw new Error(r.error)
+    const [a, b] = r.jobs
+    await h.runner.tick()
+    await h.runner.tick()
+    expect(h.store.getJob(a!.id)!.status).toBe('running')
+    // Another folder, room to run beside it: it still waits for step 1.
+    expect(h.store.getJob(b!.id)!.status).toBe('queued')
+    const sid = h.store.getJob(a!.id)!.sessionId!
+    await h.runner.onHook('SessionStart', a!.id, { session_id: sid, transcript_path: '/tmp/t.jsonl' })
+    await h.runner.onHook('UserPromptSubmit', a!.id, { session_id: sid, permission_mode: 'auto' })
+    await finishTurn(h, { id: a!.id, sid, window: h.tmux.windows.get(windowName(a!.id))! })
+    await h.runner.tick()
+    expect(h.store.getJob(b!.id)).toMatchObject({ status: 'running', model: 'haiku', projectDir: other })
   })
 })

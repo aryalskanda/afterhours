@@ -14,6 +14,7 @@ import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
 import { parseClockTime } from '../daemon/digest'
 import { taskLogLines } from '../daemon/tasklog'
+import { parseSteps, type Playbook, type Playbooks } from '../daemon/playbooks'
 import type { Digest, DigestPr } from '@afterhours/protocol'
 import { settleBranch, stackBelow, type BranchGit } from '../daemon/branches'
 import type { AuthStatus, SwitchState } from '../daemon/account'
@@ -41,6 +42,8 @@ export interface TelegramOptions {
   }
   /** cqd.log, for a task's View log. */
   logPath?: string
+  /** Prompts saved under a name and queued together (/playbooks, /playbook). */
+  playbooks?: Playbooks
   /** The daily digest: built on request (/today), and its pull requests merged from a button. */
   digest?: {
     build(): Promise<Digest>
@@ -123,6 +126,7 @@ export const COMMANDS = [
   { command: 'settings', description: 'Notifications, tasks at once, other chats' },
   { command: 'account', description: 'The Claude account on this computer, and switching it' },
   { command: 'today', description: 'Today: done, failed, waiting on you, open PRs, usage left' },
+  { command: 'playbooks', description: 'Saved lists of prompts, queued one after another' },
   { command: 'kill', description: 'End the running task now, and what it started' },
   { command: 'finish', description: 'End a task that has answered but waits on background commands' },
   { command: 'peek', description: "The running task's screen" },
@@ -833,6 +837,38 @@ export class TelegramBridge {
     await this.send(chat, { html: ui.helpHtml(this.word) }, this.keys())
   }
 
+  /** A folder by its name ("web"), when exactly one has it. */
+  private async folderNamed(name: string): Promise<string | null> {
+    const hits = (await this.o.folders.search(name, [], 10)).filter(h => h.name.toLowerCase() === name.toLowerCase())
+    return hits.length === 1 ? hits[0]!.path : null
+  }
+
+  private async showPlaybooks(chat: number, at?: number): Promise<void> {
+    if (!this.o.playbooks) return void (await this.sendText(chat, 'Playbooks aren’t available here.'))
+    const view = ui.playbooksView(this.o.playbooks.list(), this.uiContext().label)
+    if (at) await this.edit(chat, at, view)
+    else await this.send(chat, view)
+  }
+
+  /** /playbook <name> with a step per line saves it; /playbook <name> alone shows it. */
+  private async onPlaybook(chat: number, text: string): Promise<void> {
+    const pbs = this.o.playbooks
+    if (!pbs) return void (await this.sendText(chat, 'Playbooks aren’t available here.'))
+    const [first, ...lines] = text.split('\n')
+    const name = first!.replace(/^\/playbook(?:@\S+)?/i, '').trim()
+    if (!name) return this.showPlaybooks(chat)
+    if (lines.every(l => !l.trim())) {
+      const pb = pbs.get(name)
+      if (!pb) return void (await this.sendText(chat, `No playbook called ${name}. /playbooks lists them.`))
+      return void (await this.send(chat, ui.playbookView(pb, this.uiContext().label)))
+    }
+    const parsed = await parseSteps(lines, { ...this.o.commandContext(), source: 'remote' }, n => this.folderNamed(n))
+    if ('error' in parsed) return void (await this.sendText(chat, `${parsed.error}\nNothing was saved.`))
+    const saved = pbs.save({ name, steps: parsed.steps })
+    if (!saved.ok) return void (await this.sendText(chat, saved.error))
+    await this.send(chat, ui.playbookView(saved.playbook, this.uiContext().label))
+  }
+
   /** The Today digest now (/today). */
   private async showDigest(chat: number): Promise<void> {
     if (!this.o.digest) return void (await this.sendText(chat, 'The digest isn’t available here.'))
@@ -862,6 +898,10 @@ export class TelegramBridge {
         return this.showAccount(chat)
       case 'today':
         return this.showDigest(chat)
+      case 'playbooks':
+        return this.showPlaybooks(chat)
+      case 'playbook':
+        return this.onPlaybook(chat, text)
       case 'start':
       case 'help':
         return this.showHelp(chat)
@@ -1634,6 +1674,9 @@ export class TelegramBridge {
         case 'dg':
           toast = await this.onDigestButton(chat, q.message, parts[0]!, parts[1]!)
           break
+        case 'pb':
+          toast = await this.onPlaybookButton(chat, q.message, parts[0]!, parts[1])
+          break
       }
     } catch (err) {
       toast = 'Something went wrong.'
@@ -1642,6 +1685,32 @@ export class TelegramBridge {
       this.tapping = null
     }
     await this.o.api.answerCallbackQuery(q.id, toast ? toast.slice(0, 190) : undefined).catch(() => {})
+  }
+
+  /** A playbook's Run (tapped twice: it queues several tasks), Show, Delete (twice), and the list. */
+  private async onPlaybookButton(chat: number, message: TgMessage | undefined, op: string, id: string | undefined): Promise<string | undefined> {
+    const pbs = this.o.playbooks
+    if (!pbs) return 'Not here.'
+    if (op === 'l') return void (await this.showPlaybooks(chat, message?.message_id))
+    const pb = id ? pbs.get(id) : null
+    if (!pb) return 'That playbook is gone.'
+    if (op === 's') {
+      await this.send(chat, ui.playbookView(pb, this.uiContext().label))
+      return
+    }
+    if (op === 'r') {
+      if (!(await this.secondTap(chat, message, `Yes, queue ${pb.steps.length}`))) return `Tap again to queue all ${pb.steps.length} steps of ${pb.name}, one after another.`
+      const ran = pbs.run(pb.id, { source: 'telegram' })
+      await this.sendText(chat, ran.ok ? ran.text : ran.error)
+      return ran.ok ? 'Queued.' : ran.error
+    }
+    if (op === 'd') {
+      if (!(await this.secondTap(chat, message, 'Yes, delete it'))) return `Tap again to delete ${pb.name}.`
+      pbs.remove(pb.id)
+      await this.showPlaybooks(chat, message?.message_id)
+      return 'Deleted.'
+    }
+    return undefined
   }
 
   /** A digest's Retry (dg:r:<job>) and Merge (dg:m:<n>, the n-th pull request it listed; tapped twice). */

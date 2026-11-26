@@ -26,6 +26,7 @@ import { claudeVersion } from './health'
 import { offeredModels, watchModels } from './models'
 import { DigestClock, DigestSource } from './digest'
 import { mergePr, systemGh } from './prs'
+import { Playbooks } from './playbooks'
 import { projectLabel } from './format'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
@@ -268,6 +269,9 @@ export async function runDaemon(): Promise<void> {
   })
   folders.refreshIfStale()
 
+  // Prompts saved under a name, queued together, each after the one before.
+  const playbooks = new Playbooks({ store, runner, now: Date.now, log, isolate: () => config.isolate })
+
   // The daily "Today" digest: built on request, and sent once each evening by the clock below.
   const digests = new DigestSource({ store, runner, gh: () => systemGh(), label: dir => projectLabel(dir, config.aliases), now: Date.now })
   const digest = {
@@ -290,6 +294,7 @@ export async function runDaemon(): Promise<void> {
 
   const remote = new Remote({
     digest,
+    playbooks,
     account: {
       current: () => accounts.current,
       status: () => authStatus(claudePath),
@@ -342,6 +347,7 @@ export async function runDaemon(): Promise<void> {
     telegram = new TelegramBridge({
       api: new TelegramApi(token),
       digest,
+      playbooks,
       logPath: paths.log,
       store,
       runner,

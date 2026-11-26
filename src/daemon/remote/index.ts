@@ -76,6 +76,7 @@ export interface RemoteDeps {
   account?: RouterDeps['account']
   /** The daily digest, and merging its pull requests. */
   digest?: RouterDeps['digest']
+  playbooks?: RouterDeps['playbooks']
 }
 
 const RELAY_MOVE_MS = 3000
@@ -122,6 +123,7 @@ export class Remote {
       mac: d.mac ?? null,
       account: d.account,
       digest: d.digest,
+      playbooks: d.playbooks,
       runner: d.runner,
       store: d.store,
       chats: d.chats,

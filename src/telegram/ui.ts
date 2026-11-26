@@ -8,6 +8,7 @@ import { duration } from '../daemon/format'
 import { formatClock, modelLabel, windowLabel } from '../daemon/limits'
 import { clockLabel, countsLine, limitsLine } from '../daemon/digest'
 import type { Digest } from '@afterhours/protocol'
+import type { Playbook } from '../daemon/playbooks'
 import type { PowerStatus } from '../daemon/power'
 import { machineWord } from '../platform/power'
 import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
@@ -984,6 +985,35 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
           (n.lines.length ? `\n<pre>${esc(clip(n.lines.join('\n'), 1500))}</pre>` : '\n<i>Its terminal shows nothing.</i>'),
         keyboard: [[btn('Retry', `dg:r:${n.job.id}`), btn('Kill', `j:${n.job.id}:kill`), btn('View log', `j:${n.job.id}:log`)]],
       }
+  }
+}
+
+// --- Playbooks ----------------------------------------------------------------------------------
+
+const PLAYBOOK_HOWTO =
+  '<i>New one, or replace one: /playbook &lt;name&gt; with a step per line, as you write a task:</i>\n' +
+  '<code>/playbook Release\nshop sonnet high: Run the tests and fix what fails\nweb haiku low: Update the changelog</code>\n' +
+  '<i>Each step starts after the one before has finished well. A line with no folder uses the one before.</i>'
+
+/** "1. shop · Sonnet High · plan: Run the tests" */
+function stepLine(i: number, s: Playbook['steps'][number], label: (dir: string) => string): string {
+  const how = s.mode === 'plan' ? 'answer only' : s.plan ? (s.review ? 'you approve the plan' : 'plan') : 'no plan'
+  return `${i + 1}. <b>${esc(label(s.folder))}</b> · ${esc(modelLabel(s.model))} ${esc(effortLabel(s.effort))} · ${how}${s.fresh ? ' · new chat' : ''}\n${esc(clip(s.prompt, 160))}`
+}
+
+export function playbooksView(list: Playbook[], label: (dir: string) => string): View {
+  if (list.length === 0) return { html: `<b>Playbooks</b>\nNone yet.\n\n${PLAYBOOK_HOWTO}` }
+  const lines = list.map(p => `<b>${esc(p.name)}</b> · ${p.steps.length} step${p.steps.length === 1 ? '' : 's'} · ${esc([...new Set(p.steps.map(s => label(s.folder)))].join(', '))}`)
+  return {
+    html: [`<b>Playbooks</b>`, ...lines, '', PLAYBOOK_HOWTO].join('\n'),
+    keyboard: list.slice(0, 20).map(p => [btn(`Run ${clip(p.name, 24)}`, `pb:r:${p.id}`), btn('Show', `pb:s:${p.id}`)]),
+  }
+}
+
+export function playbookView(p: Playbook, label: (dir: string) => string): View {
+  return {
+    html: [`<b>Playbook ${esc(p.name)}</b>`, ...p.steps.map((s, i) => stepLine(i, s, label)), '', '<i>Each step starts after the one before has finished well; if one fails, the rest don\'t start.</i>'].join('\n'),
+    keyboard: [[btn(`Run all ${p.steps.length}`, `pb:r:${p.id}`), btn('Delete', `pb:d:${p.id}`)], [btn('All playbooks', 'pb:l')]],
   }
 }
 

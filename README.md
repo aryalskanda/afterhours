@@ -229,9 +229,32 @@ Your phone sees every chat: **Chats** lists them all, and the same conversation 
 - **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
 - **Remote Control**, Anthropic's own feature, lets you type into a live chat from the Claude app: run `/remote-control` in it (or `claude remote-control` in a terminal), or in VS Code turn on *Enable Remote Control for all sessions*. Afterhours works alongside it ([how they differ](#isnt-this-what-the-claude-app-does)).
 
+## Playbooks
+
+A playbook is a list of prompts saved under a name, to queue all at once: say *Release* = run the tests in one project, update the changelog in another, then write the release notes. Each step has its own folder, model, effort and plan setting.
+
+- **Order:** every step is queued at once, and each starts only after the one before it has finished well. If a step fails or is cancelled, the steps after it don't start (you're told which). Other tasks can still run in between.
+- **Conversations:** a step continues its folder's last conversation, so two steps in one folder share it. Put `new` in a step's options for a fresh one.
+- **Folders are checked first:** a folder that's gone, or that the device asking may not use, stops the whole run before anything is queued.
+- **Where they live:** on the machine, so Telegram and every paired device see the same playbooks.
+
+**From Telegram**, write a step per line after `/playbook <name>`, the way you'd write a task (folder, then options, then a colon and the prompt):
+
+```
+/playbook Release
+shop sonnet high auto: Run the tests and fix what fails
+web haiku low: Update the changelog
+opus max plan: Write the release notes
+```
+
+- The folder is an alias, a path, or a folder's name; a line without one uses the step before's folder.
+- Options are the same as for a task: a model (`opus`, `sonnet`, `haiku`…), an effort (`low` … `max`), `plan`, `review`, `auto`, `ask`, `new` for a fresh conversation.
+- A line the bot can't read is named in its reply, and nothing is saved. Sending `/playbook Release` again with new lines replaces it.
+- `/playbooks` lists them with **Run** (tap twice) and **Show**; `/playbook Release` on its own shows that one, with **Run** and **Delete**.
+
 ## The Today digest
 
-Every evening (9 PM unless you change it) the bot sends one short message, and the app shows it as a card:
+Every evening (9 PM unless you change it) the bot sends one short message:
 
 - how many tasks finished, failed and wait on you, and how many open pull requests there are;
 - how much of the 5-hour and weekly limits is left;
@@ -251,7 +274,7 @@ A task that can't start yet keeps its place; a later one that can goes first. Th
 
 ## Stalled tasks
 
-A task that stops moving says so, in Telegram and the app, with **Retry**, **Kill** and **View log**, and the last lines its terminal printed (Claude's errors show there):
+A task that stops moving says so in Telegram, with **Retry**, **Kill** and **View log**, and the last lines its terminal printed (Claude's errors show there):
 
 - **Didn't start:** Claude Code hasn't taken the prompt 90 seconds after it was started (a screen it's waiting on, an MCP server that won't start). The task is paused.
 - **No events:** nothing has happened for 10 minutes while it works, and it isn't waiting on you, a usage limit or its background commands. It keeps going (a long install is quiet too), and the mark clears as soon as it moves.
