@@ -103,6 +103,8 @@ export interface Config {
   reopenInVsCode: boolean
   /** A task whose chat is open in VS Code closes it there and goes on, without asking (a terminal still asks). */
   takeOverVsCode: boolean
+  /** The daily "Today" digest: when it comes ("21:00", local time), or null for never. */
+  digest: { at: string | null }
   /**
    * How many tasks may run at once (1 to 3). Another starts beside the running ones only when it
    * can't collide with them: another folder, its own branch, or a task that only answers.
@@ -191,6 +193,7 @@ export const DEFAULT_CONFIG: Config = {
   autoContinueChats: true,
   reopenInVsCode: true,
   takeOverVsCode: true,
+  digest: { at: '21:00' },
   parallel: 1,
   keepAwake: true,
   keepAwakeLidClosed: false,
@@ -226,6 +229,7 @@ export function loadConfig(): Config {
     models: [...(raw.models ?? DEFAULT_CONFIG.models)],
     remote: { ...DEFAULT_CONFIG.remote, ...raw.remote, allowedRoots: [...(raw.remote?.allowedRoots ?? [])] },
     network: { ...DEFAULT_CONFIG.network, ...raw.network, prefer: [...(raw.network?.prefer ?? [])] },
+    digest: { ...DEFAULT_CONFIG.digest, ...raw.digest },
   }
 }
 

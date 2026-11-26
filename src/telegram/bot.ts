@@ -12,6 +12,8 @@ import { browse, browseLabel, canChoose, startNear, THIS_PC, type BrowseEnv } fr
 import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../daemon/folder-suggest'
 import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
+import { parseClockTime } from '../daemon/digest'
+import type { Digest, DigestPr } from '@afterhours/protocol'
 import { settleBranch, stackBelow, type BranchGit } from '../daemon/branches'
 import type { AuthStatus, SwitchState } from '../daemon/account'
 import type { PowerControl } from '../daemon/power'
@@ -35,6 +37,11 @@ export interface TelegramOptions {
     code(code: string): Promise<SwitchState>
     cancel(): Promise<SwitchState>
     signOut(): Promise<boolean>
+  }
+  /** The daily digest: built on request (/today), and its pull requests merged from a button. */
+  digest?: {
+    build(): Promise<Digest>
+    merge(url: string): Promise<{ ok: boolean; text: string }>
   }
   store: Store
   runner: Runner
@@ -77,6 +84,8 @@ type Pending =
   | { kind: 'rootpath'; mode: 'c' | 'a' }
   /** Switching the Claude account: the code the sign-in page shows. */
   | { kind: 'logincode' }
+  /** Settings → Today digest → Other time: the time you type. */
+  | { kind: 'digesttime' }
   /** An answer you type: to one question of a set (`step`), or to all of them. */
   | { kind: 'answer'; code: string; step?: number }
   | { kind: 'changes'; code: string }
@@ -110,6 +119,7 @@ export const COMMANDS = [
   { command: 'sleep', description: 'Put this computer to sleep' },
   { command: 'settings', description: 'Notifications, tasks at once, other chats' },
   { command: 'account', description: 'The Claude account on this computer, and switching it' },
+  { command: 'today', description: 'Today: done, failed, waiting on you, open PRs, usage left' },
   { command: 'kill', description: 'End the running task now, and what it started' },
   { command: 'finish', description: 'End a task that has answered but waits on background commands' },
   { command: 'peek', description: "The running task's screen" },
@@ -200,6 +210,8 @@ export class TelegramBridge {
   private questions = new Map<string, ui.QuestionState & { messageId: number }>()
   /** Each running task's card (its "started" message), edited as the task goes on. */
   private cards = new Map<number, { messageId: number; card: ui.Card }>()
+  /** The pull requests each digest message listed (by message), for its Merge buttons. */
+  private digests = new Map<number, DigestPr[]>()
   /** The message holding each request's buttons, by code, to tidy up once it's settled anywhere. */
   private requests = new Map<string, number>()
   /** Messages showing Status, a screen, or this computer, refreshed in place. */
@@ -470,6 +482,7 @@ export class TelegramBridge {
     const msg = await this.deliver(chat, ui.noticeView(notice, ctx))
     if (!msg) return
     if (notice.type === 'started') this.cards.set(notice.job.id, { messageId: msg.message_id, card: {} })
+    if (notice.type === 'digest') this.digests.set(msg.message_id, notice.digest.prs)
     if (notice.type === 'permission' || notice.type === 'question' || notice.type === 'plan_review' || notice.type === 'trust') {
       this.requests.set(notice.code, msg.message_id)
       if (notice.type === 'question') this.questions.set(notice.code, { ...ui.newQuestionState(), messageId: msg.message_id })
@@ -817,6 +830,21 @@ export class TelegramBridge {
     await this.send(chat, { html: ui.helpHtml(this.word) }, this.keys())
   }
 
+  /** The Today digest now (/today). */
+  private async showDigest(chat: number): Promise<void> {
+    if (!this.o.digest) return void (await this.sendText(chat, 'The digest isn’t available here.'))
+    const d = await this.o.digest.build()
+    const msg = await this.send(chat, ui.digestView(d, this.o.now()))
+    if (msg) this.digests.set(msg.message_id, d.prs)
+  }
+
+  /** When the digest comes (null: never), saved in the config. */
+  private setDigestAt(at: string | null): void {
+    const config = this.o.config()
+    this.o.saveConfig({ ...config, digest: { ...config.digest, at } })
+    this.o.log(`digest: ${at ? `every day at ${at}` : 'off'} (from Telegram)`)
+  }
+
   /** The Claude account on this computer, with Switch account and Sign out. */
   private async showAccount(chat: number): Promise<void> {
     const acct = this.o.account
@@ -829,6 +857,8 @@ export class TelegramBridge {
     switch (name) {
       case 'account':
         return this.showAccount(chat)
+      case 'today':
+        return this.showDigest(chat)
       case 'start':
       case 'help':
         return this.showHelp(chat)
@@ -916,6 +946,17 @@ export class TelegramBridge {
       }
       case 'tasksearch':
         return this.showTasks(chat, undefined, text)
+      case 'digesttime': {
+        const at = parseClockTime(text)
+        if (!at) {
+          this.setPending(p)
+          await this.sendText(chat, 'That isn’t a time. Try 22:30 or 10pm.')
+          return
+        }
+        this.setDigestAt(at)
+        await this.send(chat, ui.digestSettingsView(at))
+        return
+      }
       case 'logincode': {
         const acct = this.o.account
         if (!acct) return
@@ -1587,6 +1628,9 @@ export class TelegramBridge {
         case 'm':
           toast = await this.onMacButton(chat, q.message, parts[0]!, parts[1])
           break
+        case 'dg':
+          toast = await this.onDigestButton(chat, q.message, parts[0]!, parts[1]!)
+          break
       }
     } catch (err) {
       toast = 'Something went wrong.'
@@ -1595,6 +1639,28 @@ export class TelegramBridge {
       this.tapping = null
     }
     await this.o.api.answerCallbackQuery(q.id, toast ? toast.slice(0, 190) : undefined).catch(() => {})
+  }
+
+  /** A digest's Retry (dg:r:<job>) and Merge (dg:m:<n>, the n-th pull request it listed; tapped twice). */
+  private async onDigestButton(chat: number, message: TgMessage | undefined, op: string, arg: string): Promise<string | undefined> {
+    if (op === 'r') {
+      const r = await this.o.runner.retry(Number(arg), 'telegram')
+      return r.text
+    }
+    if (op === 'm') {
+      const pr = message ? this.digests.get(message.message_id)?.[Number(arg)] : undefined
+      if (!pr || !this.o.digest) return 'That digest is old: send /today for a fresh one.'
+      if (!(await this.secondTap(chat, message, `Yes, merge #${pr.number}`))) return `Tap again to merge ${pr.repo} #${pr.number} on GitHub.`
+      const r = await this.o.digest.merge(pr.url)
+      if (r.ok && message) {
+        const keyboard = (this.sent.get(message.message_id)?.keyboard ?? message.reply_markup?.inline_keyboard ?? []).map(row =>
+          row.map(b => (b.callback_data?.startsWith(`dg:m:${arg}`) ? ui.btn(`✓ Merged #${pr.number}`, 'g:noop') : b)),
+        )
+        await this.o.api.editMessageReplyMarkup(chat, message.message_id, keyboard).catch(() => {})
+      }
+      return r.text
+    }
+    return undefined
   }
 
   private async onApprovalButton(chat: number, message: TgMessage | undefined, code: string, op: string): Promise<string> {
@@ -2110,6 +2176,21 @@ export class TelegramBridge {
       case 'set':
         if (at) await this.edit(chat, at, this.settingsView())
         return
+      case 'noop':
+        return
+      case 'dg': {
+        // Settings → Today digest: a time, Off, or Other time (typed next).
+        const choice = parts[1]
+        if (choice === 'other') {
+          this.setPending({ kind: 'digesttime' })
+          return void (await this.sendText(chat, 'What time? For example 22:30 or 10pm.'))
+        }
+        if (choice) this.setDigestAt(choice === 'off' ? null : parseClockTime(choice))
+        const view = ui.digestSettingsView(this.o.config().digest.at)
+        if (at) await this.edit(chat, at, view)
+        else await this.send(chat, view)
+        return choice ? (this.o.config().digest.at ? `Every day at ${this.o.config().digest.at}.` : 'Digest off.') : undefined
+      }
       case 'acct': {
         const acct = this.o.account
         if (!acct) return 'Not here.'

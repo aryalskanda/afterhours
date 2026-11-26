@@ -74,6 +74,8 @@ export interface RemoteDeps {
   mac?: PowerControl | null
   /** Switching the Claude account (owners only). */
   account?: RouterDeps['account']
+  /** The daily digest, and merging its pull requests. */
+  digest?: RouterDeps['digest']
 }
 
 const RELAY_MOVE_MS = 3000
@@ -119,6 +121,7 @@ export class Remote {
     this.router = new Router({
       mac: d.mac ?? null,
       account: d.account,
+      digest: d.digest,
       runner: d.runner,
       store: d.store,
       chats: d.chats,

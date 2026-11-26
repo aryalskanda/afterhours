@@ -2002,3 +2002,18 @@ describe('a chat open in VS Code', () => {
     expect(h.store.getJob(second.id)).toMatchObject({ status: 'held', holdReason: 'conflict' })
   })
 })
+
+describe('retry', () => {
+  test('a failed task that ended runs again next, in its conversation; one that worked is not retried', async () => {
+    const h = setup()
+    const j = await startJob(h, { plan: false, model: 'opus' })
+    h.store.updateJob(j.id, { status: 'failed', finishedAt: h.now(), error: 'Claude exited (code 1)' })
+    h.runner.enqueue(h.spec({ plan: false, prompt: 'later' }))
+    const r = await h.runner.retry(j.id, 'Telegram')
+    expect(r).toMatchObject({ ok: true })
+    expect(h.store.queued()[0]).toMatchObject({ id: r.job!.id, prompt: h.store.getJob(j.id)!.prompt, model: 'opus', sessionPolicy: 'session', sessionId: j.sid })
+    h.store.updateJob(j.id, { status: 'done', error: null })
+    expect((await h.runner.retry(j.id)).ok).toBe(false)
+    expect((await h.runner.retry(999)).text).toBe('No task #999.')
+  })
+})

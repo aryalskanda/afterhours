@@ -12,6 +12,7 @@ import { Store } from '../src/daemon/store'
 import { DEFAULT_CONFIG, type Config } from '../src/shared/config'
 import { TelegramError, type BotApi, type InlineKeyboard, type Markup, type MenuButton, type TgMessage, type TgUpdate, type TgUser } from '../src/telegram/api'
 import { COMMANDS, TelegramBridge, type TelegramOptions } from '../src/telegram/bot'
+import type { Digest } from '@afterhours/protocol'
 import { KEYS } from '../src/telegram/ui'
 import type { Job } from '../src/shared/types'
 import type { SwitchState } from '../src/daemon/account'
@@ -117,7 +118,7 @@ function choice(view: { html: string; keyboard: InlineKeyboard }, text: string |
   throw new Error(`no numbered choice ${text} in ${JSON.stringify(lines)}`)
 }
 
-function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account'] } = {}) {
+function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest'] } = {}) {
   let now = Date.UTC(2026, 9, 14, 9, 0)
   const root = makeTree()
   const home = mkdtempSync(join(tmpdir(), 'cq-tg-'))
@@ -182,6 +183,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
     mac,
     wifi: o.wifi,
     account: o.account,
+    digest: o.digest,
     git: o.git,
     config: () => config,
     saveConfig: c => {
@@ -233,7 +235,7 @@ function setup(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: 
 
 type Harness = ReturnType<typeof setup>
 
-async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account'] } = {}): Promise<Harness> {
+async function paired(o: { mac?: FakePower; git?: BranchGit; wifi?: boolean; account?: TelegramOptions['account']; digest?: TelegramOptions['digest'] } = {}): Promise<Harness> {
   const h = setup(o)
   await h.bridge.start()
   await h.say(`/start ${h.bridge.status().pairCode}`)
@@ -1744,6 +1746,74 @@ describe('what the bot does without the app', () => {
       expect(h.api.last().html).toContain('me@example.com')
       expect(labels(h, h.api.last().id)).toContain('Switch account')
     }
+  })
+
+  test('the Today digest: failed with Retry and Open, waiting with Open, PRs with Merge (two taps) and Open', async () => {
+    const merged: string[] = []
+    let h!: Harness
+    const digest = (failedJob: number): Digest => ({
+      at: Date.UTC(2026, 10, 26, 15, 15),
+      since: 0,
+      counts: { done: 3, failed: 1, waiting: 1, prs: 1 },
+      failed: [{ job: failedJob, folder: 'blog', prompt: 'Fix it', detail: 'Claude exited (code 1)' }],
+      waiting: [{ job: 41, folder: 'shop', prompt: 'Plan it', detail: 'plan to review', code: 'abcde' }],
+      prs: [{ url: 'https://github.com/me/shop/pull/7', repo: 'shop', number: 7, title: 'Faster checkout', draft: false }],
+      done: [
+        { job: 38, folder: 'shop', prompt: 'a', detail: null },
+        { job: 39, folder: 'blog', prompt: 'b', detail: null },
+      ],
+      limits: { fiveHour: { left: 65, resetsAt: null }, sevenDay: { left: 26, resetsAt: null } },
+      prsNote: null,
+    })
+    let failedId = 0
+    h = await paired({ digest: { build: async () => digest(failedId), merge: async url => (merged.push(url), { ok: true, text: 'Merged shop #7.' }) } })
+    const failed = h.runner.enqueue({ projectDir: join(h.root, 'beta'), prompt: 'Fix it', plan: false, review: false, execMode: 'auto', model: 'haiku', effort: 'low', sessionPolicy: 'new', source: 'test' })
+    h.store.updateJob(failed.id, { status: 'failed', finishedAt: h.now(), error: 'Claude exited (code 1)' })
+    failedId = failed.id
+
+    // The evening notice and /today look the same.
+    await h.bridge.notify({ type: 'digest', digest: digest(failed.id) })
+    const msg = h.api.last()
+    expect(msg.html).toContain('<b>📋 Today</b>')
+    expect(msg.html).toContain('✅ 3 done · ❌ 1 failed · ✋ 1 waiting on you · 🔀 1 open PR')
+    expect(msg.html).toContain('Limits left: 5-hour 65% · weekly 26%')
+    expect(msg.html).toContain(`❌ <b>#${failed.id}</b> blog: Claude exited (code 1)`)
+    expect(msg.html).toContain('<b>Done</b>: #38 shop · #39 blog <i>+1 more</i>')
+    expect(labels(h, msg.id)).toEqual([`Retry #${failed.id}`, `Open #${failed.id}`, 'Open #41', 'Merge #7', 'Open #7'])
+    expect(kb(h, msg.id).flat().find(b => b.text === 'Open #7')).toMatchObject({ url: 'https://github.com/me/shop/pull/7' })
+    expect(kb(h, msg.id).flat().find(b => b.text === 'Open #41')).toMatchObject({ callback_data: 'a:abcde:show' })
+
+    // Merge: the first tap asks again, the second merges.
+    await press(h, msg.id, 'Merge #7')
+    expect(merged).toEqual([])
+    await press(h, msg.id, 'Yes, merge #7')
+    expect(merged).toEqual(['https://github.com/me/shop/pull/7'])
+    expect(labels(h, msg.id)).toContain('✓ Merged #7')
+
+    // Retry: the failed task runs again, next.
+    await press(h, msg.id, `Retry #${failed.id}`)
+    expect(h.store.queued()[0]).toMatchObject({ prompt: 'Fix it' })
+
+    await h.say('/today')
+    expect(h.api.last().html).toContain('<b>📋 Today</b>')
+  })
+
+  test('Settings → Today digest: a time, another typed, or off', async () => {
+    const h = await paired()
+    await h.say('/settings')
+    await press(h, h.api.last().id, 'Today digest')
+    const view = h.api.last().id
+    expect(h.api.view(view).html).toContain('Every evening at <b>9 PM</b>')
+    await press(h, view, '11 PM')
+    expect(h.config().digest.at).toBe('23:00')
+    await press(h, view, 'Other time…')
+    await h.say('teatime')
+    expect(h.api.last().html).toContain('isn’t a time')
+    await h.say('10:30pm')
+    expect(h.config().digest.at).toBe('22:30')
+    expect(h.api.last().html).toContain('Every evening at <b>10:30 PM</b>')
+    await press(h, h.api.last().id, 'Off')
+    expect(h.config().digest.at).toBeNull()
   })
 
   test('every command in the menu is one the bot knows', async () => {

@@ -6,6 +6,8 @@ import { chatState, type Chat } from '../daemon/chats'
 import type { FolderEntry, SearchHit } from '../daemon/folders'
 import { duration } from '../daemon/format'
 import { formatClock, modelLabel, windowLabel } from '../daemon/limits'
+import { clockLabel, countsLine, limitsLine } from '../daemon/digest'
+import type { Digest } from '@afterhours/protocol'
 import type { PowerStatus } from '../daemon/power'
 import { machineWord } from '../platform/power'
 import { resumedBy, type Notice, type Question, type QuestionAnswer } from '../daemon/notify'
@@ -973,6 +975,73 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       return { html: `<b>Going to sleep</b>${n.by ? ` (asked from ${esc(n.by)})` : ''}.\n<i>It can't be woken from here: open its lid or press a key.</i>` }
     case 'empty':
       return { html: 'Queue empty.', silent: true }
+    case 'digest':
+      return digestView(n.digest, ctx.now)
+  }
+}
+
+// --- Today --------------------------------------------------------------------------------------
+
+const more = (shown: number, total: number) => (total > shown ? `<i>+${total - shown} more</i>` : null)
+
+/**
+ * The daily digest: counts and the limits first, then what needs you (failed, waiting), the open
+ * pull requests and one line of what's done. A button for each: Retry, Open, Merge.
+ */
+export function digestView(d: Digest, now: number): View {
+  const day = new Intl.DateTimeFormat('en-US', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(d.at))
+  const lines = [`<b>📋 Today</b> · ${esc(day)}`, esc(countsLine(d)), `<i>${esc(limitsLine(d, now))}</i>`]
+  const keyboard: InlineKeyboard = []
+  if (d.failed.length) {
+    lines.push('', '<b>Failed</b>')
+    for (const t of d.failed) {
+      lines.push(`❌ <b>#${t.job}</b> ${esc(t.folder)}: ${esc(t.detail ?? 'failed')}`)
+      keyboard.push([btn(`Retry #${t.job}`, `dg:r:${t.job}`), btn(`Open #${t.job}`, `j:${t.job}:open`)])
+    }
+    const m = more(d.failed.length, d.counts.failed)
+    if (m) lines.push(m)
+  }
+  if (d.waiting.length) {
+    lines.push('', '<b>Waiting on you</b>')
+    for (const t of d.waiting) {
+      lines.push(`✋ <b>#${t.job}</b> ${esc(t.folder)}: ${esc(t.detail ?? 'waiting')}`)
+      keyboard.push([btn(`Open #${t.job}`, t.code ? `a:${t.code}:show` : `j:${t.job}:open`)])
+    }
+    const m = more(d.waiting.length, d.counts.waiting)
+    if (m) lines.push(m)
+  }
+  if (d.prs.length) {
+    lines.push('', '<b>Open pull requests</b>')
+    d.prs.forEach((p, i) => {
+      lines.push(`🔀 ${esc(p.repo)} <b>#${p.number}</b> ${esc(clip(p.title, 70))}${p.draft ? ' <i>(draft)</i>' : ''}`)
+      keyboard.push([btn(`Merge #${p.number}`, `dg:m:${i}`), { text: `Open #${p.number}`, url: p.url }])
+    })
+    const m = more(d.prs.length, d.counts.prs)
+    if (m) lines.push(m)
+  } else if (d.prsNote) lines.push('', `<i>${esc(d.prsNote)}</i>`)
+  if (d.done.length) {
+    const list = d.done.map(t => `#${t.job} ${esc(t.folder)}`).join(' · ')
+    lines.push('', `<b>Done</b>: ${list}${d.counts.done > d.done.length ? ` <i>+${d.counts.done - d.done.length} more</i>` : ''}`)
+  }
+  return { html: lines.join('\n'), ...(keyboard.length ? { keyboard } : {}) }
+}
+
+/** Settings → Today digest: when it comes, or off. */
+export function digestSettingsView(at: string | null): View {
+  // Callback data splits on ':', so 21:00 goes as 2100.
+  const choice = (value: string | null, label: string) => btn(chosen(at === value, label), `g:dg:${value?.replace(':', '') ?? 'off'}`)
+  const custom = at && !['18:00', '21:00', '23:00'].includes(at)
+  return {
+    html: [
+      '<b>Today digest</b>',
+      at ? `Every evening at <b>${esc(clockLabel(at))}</b>: what finished and failed, what waits on you, open pull requests and the usage left.` : 'Off.',
+      '<i>/today shows it any time.</i>',
+    ].join('\n'),
+    keyboard: [
+      [choice('18:00', '6 PM'), choice('21:00', '9 PM'), choice('23:00', '11 PM')],
+      [btn(chosen(Boolean(custom), custom ? `Other: ${clockLabel(at!)}` : 'Other time…'), 'g:dg:other'), choice(null, 'Off')],
+      [btn('Back', 'g:set')],
+    ],
   }
 }
 
@@ -1193,7 +1262,7 @@ export function settingsView(o: {
       // Continuing a chat by itself follows from watching them: turning it on watches them too.
       [btn(`Watch chats: ${onOff(o.watch)}`, 'g:watch'), btn(`Auto-continue: ${onOff(o.watch && o.autoContinue)}`, 'g:auto')],
       [btn('Project folders', 'g:pf'), btn('Rescan folders', 'g:rescan')],
-      [btn('Claude account', 'g:acct')],
+      [btn('Claude account', 'g:acct'), btn('Today digest', 'g:dg')],
     ],
   }
 }

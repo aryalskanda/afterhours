@@ -3,6 +3,8 @@ import type { Job } from '../shared/types'
 import { duration, excerpt, jobLine, oneLine, projectLabel } from './format'
 import { formatClock, modelLabel, windowLabel } from './limits'
 import type { Conversation } from './sessions'
+import type { Digest } from '@afterhours/protocol'
+import { digestText } from './digest'
 
 export interface QuestionOption {
   label: string
@@ -70,8 +72,11 @@ export type Notice =
   /** The Mac is going to sleep (after quitting `quit`); `failed`: it was meant to and couldn't. */
   | { type: 'sleeping'; by: string | null; quit: string[]; failed?: string }
   | { type: 'empty' }
+  /** The daily "Today" digest. */
+  | { type: 'digest'; digest: Digest }
 
 const IMPORTANT = new Set<Notice['type']>([
+  'digest',
   'plan_review',
   'permission',
   'question',
@@ -239,5 +244,7 @@ export function formatNotice(n: Notice, aliases: Record<string, string>, now: nu
       )
     case 'empty':
       return '🏁 Queue empty.'
+    case 'digest':
+      return digestText(n.digest, now)
   }
 }

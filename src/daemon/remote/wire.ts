@@ -120,6 +120,8 @@ export function wireNotice(n: Notice): WireNotice {
       return { type: n.type, by: n.by, quit: n.quit, ...(n.failed ? { failed: n.failed } : {}) }
     case 'empty':
       return { type: n.type }
+    case 'digest':
+      return { type: n.type, digest: n.digest }
     default:
       // Every other notice is a job plus fields that are already plain data.
       return { ...n, job: jobInfo(n.job) } as WireNotice
