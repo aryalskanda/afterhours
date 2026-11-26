@@ -24,6 +24,9 @@ import { TelegramApi } from '../telegram/api'
 import { TelegramBridge, type TelegramStatus } from '../telegram/bot'
 import { claudeVersion } from './health'
 import { offeredModels, watchModels } from './models'
+import { DigestClock, DigestSource } from './digest'
+import { mergePr, systemGh } from './prs'
+import { projectLabel } from './format'
 import { chatSource, continueSpec } from './chats'
 import { runCommand } from './commands'
 import { FolderMap } from './folders'
@@ -265,7 +268,28 @@ export async function runDaemon(): Promise<void> {
   })
   folders.refreshIfStale()
 
+  // The daily "Today" digest: built on request, and sent once each evening by the clock below.
+  const digests = new DigestSource({ store, runner, gh: () => systemGh(), label: dir => projectLabel(dir, config.aliases), now: Date.now })
+  const digest = {
+    build: () => digests.build(),
+    merge: async (url: string) => {
+      const r = await mergePr(url, systemGh(60_000))
+      if (r.ok) digests.forget(url)
+      log(`digest: ${r.text}`)
+      return r
+    },
+  }
+  const digestClock = new DigestClock({
+    at: () => config.digest.at,
+    now: Date.now,
+    get: key => store.kvGet(key),
+    set: (key, value) => store.kvSet(key, value),
+    send: async since => notifier.send({ type: 'digest', digest: await digests.build(since) }),
+    log,
+  })
+
   const remote = new Remote({
+    digest,
     account: {
       current: () => accounts.current,
       status: () => authStatus(claudePath),
@@ -317,6 +341,7 @@ export async function runDaemon(): Promise<void> {
     if (!enabled || !token) return
     telegram = new TelegramBridge({
       api: new TelegramApi(token),
+      digest,
       store,
       runner,
       folders,
@@ -548,6 +573,8 @@ export async function runDaemon(): Promise<void> {
     remote.tick()
     void mac?.tick()
     void accounts.tick()
+    // About once a minute: the evening digest, when it's time.
+    if (watchTicks % 30 === 0) digestClock.tick().catch(err => log(`digest: couldn't send: ${err instanceof Error ? err.message : err}`))
     // Not awaited: Telegram being slow must never hold up the queue.
     telegram?.tick().catch(err => log(`telegram: tidying up failed: ${err instanceof Error ? err.message : err}`))
     // Awake while tasks run, or for a while you asked for with nothing running. On Linux the lid

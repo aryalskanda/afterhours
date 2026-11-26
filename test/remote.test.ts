@@ -69,7 +69,7 @@ const chats: ChatSource = {
   },
 }
 
-function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; account?: RouterDeps['account'] } = {}) {
+function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; account?: RouterDeps['account']; digest?: RouterDeps['digest'] } = {}) {
   const projects = join(dir, 'projects')
   const project = join(projects, 'shop')
   const outside = join(dir, 'elsewhere')
@@ -112,6 +112,7 @@ function machine(o: { remote?: Partial<Config['remote']>; mac?: FakePower; accou
     : null
   remote = new Remote({
     account: o.account,
+    digest: o.digest,
     mac,
     store,
     runner,
@@ -390,6 +391,51 @@ describe('remote access', () => {
     const audit = (await owner.conn.request({ type: 'audit', limit: 20 })).data as { entries: { action: string; detail: string | null }[] }
     expect(JSON.stringify(audit)).not.toContain('SECRET-CODE')
     expect(audit.entries.filter(e => e.action === 'account').map(e => e.detail)).toEqual(expect.arrayContaining(['switch', 'code']))
+  })
+
+  test('the digest: anyone sees it; an operator merges its PRs (audited); only an owner sets its time', async () => {
+    const merged: string[] = []
+    const digest = {
+      at: 1,
+      since: 0,
+      counts: { done: 0, failed: 0, waiting: 0, prs: 1 },
+      failed: [],
+      waiting: [],
+      prs: [{ url: 'https://github.com/me/shop/pull/7', repo: 'shop', number: 7, title: 'Change 7', draft: false }],
+      done: [],
+      limits: { fiveHour: null, sevenDay: null },
+      prsNote: null,
+    }
+    const m = machine({ digest: { build: async () => digest, merge: async url => (merged.push(url), { ok: true, text: 'Merged shop #7.' }) } })
+    const owner = await pairedApp(m)
+    expect(owner.snapshots[0]!.features).toContain('digest')
+    expect(owner.snapshots[0]!.digestAt).toBe('21:00')
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'TV' })
+    expect(await viewer.conn.request({ type: 'digest' })).toMatchObject({ ok: true, data: digest })
+    expect(await viewer.conn.request({ type: 'pr.merge', url: digest.prs[0]!.url })).toMatchObject({ ok: false, code: 'forbidden' })
+    const operator = await pairedApp(m, { role: 'operator', name: 'Tablet' })
+    expect(await operator.conn.request({ type: 'pr.merge', url: digest.prs[0]!.url })).toMatchObject({ ok: true, text: 'Merged shop #7.' })
+    expect(merged).toEqual([digest.prs[0]!.url])
+    expect(await operator.conn.request({ type: 'settings.digest', at: '22:30' })).toMatchObject({ ok: false, code: 'forbidden' })
+    expect(await owner.conn.request({ type: 'settings.digest', at: '25:00' })).toMatchObject({ ok: false })
+    expect(await owner.conn.request({ type: 'settings.digest', at: '22:30' })).toMatchObject({ ok: true, data: { at: '22:30' } })
+    expect(m.config().digest.at).toBe('22:30')
+    expect(await owner.conn.request({ type: 'settings.digest', at: null })).toMatchObject({ ok: true })
+    expect(m.config().digest.at).toBeNull()
+    // Audited, the viewer's refused try included.
+    const audit = (await owner.conn.request({ type: 'audit', limit: 20 })).data as { entries: { action: string; detail: string | null; ok: boolean }[] }
+    expect(audit.entries.filter(e => e.action === 'pr.merge').map(e => `${e.detail}${e.ok ? '' : ' (refused)'}`).sort()).toEqual(['me/shop/pull/7', 'me/shop/pull/7 (refused)'])
+  })
+
+  test('retry from an app: a failed task runs again', async () => {
+    const m = machine()
+    const { conn } = await pairedApp(m)
+    const spec = { projectDir: m.project, prompt: 'x', plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'test' }
+    const j = m.runner.enqueue(spec)
+    m.store.updateJob(j.id, { status: 'failed', finishedAt: Date.now(), error: 'boom' })
+    const r = await conn.request({ type: 'control', action: 'retry', job: j.id })
+    expect(r).toMatchObject({ ok: true })
+    expect(m.store.queued().map(q => q.prompt)).toEqual(['x'])
   })
 
   test('an owner sets what other devices may do; it is audited, and others can’t', async () => {

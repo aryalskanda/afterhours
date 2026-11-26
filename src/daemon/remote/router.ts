@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { within } from '../../shared/paths'
 import type {
+  Digest,
   AccountInfo,
   AuditEntryInfo,
   ClaudeInfo,
@@ -99,6 +100,7 @@ export const FEATURES = [
   'account.switch',
   'finish',
   'job.lock',
+  'digest',
 ]
 
 type Outcome = Omit<Result, 'type' | 'id'>
@@ -116,6 +118,9 @@ const NEEDS: Record<RequestType, Role> = {
   'folders.roots.set': 'owner',
   'settings.parallel': 'owner',
   'settings.remote': 'owner',
+  'settings.digest': 'owner',
+  digest: 'viewer',
+  'pr.merge': 'operator',
   queue: 'operator',
   answer: 'operator',
   control: 'operator',
@@ -170,6 +175,8 @@ const CHANGES = new Set<RequestType>([
   'folders.roots.set',
   'settings.parallel',
   'settings.remote',
+  'settings.digest',
+  'pr.merge',
   'devices.remove',
   'devices.rename',
   'command',
@@ -224,6 +231,11 @@ export interface RouterDeps {
   /** Quitting apps and sleeping the Mac; null on other systems. */
   mac?: PowerControl | null
   /** Switching the Claude account (owners only). */
+  /** The daily digest, built now, and merging the pull requests it lists. */
+  digest?: {
+    build(): Promise<Digest>
+    merge(url: string): Promise<{ ok: boolean; text: string }>
+  }
   account?: {
     current(): SwitchState
     status(): Promise<AuthStatus>
@@ -309,6 +321,10 @@ function auditDetail(r: Request): string | null {
       return `${r.action} ${r.path}`
     case 'settings.parallel':
       return `${r.n} at once`
+    case 'settings.digest':
+      return r.at ?? 'off'
+    case 'pr.merge':
+      return r.url.replace(/^https:\/\/github\.com\//, '')
     case 'settings.remote':
       return (['bypass', 'screens', 'typing', 'mac'] as const)
         .filter(k => r[k] !== undefined)
@@ -417,6 +433,7 @@ export class Router {
         isolate: config.isolate,
       },
       models: offeredModels(config),
+      digestAt: config.digest.at,
       features: this.d.mac ? [...FEATURES, 'mac'] : FEATURES,
       ...(config.remote.relay ? { relay: config.remote.relay } : {}),
     }
@@ -498,6 +515,11 @@ export class Router {
         switch (r.action) {
           case 'go':
             return { ok: true, text: await runner.go(r.job) }
+          case 'retry': {
+            if (r.job === undefined) return { ok: false, code: 'invalid', error: 'Which task?' }
+            const again = await runner.retry(r.job, name)
+            return again.ok ? { ok: true, text: again.text, ...(again.job ? { data: { job: again.job.id } } : {}) } : { ok: false, code: 'invalid', error: again.text }
+          }
           case 'pause':
             runner.setPaused(true)
             return { ok: true, text: 'Paused. The running task keeps going; nothing new starts until you resume.' }
@@ -604,6 +626,20 @@ export class Router {
         return this.folderRoots(config, session.role, r.browse)
       case 'folders.roots.set':
         return this.setFolderRoot(r.action, r.path, name, config)
+      case 'settings.digest': {
+        this.d.saveConfig({ ...config, digest: { ...config.digest, at: r.at } })
+        this.d.log(`${name} set the digest ${r.at ? `for ${r.at} every day` : 'off'}`)
+        return { ok: true, text: r.at ? `The digest comes every day at ${r.at}.` : 'No daily digest.', data: { at: r.at } }
+      }
+      case 'digest': {
+        if (!this.d.digest) return { ok: false, code: 'invalid', error: 'This machine has no digest.' }
+        return { ok: true, data: await this.d.digest.build() }
+      }
+      case 'pr.merge': {
+        if (!this.d.digest) return { ok: false, code: 'invalid', error: 'This machine can’t merge pull requests.' }
+        const merged = await this.d.digest.merge(r.url)
+        return merged.ok ? { ok: true, text: merged.text } : { ok: false, code: 'failed', error: merged.text }
+      }
       case 'settings.parallel': {
         this.d.saveConfig({ ...config, parallel: r.n })
         this.d.log(`${name} set ${r.n} task${r.n === 1 ? '' : 's'} at once`)

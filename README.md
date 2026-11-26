@@ -229,6 +229,17 @@ Your phone sees every chat: **Chats** lists them all, and the same conversation 
 - **Taking a chat over is careful.** Afterhours only closes a chat when you asked (or wrote into it), only while it's idle, and only in a window that was already open then. If the window doesn't close, or opens the chat again, the task stops and asks you. It never closes anything twice.
 - **Remote Control**, Anthropic's own feature, lets you type into a live chat from the Claude app: run `/remote-control` in it (or `claude remote-control` in a terminal), or in VS Code turn on *Enable Remote Control for all sessions*. Afterhours works alongside it ([how they differ](#isnt-this-what-the-claude-app-does)).
 
+## The Today digest
+
+Every evening (9 PM unless you change it) the bot sends one short message, and the app shows it as a card:
+
+- how many tasks finished, failed and wait on you, and how many open pull requests there are;
+- how much of the 5-hour and weekly limits is left;
+- each failed task with **Retry** and **Open**, each one waiting on you with **Open**, and each open pull request a task opened with **Merge** (tap twice) and **Open**;
+- what finished, in one line.
+
+`/today` sends it any time. Change the time, or turn it off, in **Settings → Today digest**. If the computer was asleep at that time, it sends the digest when it wakes, the same evening. Open pull requests are found in what tasks said when they ended and checked with GitHub's `gh`, so they're listed when `gh` is installed and signed in.
+
 ## Run tasks side by side
 
 By default one task runs at a time. To run two or three (Claude Code in two projects, say), set **Tasks at once**: `cq parallel 2` or **Settings** in the bot. The next task starts beside the running ones only when it can't get in their way:
@@ -389,6 +400,7 @@ The words before the first colon count as options only if every one of them is a
 | `autoContinueChats` | `true` | And continue it by itself at the reset: inside the open chat, else through the queue |
 | `reopenInVsCode` | `true` | When a task that took a chat from VS Code ends, open the chat there again |
 | `takeOverVsCode` | `true` | A task whose chat is open in VS Code closes it there and carries on, without asking. A chat open in a terminal still asks |
+| `digest.at` | `"21:00"` | When the Today digest comes each day (local time); `null` for never |
 | `telegram` | set by `cq telegram` | The bot token and your paired account |
 | `aliases`, `trustedDirs` | | Project names for text commands, and folders whose trust prompt Afterhours may accept |
 | `port`, `claudePath`, `tmuxPath` | 7787, from `PATH` | |

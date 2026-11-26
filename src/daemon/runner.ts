@@ -1665,6 +1665,36 @@ export class Runner {
     return 'Nothing is waiting for a usage limit.'
   }
 
+  /**
+   * Retry: a paused task goes on (as go does); a failed one that has ended runs again, next in the
+   * queue, continuing its conversation when it had one.
+   */
+  async retry(id: number, source = 'remote'): Promise<{ ok: boolean; text: string; job?: Job }> {
+    const job = this.d.store.getJob(id)
+    if (!job) return { ok: false, text: `No task #${id}.` }
+    if (this.d.store.running().some(j => j.id === id)) return { ok: true, text: await this.go(id) }
+    if (job.status !== 'failed' && !(job.status === 'cancelled' && job.error)) return { ok: false, text: `#${id} didn't fail, so there's nothing to retry.` }
+    const again = this.enqueue({
+      projectDir: job.projectDir,
+      prompt: job.prompt,
+      plan: job.plan,
+      review: job.review,
+      execMode: job.execMode,
+      model: job.model,
+      effort: job.effort,
+      ...(job.workModel ? { workModel: job.workModel } : {}),
+      ...(job.workEffort ? { workEffort: job.workEffort } : {}),
+      sessionPolicy: job.sessionId ? 'session' : job.sessionPolicy,
+      ...(job.sessionId ? { sessionId: job.sessionId } : {}),
+      isolate: job.isolate,
+      attachments: job.attachments,
+      front: true,
+      source,
+    })
+    this.d.log(`#${id}: retried as #${again.id} (from ${source})`)
+    return { ok: true, text: `#${id} runs again as #${again.id}, next.`, job: again }
+  }
+
   async stop(id?: number): Promise<string> {
     const job = this.target(id, j => j.status === 'running')
     if (!job) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`

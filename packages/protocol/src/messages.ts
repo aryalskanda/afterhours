@@ -265,6 +265,41 @@ export const PolicyInfo = z.object({
 })
 export type PolicyInfo = z.infer<typeof PolicyInfo>
 
+/** One task in the daily digest: `detail` is why it failed or what it waits on. */
+export const DigestTask = z.object({
+  job: z.number().int(),
+  folder: z.string(),
+  prompt: z.string(),
+  detail: z.string().nullable(),
+  /** Waiting on a request you answer (its code), not just paused. */
+  code: z.string().optional(),
+})
+export type DigestTask = z.infer<typeof DigestTask>
+
+/** An open pull request one of the tasks opened. */
+export const DigestPr = z.object({ url: z.string(), repo: z.string(), number: z.number().int(), title: z.string(), draft: z.boolean() })
+export type DigestPr = z.infer<typeof DigestPr>
+
+const LimitLeft = z.object({ left: z.number().nullable(), resetsAt: z.number().nullable() }).nullable()
+
+/**
+ * The daily "Today" digest: what finished and failed since `since`, what waits on you, open pull
+ * requests and the usage left. Lists hold the first few; `counts` are the totals.
+ */
+export const Digest = z.object({
+  at: z.number(),
+  since: z.number(),
+  counts: z.object({ done: z.number().int(), failed: z.number().int(), waiting: z.number().int(), prs: z.number().int() }),
+  failed: z.array(DigestTask),
+  waiting: z.array(DigestTask),
+  prs: z.array(DigestPr),
+  done: z.array(DigestTask),
+  limits: z.object({ fiveHour: LimitLeft, sevenDay: LimitLeft }),
+  /** Why open pull requests couldn't be listed (no gh, say); null when they were. */
+  prsNote: z.string().nullable(),
+})
+export type Digest = z.infer<typeof Digest>
+
 /** Mirrors the daemon's notices (src/daemon/notify.ts), with jobs and chats as plain data. */
 export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('started'), job: JobInfo }),
@@ -320,6 +355,8 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('link'), job: JobInfo, url: z.string().nullable(), title: z.string().nullable(), note: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
+  /** The daily digest, at the time the owner set (`settings.digest`). */
+  z.object({ type: z.literal('digest'), digest: Digest }),
   /** The Mac is going to sleep, after quitting `quit`; `failed`: it was meant to and couldn't, and why. */
   z.object({ type: z.literal('sleeping'), by: z.string().nullable(), quit: z.array(z.string()), failed: z.string().optional() }),
   /** The machine moves to another relay: save its address (as with the snapshot's `relay`) and follow. */
@@ -418,7 +455,8 @@ export const Request = z.discriminatedUnion('type', [
    */
   withId({
     type: z.literal('control'),
-    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill', 'clear', 'finish']),
+    /** `retry`: a paused task goes on; a failed one that has ended runs again (feature `digest`). */
+    action: z.enum(['go', 'pause', 'stop', 'skip', 'continue', 'fork', 'takeover', 'kill', 'clear', 'finish', 'retry']),
     job: z.number().int().optional(),
     pause: z.boolean().optional(),
   }),
@@ -478,6 +516,12 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('folders.roots'), browse: z.string().max(4096).optional() }),
   /** Owners: how many tasks may run at once (1 to 3). */
   withId({ type: z.literal('settings.parallel'), n: z.number().int().min(1).max(3) }),
+  /** When the daily digest comes ("21:00", local time on the machine); null turns it off. */
+  withId({ type: z.literal('settings.digest'), at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable() }),
+  /** Today's digest, built now (data: Digest). */
+  withId({ type: z.literal('digest') }),
+  /** Merges an open pull request a task opened (one the digest lists). */
+  withId({ type: z.literal('pr.merge'), url: z.string().max(300) }),
   /** Owners: what other devices (operators and viewers) may do: skip permission prompts, see screens, type, quit apps and sleep. */
   withId({
     type: z.literal('settings.remote'),
@@ -680,6 +724,8 @@ export const Snapshot = z.object({
   defaults: Defaults.optional(),
   /** Models offered for new tasks. */
   models: z.array(z.string()).optional(),
+  /** When the daily digest comes ("21:00"), or null when it's off. Missing: the machine has none. */
+  digestAt: z.string().nullable().optional(),
   /** What this machine can do beyond the first version: `transcript`, `diff`… Apps hide the rest. */
   features: z.array(z.string()).optional(),
   /** The relay address this machine gives apps now (wss://…): apps keep it, so a move doesn't need pairing again. */

@@ -374,6 +374,14 @@ export class Store {
     return this.db.query<Row, [number]>('SELECT * FROM jobs WHERE stacked_on = ?').all(id).map(toJob)
   }
 
+  /** Tasks that ended at or after `at` (done, failed, cancelled), newest first. */
+  finishedSince(at: number): Job[] {
+    return this.db
+      .query<Row, [number]>(`SELECT * FROM jobs WHERE status IN ('done', 'failed', 'cancelled') AND finished_at >= ? ORDER BY finished_at DESC, id DESC`)
+      .all(at)
+      .map(toJob)
+  }
+
   recentFinished(limit: number): Job[] {
     return this.db
       .query<Row, [number]>(

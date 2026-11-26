@@ -21,6 +21,7 @@ export function pushGroup(type: Notice['type']): PushGroup | null {
       return 'requests'
     case 'done':
     case 'link':
+    case 'digest':
       return 'done'
     case 'failed':
     case 'held':
