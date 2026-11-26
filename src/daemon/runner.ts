@@ -114,6 +114,8 @@ interface Runtime {
   launchedAt: number
   sessionStarted: boolean
   lastActivity: number
+  /** Claude did something after opening (took the prompt, used a tool): it started. */
+  moved?: boolean
   lastTool?: string
   plan?: {
     since: number
@@ -663,6 +665,8 @@ export class Runner {
       status: 'running',
       phase: 'launching',
       holdReason: null,
+      stalledAt: null,
+      stallReason: null,
       sessionId,
       fork: false,
       workDir,
@@ -729,10 +733,30 @@ export class Runner {
     return this.d.sessionHolders(sessionId)
   }
 
-  private hold(job: Job, reason: string, screen?: string, kind: 'held' | 'failed' = 'held'): void {
+  private hold(job: Job, reason: string, screen?: string, kind: 'held' | 'failed' = 'held', o: { quiet?: boolean } = {}): void {
     if (this.ended(job.id)) return
     const updated = this.d.store.updateJob(job.id, { status: 'held', holdReason: reason, error: kind === 'failed' ? reason : job.error })
-    this.d.notify({ type: kind, job: updated, reason, screen })
+    if (!o.quiet) this.d.notify({ type: kind, job: updated, reason, screen })
+  }
+
+  /**
+   * It hasn't moved for too long: marked stalled, and you're told once, with the last lines its
+   * terminal printed (Claude's errors show there). It clears when the task moves again.
+   */
+  private stall(job: Job, reason: string, screen: string): Job {
+    if (job.stalledAt !== null) return job
+    const now = this.d.now()
+    const updated = this.d.store.updateJob(job.id, { stalledAt: now, stallReason: reason })
+    this.d.log(`#${job.id}: stalled: ${reason}`)
+    this.d.notify({ type: 'stalled', job: updated, reason, since: now, lines: stallLines(screen) })
+    return updated
+  }
+
+  /** It moved: not stalled any more. */
+  private unstall(job: Job): Job {
+    if (job.stalledAt === null) return job
+    this.d.log(`#${job.id}: moving again after a stall`)
+    return this.d.store.updateJob(job.id, { stalledAt: null, stallReason: null })
   }
 
   private async typeLine(window: string, text: string): Promise<void> {
@@ -776,7 +800,8 @@ export class Runner {
     if (job.status === 'held') return
     if (rt.finishing) return this.continueFinishing(job, rt)
 
-    if (!rt.sessionStarted) {
+    // Until Claude takes the prompt (it can open, then sit on a screen before it): watched for dialogs and the launch limit.
+    if (!rt.sessionStarted || (job.phase === 'launching' && !rt.moved)) {
       const screen = await this.d.tmux.capture(rt.window, 40)
       if (trustDialog(screen).present) return this.handleTrust(job, rt, screen)
       if (addDirDialog(screen).present) return this.handleAddDir(job, rt, screen)
@@ -787,7 +812,10 @@ export class Runner {
         return
       }
       if (now - rt.launchedAt > config.timeouts.launchSec * 1000) {
-        this.hold(job, `Claude didn't start within ${config.timeouts.launchSec}s`, tail(screen, 15))
+        const reason = `Claude didn't start within ${config.timeouts.launchSec}s`
+        const stalled = this.stall(job, reason, screen)
+        // The stalled notice says it all, with Retry, Kill and View log.
+        this.hold(stalled, reason, tail(screen, 15), 'held', { quiet: true })
       }
       return
     }
@@ -845,6 +873,18 @@ export class Runner {
     }
 
     const quietFor = now - rt.lastActivity
+    // Quiet for a while: you're told (with its terminal's last lines), but it keeps going (a long npm install is quiet too).
+    if (
+      job.stalledAt === null &&
+      job.status === 'running' &&
+      quietFor > config.timeouts.stallSec * 1000 &&
+      !rt.finishing &&
+      !(rt.background && this.d.store.getJob(job.id)?.waitingSince) &&
+      this.d.store.pendingApprovals(job.id).length === 0
+    ) {
+      const last = rt.lastTool ? ` (last step: ${rt.lastTool})` : ''
+      job = this.stall(job, `no events for ${duration(quietFor)}${last}`, await this.d.tmux.capture(rt.window, 60))
+    }
     // Answered and waiting on its background work is quiet by design: the wait above decides, not this.
     if (quietFor > config.timeouts.stuckSec * 1000 && !(rt.background && this.d.store.getJob(job.id)?.waitingSince) && this.d.store.pendingApprovals(job.id).length === 0) {
       const busy = job.sessionId ? this.d.sessionHolders(job.sessionId).some(h => h.status === 'busy') : false
@@ -1172,7 +1212,12 @@ export class Runner {
     const rt = this.runtime(job)
     this.d.store.logEvent(job.id, event, summarizePayload(payload), now)
     job = this.d.store.updateJob(job.id, { lastEventAt: now })
-    if (event !== 'Notification' && event !== 'StopFailure' && event !== 'SessionEnd') rt.lastActivity = now
+    if (event !== 'Notification' && event !== 'StopFailure' && event !== 'SessionEnd') {
+      rt.lastActivity = now
+      // Anything past opening (the prompt, a tool, a request) means Claude took the prompt.
+      if (event !== 'SessionStart') rt.moved = true
+      if (job.stalledAt !== null && event !== 'SessionStart') job = this.unstall(job)
+    }
 
     if (ACTIVITY_EVENTS.has(event) && job.phase === 'limited') {
       this.limitCleared(job, rt)
@@ -1672,7 +1717,15 @@ export class Runner {
   async retry(id: number, source = 'remote'): Promise<{ ok: boolean; text: string; job?: Job }> {
     const job = this.d.store.getJob(id)
     if (!job) return { ok: false, text: `No task #${id}.` }
-    if (this.d.store.running().some(j => j.id === id)) return { ok: true, text: await this.go(id) }
+    if (this.d.store.running().some(j => j.id === id)) {
+      // Running but stalled: Claude Code starts again in the same conversation, told to continue.
+      if (job.status === 'running' && job.stalledAt !== null) {
+        this.d.log(`#${id}: restarting after a stall (from ${source})`)
+        await this.relaunch(job, 'continue')
+        return { ok: true, text: `#${id} starts again and continues.` }
+      }
+      return { ok: true, text: await this.go(id) }
+    }
     if (job.status !== 'failed' && !(job.status === 'cancelled' && job.error)) return { ok: false, text: `#${id} didn't fail, so there's nothing to retry.` }
     const again = this.enqueue({
       projectDir: job.projectDir,
@@ -1928,6 +1981,12 @@ export class Runner {
     return { jobId: job.id, text: tail(await this.d.tmux.capture(windowName(job.id), Math.max(lines, 40) + 20, escapes), lines) }
   }
 
+  /** What task `id`'s terminal shows now, its last `lines` lines; null when it has no window. */
+  async screenOf(id: number, lines: number): Promise<string | null> {
+    const s = await this.screen(lines, false, id)
+    return s ? s.text : null
+  }
+
   async peek(lines: number, id?: number): Promise<string> {
     const s = await this.screen(lines, false, id)
     if (!s) return id === undefined ? 'Nothing is running.' : `#${id} isn't running.`
@@ -2003,4 +2062,14 @@ function summarizePayload(p: HookPayload): Record<string, unknown> {
     error: p.error,
     tasks: p.background_tasks?.length,
   }
+}
+
+/** The last lines a terminal printed, for a stall notice: no blank lines or box rules, each one short. */
+export function stallLines(screen: string, max = 12): string[] {
+  return screen
+    .split('\n')
+    .map(l => l.replace(/^[\s│┃]+|[\s│┃]+$/g, ''))
+    .filter(l => l && !/^[─━╌═╭╮╰╯┌┐└┘\s]+$/.test(l))
+    .slice(-max)
+    .map(l => (l.length > 200 ? `${l.slice(0, 199)}…` : l))
 }

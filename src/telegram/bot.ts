@@ -13,6 +13,7 @@ import { folderPath, suggestProjectFolders, type FolderSuggestion } from '../dae
 import { isWsl } from '../platform/os'
 import { formatClock } from '../daemon/limits'
 import { parseClockTime } from '../daemon/digest'
+import { taskLogLines } from '../daemon/tasklog'
 import type { Digest, DigestPr } from '@afterhours/protocol'
 import { settleBranch, stackBelow, type BranchGit } from '../daemon/branches'
 import type { AuthStatus, SwitchState } from '../daemon/account'
@@ -38,6 +39,8 @@ export interface TelegramOptions {
     cancel(): Promise<SwitchState>
     signOut(): Promise<boolean>
   }
+  /** cqd.log, for a task's View log. */
+  logPath?: string
   /** The daily digest: built on request (/today), and its pull requests merged from a button. */
   digest?: {
     build(): Promise<Digest>
@@ -1829,6 +1832,11 @@ export class TelegramBridge {
       case 'peek':
         await this.showPeek(chat, undefined, id)
         return
+      case 'log': {
+        const lines = this.o.logPath ? taskLogLines(this.o.logPath, id) : []
+        await this.send(chat, ui.taskLogView(id, lines, await this.o.runner.screenOf(id, 40)))
+        return
+      }
       case 'stop':
         if (!active) return `#${id} isn't running.`
         reply = await this.o.runner.stop(id)

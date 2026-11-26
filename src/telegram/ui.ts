@@ -977,6 +977,21 @@ export function noticeView(n: Notice, ctx: NoticeContext): View {
       return { html: 'Queue empty.', silent: true }
     case 'digest':
       return digestView(n.digest, ctx.now)
+    case 'stalled':
+      return {
+        html:
+          `<b>⚠️ #${n.job.id} stalled</b> · ${esc(ctx.label(n.job.projectDir))}: ${esc(n.reason)}` +
+          (n.lines.length ? `\n<pre>${esc(clip(n.lines.join('\n'), 1500))}</pre>` : '\n<i>Its terminal shows nothing.</i>'),
+        keyboard: [[btn('Retry', `dg:r:${n.job.id}`), btn('Kill', `j:${n.job.id}:kill`), btn('View log', `j:${n.job.id}:log`)]],
+      }
+  }
+}
+
+/** View log: what the engine wrote about the task, and its terminal's last lines. */
+export function taskLogView(id: number, lines: string[], screen: string | null): View {
+  const log = lines.length ? lines.map(l => l.replace(/^\S+Z /, '')).join('\n') : 'Nothing about it in the log.'
+  return {
+    html: [`<b>#${id}'s log</b>`, `<pre>${esc(clip(log, 2500))}</pre>`, ...(screen ? ['<b>Its terminal</b>', `<pre>${esc(clip(screen, 1200))}</pre>`] : [])].join('\n'),
   }
 }
 

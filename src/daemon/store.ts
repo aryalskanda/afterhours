@@ -162,6 +162,8 @@ const COLUMNS = {
   waitingFor: 'waiting_for',
   waitingUntil: 'waiting_until',
   editingUntil: 'editing_until',
+  stalledAt: 'stalled_at',
+  stallReason: 'stall_reason',
   stackedOn: 'stacked_on',
   workModel: 'work_model',
   workEffort: 'work_effort',
@@ -206,6 +208,8 @@ const ADDED_COLUMNS: [table: string, column: string, definition: string][] = [
   ['jobs', 'waiting_for', 'TEXT'],
   ['jobs', 'waiting_until', 'INTEGER'],
   ['jobs', 'editing_until', 'INTEGER'],
+  ['jobs', 'stalled_at', 'INTEGER'],
+  ['jobs', 'stall_reason', 'TEXT'],
   ['jobs', 'stacked_on', 'INTEGER'],
 ]
 const JSON_FIELDS = new Set<keyof Job>(['launchSpec', 'usage', 'planVersions', 'attachments', 'links', 'waitingFor'])

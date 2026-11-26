@@ -427,6 +427,21 @@ describe('remote access', () => {
     expect(audit.entries.filter(e => e.action === 'pr.merge').map(e => `${e.detail}${e.ok ? '' : ' (refused)'}`).sort()).toEqual(['me/shop/pull/7', 'me/shop/pull/7 (refused)'])
   })
 
+  test("a task's log: the engine's lines about it, and its terminal only where screens are allowed", async () => {
+    const m = machine({ remote: { allowScreens: false } })
+    const spec = { projectDir: m.project, prompt: 'x', plan: false, review: false, execMode: 'auto' as const, model: 'haiku', effort: 'low' as const, sessionPolicy: 'new' as const, source: 'test' }
+    const j = m.runner.enqueue(spec)
+    writeFileSync(join(dir, 'cqd.log'), `2026-11-26T10:00:00.000Z #${j.id}: stalled: no events for 11m\n2026-11-26T10:00:01.000Z #${j.id + 1}: another\n`)
+    const owner = await pairedApp(m)
+    const operator = await pairedApp(m, { role: 'operator', name: 'Tablet' })
+    const viewer = await pairedApp(m, { role: 'viewer', name: 'TV' })
+    expect(await viewer.conn.request({ type: 'log', job: j.id })).toMatchObject({ ok: false, code: 'forbidden' })
+    const r = await operator.conn.request({ type: 'log', job: j.id })
+    expect(r).toMatchObject({ ok: true, data: { job: j.id, screen: null } })
+    expect((r.data as { lines: string[] }).lines).toEqual([`2026-11-26T10:00:00.000Z #${j.id}: stalled: no events for 11m`])
+    expect(await owner.conn.request({ type: 'log', job: 9999 })).toMatchObject({ ok: false, code: 'gone' })
+  })
+
   test('retry from an app: a failed task runs again', async () => {
     const m = machine()
     const { conn } = await pairedApp(m)

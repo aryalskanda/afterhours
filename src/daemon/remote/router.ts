@@ -37,6 +37,7 @@ import type { Effort, Job, JobSpec } from '../../shared/types'
 import { continueSpec, type Chat, type ChatSource } from '../chats'
 import { claudeInfo } from '../claude-info'
 import { claudeVersion, health } from '../health'
+import { taskLogLines } from '../tasklog'
 import { offeredModels } from '../models'
 import { fileContent, isSecretPath, listFolder, readFileInside, searchFiles } from '../files'
 import { oneLine } from '../format'
@@ -120,6 +121,7 @@ const NEEDS: Record<RequestType, Role> = {
   'settings.remote': 'owner',
   'settings.digest': 'owner',
   digest: 'viewer',
+  log: 'operator',
   'pr.merge': 'operator',
   queue: 'operator',
   answer: 'operator',
@@ -630,6 +632,13 @@ export class Router {
         this.d.saveConfig({ ...config, digest: { ...config.digest, at: r.at } })
         this.d.log(`${name} set the digest ${r.at ? `for ${r.at} every day` : 'off'}`)
         return { ok: true, text: r.at ? `The digest comes every day at ${r.at}.` : 'No daily digest.', data: { at: r.at } }
+      }
+      case 'log': {
+        if (!store.getJob(r.job)) return { ok: false, code: 'gone', error: `No task #${r.job}.` }
+        const lines = this.d.logPath ? taskLogLines(this.d.logPath, r.job) : []
+        // The terminal can show anything (a secret in a command): only where screens are allowed.
+        const screen = policy.allowScreens ? await runner.screenOf(r.job, 40) : null
+        return { ok: true, data: { job: r.job, lines, screen: screen === null ? null : screen.split('\n') } }
       }
       case 'digest': {
         if (!this.d.digest) return { ok: false, code: 'invalid', error: 'This machine has no digest.' }

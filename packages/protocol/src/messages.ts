@@ -122,6 +122,8 @@ export const JobInfo = z.object({
   waiting: z.object({ since: z.number(), commands: z.array(z.string()), endsAt: z.number().nullable() }).nullable().optional(),
   /** Someone is changing it right now: it doesn't start until they save or cancel. */
   editing: z.boolean().optional(),
+  /** It hasn't moved for too long: it didn't start, or no events came (since when, and why). Null once it moves. */
+  stalled: z.object({ since: z.number(), reason: z.string() }).nullable().optional(),
   /** Its own branch started from this earlier task's branch: merging it brings that work in too. */
   stackedOn: z.number().nullable().optional(),
   /** Plan with `model`, work with this one: it carries out the approved plan. Null: `model` does both. */
@@ -300,6 +302,10 @@ export const Digest = z.object({
 })
 export type Digest = z.infer<typeof Digest>
 
+/** The answer to `log`: `screen` is null where screens aren't allowed. */
+export const TaskLog = z.object({ job: z.number().int(), lines: z.array(z.string()), screen: z.array(z.string()).nullable() })
+export type TaskLog = z.infer<typeof TaskLog>
+
 /** Mirrors the daemon's notices (src/daemon/notify.ts), with jobs and chats as plain data. */
 export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('started'), job: JobInfo }),
@@ -355,6 +361,11 @@ export const Notice = z.discriminatedUnion('type', [
   z.object({ type: z.literal('link'), job: JobInfo, url: z.string().nullable(), title: z.string().nullable(), note: z.string().nullable() }),
   z.object({ type: z.literal('setup_warning'), message: z.string() }),
   z.object({ type: z.literal('empty') }),
+  /**
+   * A task stopped moving: it didn't start, or nothing happened for a while. `lines`: the last
+   * lines its terminal printed (errors show there).
+   */
+  z.object({ type: z.literal('stalled'), job: JobInfo, reason: z.string(), since: z.number(), lines: z.array(z.string()) }),
   /** The daily digest, at the time the owner set (`settings.digest`). */
   z.object({ type: z.literal('digest'), digest: Digest }),
   /** The Mac is going to sleep, after quitting `quit`; `failed`: it was meant to and couldn't, and why. */
@@ -518,6 +529,8 @@ export const Request = z.discriminatedUnion('type', [
   withId({ type: z.literal('settings.parallel'), n: z.number().int().min(1).max(3) }),
   /** When the daily digest comes ("21:00", local time on the machine); null turns it off. */
   withId({ type: z.literal('settings.digest'), at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable() }),
+  /** A task's log: the engine's lines about it, and (with screens allowed) its terminal's last lines (data: TaskLog). */
+  withId({ type: z.literal('log'), job: z.number().int() }),
   /** Today's digest, built now (data: Digest). */
   withId({ type: z.literal('digest') }),
   /** Merges an open pull request a task opened (one the digest lists). */
